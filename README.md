@@ -1,14 +1,16 @@
-# MASTER VERB
+# MASTER VERB / ALENTEY VERB
 
 Алгоритмический ревербератор **masterastakhovsound** — Audio Unit и VST3 для macOS.
+Из одного кода собираются два плагина с разными названиями: **MASTER VERB** и **ALENTEY VERB**
+(варианты задаются в `CMakeLists.txt` через `mas_add_variant`).
 
 Ручки: Pre-Delay, Size, Decay (RT60), HF Damping, Low Cut, Mod, Mix.
 
 ## Скачать
 
 Каждый push в `main` собирает плагин на macOS (GitHub Actions) и проверяет его через `auval`.
-Готовый архив: вкладка **Actions** → последний успешный запуск → артефакт **MASTER-VERB-macOS**.
-Внутри — `MASTER VERB.component`, `MASTER VERB.vst3`, установщик и инструкция.
+Готовые архивы: вкладка **Actions** → последний успешный запуск → артефакты **MASTER-VERB-macOS** и **ALENTEY-VERB-macOS**.
+В каждом — `.component`, `.vst3`, установщик и инструкция.
 
 ## Сборка на своём Mac одним файлом
 
@@ -22,10 +24,10 @@
 
 ```bash
 cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-cmake --build build --config Release --target MasterVerb_AU MasterVerb_VST3
+cmake --build build --config Release --target MasterVerb_AU MasterVerb_VST3 AlenteyVerb_AU AlenteyVerb_VST3
 ```
 
-Плагины появятся в `build/MasterVerb_artefacts/Release/`.
+Плагины появятся в `build/MasterVerb_artefacts/Release/` и `build/AlenteyVerb_artefacts/Release/`.
 
 ## Алгоритм
 

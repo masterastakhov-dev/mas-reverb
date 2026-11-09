@@ -149,7 +149,7 @@ void MASPanel::paint (juce::Graphics& g)
     const int tx = (int) (26.0f + emW + 18.0f);
     g.setColour (MASColours::text);
     g.setFont (uiFont (31.0f, true).withExtraKerningFactor (0.16f));
-    g.drawText ("MASTER VERB", tx, 20, 420, 38, juce::Justification::centredLeft);
+    g.drawText (JucePlugin_Name, tx, 20, 460, 38, juce::Justification::centredLeft);
 
     if (wordmark.isValid())
     {

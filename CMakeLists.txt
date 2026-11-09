@@ -21,41 +21,48 @@ else()
     set(MAS_FORMATS VST3)
 endif()
 
-juce_add_plugin(MasterVerb
-    PRODUCT_NAME                "MASTER VERB"
-    COMPANY_NAME                "masterastakhovsound"
-    BUNDLE_ID                   com.masterastakhovsound.masterverb
-    PLUGIN_MANUFACTURER_CODE    Mast
-    PLUGIN_CODE                 MVrb
-    DESCRIPTION                 "Algorithmic hall reverb"
-    FORMATS                     ${MAS_FORMATS}
-    IS_SYNTH                    FALSE
-    NEEDS_MIDI_INPUT            FALSE
-    NEEDS_MIDI_OUTPUT           FALSE
-    IS_MIDI_EFFECT              FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD     FALSE
-    AU_MAIN_TYPE                kAudioUnitType_Effect
-    VST3_CATEGORIES             Fx Reverb)
-
-juce_add_binary_data(MasterVerbData SOURCES
+juce_add_binary_data(MasBrandData SOURCES
     Resources/emblem.png
     Resources/wordmark.png)
 
-target_sources(MasterVerb PRIVATE
-    Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp)
+# One engine and UI, several branded products.
+# mas_add_variant(<cmake target> <product name> <4-char AU code> <bundle id>)
+function(mas_add_variant target product code bundle)
+    juce_add_plugin(${target}
+        PRODUCT_NAME                "${product}"
+        COMPANY_NAME                "masterastakhovsound"
+        BUNDLE_ID                   ${bundle}
+        PLUGIN_MANUFACTURER_CODE    Mast
+        PLUGIN_CODE                 ${code}
+        DESCRIPTION                 "Algorithmic hall reverb"
+        FORMATS                     ${MAS_FORMATS}
+        IS_SYNTH                    FALSE
+        NEEDS_MIDI_INPUT            FALSE
+        NEEDS_MIDI_OUTPUT           FALSE
+        IS_MIDI_EFFECT              FALSE
+        EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+        COPY_PLUGIN_AFTER_BUILD     FALSE
+        AU_MAIN_TYPE                kAudioUnitType_Effect
+        VST3_CATEGORIES             Fx Reverb)
 
-target_compile_definitions(MasterVerb PUBLIC
-    JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0)
+    target_sources(${target} PRIVATE
+        Source/PluginProcessor.cpp
+        Source/PluginEditor.cpp)
 
-target_link_libraries(MasterVerb
-    PRIVATE
-        MasterVerbData
-        juce::juce_audio_utils
-    PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags)
+    target_compile_definitions(${target} PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0)
+
+    target_link_libraries(${target}
+        PRIVATE
+            MasBrandData
+            juce::juce_audio_utils
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags)
+endfunction()
+
+mas_add_variant(MasterVerb  "MASTER VERB"  MVrb com.masterastakhovsound.masterverb)
+mas_add_variant(AlenteyVerb "ALENTEY VERB" AVrb com.masterastakhovsound.alenteyverb)
