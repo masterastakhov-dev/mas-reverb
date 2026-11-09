@@ -24,11 +24,15 @@ public:
     juce::Label* createSliderTextBox (juce::Slider&) override;
 };
 
-class MASReverbAudioProcessorEditor : public juce::AudioProcessorEditor
+// All controls, drawn at a fixed base size; the editor scales it to the window.
+class MASPanel : public juce::Component
 {
 public:
-    explicit MASReverbAudioProcessorEditor (MASReverbAudioProcessor&);
-    ~MASReverbAudioProcessorEditor() override;
+    static constexpr int baseWidth  = 860;
+    static constexpr int baseHeight = 312;
+
+    MASPanel (MasterVerbAudioProcessor&, MASLookAndFeel&);
+    ~MASPanel() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -43,10 +47,28 @@ private:
 
     void addKnob (Knob&, const char* paramID, const juce::String& title);
 
-    MASReverbAudioProcessor& processor;
-    MASLookAndFeel lnf;
+    MasterVerbAudioProcessor& processor;
+    MASLookAndFeel& lnf;
     juce::Image emblem, wordmark;
     Knob preDelay, size, decay, hfDamp, lowCut, mod, mix;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MASReverbAudioProcessorEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MASPanel)
+};
+
+class MasterVerbAudioProcessorEditor : public juce::AudioProcessorEditor
+{
+public:
+    explicit MasterVerbAudioProcessorEditor (MasterVerbAudioProcessor&);
+    ~MasterVerbAudioProcessorEditor() override;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    MasterVerbAudioProcessor& processor;
+    MASLookAndFeel lnf;
+    MASPanel panel;
+    bool sizeRestored = false;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MasterVerbAudioProcessorEditor)
 };

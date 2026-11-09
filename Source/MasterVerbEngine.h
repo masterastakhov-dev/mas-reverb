@@ -1,4 +1,4 @@
-// MAS Reverb — reverb engine
+// MASTER VERB — reverb engine
 // (c) masterastakhovsound
 //
 // Original implementation of a figure-eight "plate/hall" tank, built on the

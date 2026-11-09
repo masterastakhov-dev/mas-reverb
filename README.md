@@ -1,4 +1,4 @@
-# MAS Reverb
+# MASTER VERB
 
 Алгоритмический ревербератор **masterastakhovsound** — Audio Unit и VST3 для macOS.
 
@@ -7,8 +7,8 @@
 ## Скачать
 
 Каждый push в `main` собирает плагин на macOS (GitHub Actions) и проверяет его через `auval`.
-Готовый архив: вкладка **Actions** → последний успешный запуск → артефакт **MAS-Reverb-macOS**.
-Внутри — `MAS Reverb.component`, `MAS Reverb.vst3`, установщик и инструкция.
+Готовый архив: вкладка **Actions** → последний успешный запуск → артефакт **MASTER-VERB-macOS**.
+Внутри — `MASTER VERB.component`, `MASTER VERB.vst3`, установщик и инструкция.
 
 ## Сборка на своём Mac одним файлом
 
@@ -22,10 +22,10 @@
 
 ```bash
 cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
-cmake --build build --config Release --target MASReverb_AU MASReverb_VST3
+cmake --build build --config Release --target MasterVerb_AU MasterVerb_VST3
 ```
 
-Плагины появятся в `build/MASReverb_artefacts/Release/`.
+Плагины появятся в `build/MasterVerb_artefacts/Release/`.
 
 ## Алгоритм
 
@@ -33,7 +33,7 @@ cmake --build build --config Release --target MASReverb_AU MASReverb_VST3
 J. Dattorro, *Effect Design, Part 1* (JAES, 1997): независимая стерео-диффузия входа,
 затухание, откалиброванное по RT60, масштабируемый размер, демпфирование ВЧ,
 срез НЧ, pre-delay и модуляция двумя LFO с эрмитовой интерполяцией.
-Код DSP — `Source/MASReverbEngine.h`, без зависимостей.
+Код DSP — `Source/MasterVerbEngine.h`, без зависимостей.
 
 Офлайн-тест движка (Linux/macOS):
 

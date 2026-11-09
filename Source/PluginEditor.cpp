@@ -3,9 +3,9 @@
 
 namespace
 {
-    constexpr int kWidth  = 860;
-    constexpr int kHeight = 312;
-    constexpr int kHeader = 104;
+    constexpr int kHeader  = 104;
+    constexpr int kMinWidth = 602;    // 70 %
+    constexpr int kMaxWidth = 1720;   // 200 %
 
     juce::Font uiFont (float height, bool bold = false)
     {
@@ -80,8 +80,8 @@ juce::Label* MASLookAndFeel::createSliderTextBox (juce::Slider& slider)
 }
 
 //==============================================================================
-MASReverbAudioProcessorEditor::MASReverbAudioProcessorEditor (MASReverbAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+MASPanel::MASPanel (MasterVerbAudioProcessor& p, MASLookAndFeel& lf)
+    : processor (p), lnf (lf)
 {
     setLookAndFeel (&lnf);
 
@@ -96,17 +96,17 @@ MASReverbAudioProcessorEditor::MASReverbAudioProcessorEditor (MASReverbAudioProc
     addKnob (mod,      ParamIDs::mod,      "MOD");
     addKnob (mix,      ParamIDs::mix,      "MIX");
 
-    setSize (kWidth, kHeight);
+    setSize (baseWidth, baseHeight);
 }
 
-MASReverbAudioProcessorEditor::~MASReverbAudioProcessorEditor()
+MASPanel::~MASPanel()
 {
     for (auto* k : { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix })
         k->slider.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
 
-void MASReverbAudioProcessorEditor::addKnob (Knob& k, const char* paramID, const juce::String& title)
+void MASPanel::addKnob (Knob& k, const char* paramID, const juce::String& title)
 {
     k.slider.setLookAndFeel (&lnf);
     k.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
@@ -131,7 +131,7 @@ void MASReverbAudioProcessorEditor::addKnob (Knob& k, const char* paramID, const
         k.slider.setDoubleClickReturnValue (true, param->convertFrom0to1 (param->getDefaultValue()));
 }
 
-void MASReverbAudioProcessorEditor::paint (juce::Graphics& g)
+void MASPanel::paint (juce::Graphics& g)
 {
     const auto area = getLocalBounds().toFloat();
 
@@ -149,7 +149,7 @@ void MASReverbAudioProcessorEditor::paint (juce::Graphics& g)
     const int tx = (int) (26.0f + emW + 18.0f);
     g.setColour (MASColours::text);
     g.setFont (uiFont (31.0f, true).withExtraKerningFactor (0.16f));
-    g.drawText ("MAS REVERB", tx, 20, 420, 38, juce::Justification::centredLeft);
+    g.drawText ("MASTER VERB", tx, 20, 420, 38, juce::Justification::centredLeft);
 
     if (wordmark.isValid())
     {
@@ -176,7 +176,7 @@ void MASReverbAudioProcessorEditor::paint (juce::Graphics& g)
     g.drawRoundedRectangle (panel, 10.0f, 1.0f);
 }
 
-void MASReverbAudioProcessorEditor::resized()
+void MASPanel::resized()
 {
     auto area = getLocalBounds().withTrimmedTop (kHeader + 14).withTrimmedBottom (26).reduced (28, 0);
     Knob* knobs[] = { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix };
@@ -188,4 +188,46 @@ void MASReverbAudioProcessorEditor::resized()
         k->label.setBounds (col.removeFromTop (22));
         k->slider.setBounds (col.reduced (6, 2));
     }
+}
+
+//==============================================================================
+MasterVerbAudioProcessorEditor::MasterVerbAudioProcessorEditor (MasterVerbAudioProcessor& p)
+    : AudioProcessorEditor (&p), processor (p), panel (p, lnf)
+{
+    setLookAndFeel (&lnf);
+    addAndMakeVisible (panel);   // before setResizable, so the corner grip stays on top
+
+    // read the remembered size first: setResizeLimits() below triggers resized()
+    const int savedWidth = (int) processor.apvts.state.getProperty ("uiWidth", MASPanel::baseWidth);
+
+    const double ratio = (double) MASPanel::baseWidth / (double) MASPanel::baseHeight;
+    setResizable (true, true);
+    setResizeLimits (kMinWidth, juce::roundToInt (kMinWidth / ratio),
+                     kMaxWidth, juce::roundToInt (kMaxWidth / ratio));
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio (ratio);
+
+    const int w = juce::jlimit (kMinWidth, kMaxWidth, savedWidth);
+    setSize (w, juce::roundToInt (w / ratio));
+    sizeRestored = true;
+}
+
+MasterVerbAudioProcessorEditor::~MasterVerbAudioProcessorEditor()
+{
+    setLookAndFeel (nullptr);
+}
+
+void MasterVerbAudioProcessorEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (MASColours::bgBottom);
+}
+
+void MasterVerbAudioProcessorEditor::resized()
+{
+    const float scale = (float) getWidth() / (float) MASPanel::baseWidth;
+    panel.setBounds (0, 0, MASPanel::baseWidth, MASPanel::baseHeight);
+    panel.setTransform (juce::AffineTransform::scale (scale));
+
+    if (sizeRestored)
+        processor.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // remembered with the project
 }

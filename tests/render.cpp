@@ -1,7 +1,7 @@
-// Offline test harness for the MAS Reverb engine.
+// Offline test harness for the MASTER VERB engine.
 // usage: render <in.f32> <out.f32> <sampleRate> <preMs> <size> <decay> <damp> <lowcut> <mod> <mix> [block]
 // Files are raw float32, interleaved stereo.
-#include "../Source/MASReverbEngine.h"
+#include "../Source/MasterVerbEngine.h"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>

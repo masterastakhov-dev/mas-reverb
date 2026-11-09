@@ -11,7 +11,7 @@ static juce::NormalisableRange<float> skewedRange (float lo, float hi, float cen
     return r;
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout MASReverbAudioProcessor::createLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout MasterVerbAudioProcessor::createLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
 
@@ -47,11 +47,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MASReverbAudioProcessor::cre
     return { p.begin(), p.end() };
 }
 
-MASReverbAudioProcessor::MASReverbAudioProcessor()
+MasterVerbAudioProcessor::MasterVerbAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "MASReverbState", createLayout())
+      apvts (*this, nullptr, "MasterVerbState", createLayout())
 {
     pPre   = apvts.getRawParameterValue (ParamIDs::preDelay);
     pSize  = apvts.getRawParameterValue (ParamIDs::size);
@@ -62,7 +62,7 @@ MASReverbAudioProcessor::MASReverbAudioProcessor()
     pMix   = apvts.getRawParameterValue (ParamIDs::mix);
 }
 
-mas::ReverbParams MASReverbAudioProcessor::readParams() const
+mas::ReverbParams MasterVerbAudioProcessor::readParams() const
 {
     mas::ReverbParams p;
     p.preDelayMs = pPre->load();
@@ -75,19 +75,19 @@ mas::ReverbParams MASReverbAudioProcessor::readParams() const
     return p;
 }
 
-void MASReverbAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+void MasterVerbAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.setParams (readParams());
     engine.prepare (sampleRate);
     monoScratch.setSize (1, juce::jmax (1, samplesPerBlock));
 }
 
-void MASReverbAudioProcessor::reset()
+void MasterVerbAudioProcessor::reset()
 {
     engine.reset();
 }
 
-bool MASReverbAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+bool MasterVerbAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto in  = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
@@ -101,7 +101,7 @@ bool MASReverbAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts
     return false;
 }
 
-void MASReverbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void MasterVerbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -133,30 +133,30 @@ void MASReverbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         buffer.clear (ch, 0, n);
 }
 
-double MASReverbAudioProcessor::getTailLengthSeconds() const
+double MasterVerbAudioProcessor::getTailLengthSeconds() const
 {
     return juce::jmin (30.0, (double) pDecay->load() * 1.2 + 0.3);
 }
 
-void MASReverbAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+void MasterVerbAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary (*xml, destData);
 }
 
-void MASReverbAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+void MasterVerbAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
 }
 
-juce::AudioProcessorEditor* MASReverbAudioProcessor::createEditor()
+juce::AudioProcessorEditor* MasterVerbAudioProcessor::createEditor()
 {
-    return new MASReverbAudioProcessorEditor (*this);
+    return new MasterVerbAudioProcessorEditor (*this);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new MASReverbAudioProcessor();
+    return new MasterVerbAudioProcessor();
 }

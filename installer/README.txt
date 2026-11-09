@@ -1,17 +1,17 @@
-MAS Reverb — masterastakhovsound
+MASTER VERB — masterastakhovsound
 ================================
 
 Установка
 1. Распакуй архив.
-2. Нажми правой кнопкой на «Install MAS Reverb.command» → «Открыть» → «Открыть».
+2. Нажми правой кнопкой на «Install MASTER VERB.command» → «Открыть» → «Открыть».
    Если macOS всё равно не даёт открыть: Системные настройки → Конфиденциальность
    и безопасность → внизу «Всё равно открыть» (скрипт не подписан Apple).
-3. Перезапусти DAW. В Logic: Audio FX → Audio Units → masterastakhovsound → MAS Reverb.
+3. Перезапусти DAW. В Logic: Audio FX → Audio Units → masterastakhovsound → MASTER VERB.
 
 Установка вручную (Терминал)
-  cp -R "MAS Reverb.component" ~/Library/Audio/Plug-Ins/Components/
-  cp -R "MAS Reverb.vst3" ~/Library/Audio/Plug-Ins/VST3/
-  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"MAS Reverb.component" ~/Library/Audio/Plug-Ins/VST3/"MAS Reverb.vst3"
+  cp -R "MASTER VERB.component" ~/Library/Audio/Plug-Ins/Components/
+  cp -R "MASTER VERB.vst3" ~/Library/Audio/Plug-Ins/VST3/
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"MASTER VERB.component" ~/Library/Audio/Plug-Ins/VST3/"MASTER VERB.vst3"
 
 Ручки
   PRE-DELAY   0–250 мс   задержка перед хвостом

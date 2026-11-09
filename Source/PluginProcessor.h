@@ -1,7 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
-#include "MASReverbEngine.h"
+#include "MasterVerbEngine.h"
 
 namespace ParamIDs
 {
@@ -14,11 +14,11 @@ namespace ParamIDs
     inline constexpr const char* mix      = "mix";
 }
 
-class MASReverbAudioProcessor : public juce::AudioProcessor
+class MasterVerbAudioProcessor : public juce::AudioProcessor
 {
 public:
-    MASReverbAudioProcessor();
-    ~MASReverbAudioProcessor() override = default;
+    MasterVerbAudioProcessor();
+    ~MasterVerbAudioProcessor() override = default;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -63,5 +63,5 @@ private:
     std::atomic<float>* pMod   = nullptr;
     std::atomic<float>* pMix   = nullptr;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MASReverbAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MasterVerbAudioProcessor)
 };

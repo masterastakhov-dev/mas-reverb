@@ -30,39 +30,39 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
 
       - name: Build
-        run: cmake --build build --config Release --target MASReverb_AU MASReverb_VST3 -- -quiet
+        run: cmake --build build --config Release --target MasterVerb_AU MasterVerb_VST3 -- -quiet
 
       - name: Ad-hoc sign
         run: |
-          ART="build/MASReverb_artefacts/Release"
-          codesign --force --deep --sign - "$ART/AU/MAS Reverb.component"
-          codesign --force --deep --sign - "$ART/VST3/MAS Reverb.vst3"
-          lipo -info "$ART/AU/MAS Reverb.component/Contents/MacOS/MAS Reverb"
+          ART="build/MasterVerb_artefacts/Release"
+          codesign --force --deep --sign - "$ART/AU/MASTER VERB.component"
+          codesign --force --deep --sign - "$ART/VST3/MASTER VERB.vst3"
+          lipo -info "$ART/AU/MASTER VERB.component/Contents/MacOS/MASTER VERB"
 
       - name: Validate Audio Unit (auval)
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R "build/MASReverb_artefacts/Release/AU/MAS Reverb.component" ~/Library/Audio/Plug-Ins/Components/
+          cp -R "build/MasterVerb_artefacts/Release/AU/MASTER VERB.component" ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           sleep 3
           auval -a | grep -i "Mast" || true
-          auval -strict -v aufx MasR Mast | tee auval.log
+          auval -strict -v aufx MVrb Mast | tee auval.log
           grep -q "AU VALIDATION SUCCEEDED" auval.log
 
       - name: Package
         run: |
-          ART="build/MASReverb_artefacts/Release"
-          mkdir -p "dist/MAS Reverb"
-          cp -R "$ART/AU/MAS Reverb.component" "dist/MAS Reverb/"
-          cp -R "$ART/VST3/MAS Reverb.vst3" "dist/MAS Reverb/"
-          cp "installer/Install MAS Reverb.command" "dist/MAS Reverb/"
-          cp "installer/README.txt" "dist/MAS Reverb/"
-          chmod +x "dist/MAS Reverb/Install MAS Reverb.command"
-          cp auval.log "dist/MAS Reverb/auval-report.txt"
-          cd dist && ditto -c -k --keepParent "MAS Reverb" "MAS-Reverb-macOS.zip"
+          ART="build/MasterVerb_artefacts/Release"
+          mkdir -p "dist/MASTER VERB"
+          cp -R "$ART/AU/MASTER VERB.component" "dist/MASTER VERB/"
+          cp -R "$ART/VST3/MASTER VERB.vst3" "dist/MASTER VERB/"
+          cp "installer/Install MASTER VERB.command" "dist/MASTER VERB/"
+          cp "installer/README.txt" "dist/MASTER VERB/"
+          chmod +x "dist/MASTER VERB/Install MASTER VERB.command"
+          cp auval.log "dist/MASTER VERB/auval-report.txt"
+          cd dist && ditto -c -k --keepParent "MASTER VERB" "MASTER-VERB-macOS.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MAS-Reverb-macOS
-          path: dist/MAS-Reverb-macOS.zip
+          name: MASTER-VERB-macOS
+          path: dist/MASTER-VERB-macOS.zip
           retention-days: 90

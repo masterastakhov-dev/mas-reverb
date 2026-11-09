@@ -1,5 +1,5 @@
 #!/bin/bash
-# MAS Reverb — build and install on this Mac (no full Xcode needed).
+# MASTER VERB — build and install on this Mac (no full Xcode needed).
 # Right-click this file -> Open (first time), then wait.
 
 cd "$(dirname "$0")" || exit 1
@@ -7,7 +7,7 @@ cd "$(dirname "$0")" || exit 1
 pause() { echo ""; read -n 1 -s -r -p "Нажми любую клавишу, чтобы закрыть окно..."; echo ""; }
 fail()  { echo ""; echo "ОШИБКА: $1"; pause; exit 1; }
 
-echo "=== MAS Reverb: сборка на этом Mac ==="
+echo "=== MASTER VERB: сборка на этом Mac ==="
 
 # 1. Apple Command Line Tools (compiler + SDK)
 if ! xcode-select -p >/dev/null 2>&1; then
@@ -38,35 +38,35 @@ echo "CMake: $CMAKE"
 # 3. Configure + build (first run downloads JUCE, takes a few minutes)
 "$CMAKE" -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" || fail "настройка проекта не удалась"
-"$CMAKE" --build build --target MASReverb_AU MASReverb_VST3 -j "$(sysctl -n hw.ncpu)" \
+"$CMAKE" --build build --target MasterVerb_AU MasterVerb_VST3 -j "$(sysctl -n hw.ncpu)" \
     || fail "сборка не удалась — пришли Claude текст из этого окна"
 
-ART="build/MASReverb_artefacts/Release"
-codesign --force --deep --sign - "$ART/AU/MAS Reverb.component" >/dev/null 2>&1
-codesign --force --deep --sign - "$ART/VST3/MAS Reverb.vst3" >/dev/null 2>&1
+ART="build/MasterVerb_artefacts/Release"
+codesign --force --deep --sign - "$ART/AU/MASTER VERB.component" >/dev/null 2>&1
+codesign --force --deep --sign - "$ART/VST3/MASTER VERB.vst3" >/dev/null 2>&1
 
 # 4. Install
 AU_DIR="$HOME/Library/Audio/Plug-Ins/Components"
 VST3_DIR="$HOME/Library/Audio/Plug-Ins/VST3"
 mkdir -p "$AU_DIR" "$VST3_DIR"
-rm -rf "$AU_DIR/MAS Reverb.component" "$VST3_DIR/MAS Reverb.vst3"
-cp -R "$ART/AU/MAS Reverb.component" "$AU_DIR/"
-cp -R "$ART/VST3/MAS Reverb.vst3" "$VST3_DIR/"
+rm -rf "$AU_DIR/MASTER VERB.component" "$VST3_DIR/MASTER VERB.vst3"
+cp -R "$ART/AU/MASTER VERB.component" "$AU_DIR/"
+cp -R "$ART/VST3/MASTER VERB.vst3" "$VST3_DIR/"
 killall -9 AudioComponentRegistrar >/dev/null 2>&1 || true
 sleep 2
 
 # 5. Validate the Audio Unit
 echo ""
 echo "Проверка Audio Unit (auval)..."
-if auval -v aufx MasR Mast 2>&1 | tee build/auval.log | grep -q "AU VALIDATION SUCCEEDED"; then
+if auval -v aufx MVrb Mast 2>&1 | tee build/auval.log | grep -q "AU VALIDATION SUCCEEDED"; then
     echo "AU VALIDATION SUCCEEDED"
 else
     echo "auval сообщил о проблеме — отчёт: build/auval.log"
 fi
 
 echo ""
-echo "Готово! MAS Reverb установлен:"
-echo "  AU   -> $AU_DIR/MAS Reverb.component"
-echo "  VST3 -> $VST3_DIR/MAS Reverb.vst3"
-echo "Перезапусти DAW. В Logic: Audio FX > Audio Units > masterastakhovsound > MAS Reverb"
+echo "Готово! MASTER VERB установлен:"
+echo "  AU   -> $AU_DIR/MASTER VERB.component"
+echo "  VST3 -> $VST3_DIR/MASTER VERB.vst3"
+echo "Перезапусти DAW. В Logic: Audio FX > Audio Units > masterastakhovsound > MASTER VERB"
 pause
