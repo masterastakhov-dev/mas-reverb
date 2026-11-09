@@ -22,10 +22,14 @@ public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider&) override;
     juce::Label* createSliderTextBox (juce::Slider&) override;
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&,
+                               bool highlighted, bool down) override;
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
 };
 
 // All controls, drawn at a fixed base size; the editor scales it to the window.
-class MASPanel : public juce::Component
+class MASPanel : public juce::Component,
+                 private juce::Timer
 {
 public:
     static constexpr int baseWidth  = 860;
@@ -37,6 +41,8 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    void loadIRFile (const juce::File&);
+
 private:
     struct Knob
     {
@@ -46,29 +52,47 @@ private:
     };
 
     void addKnob (Knob&, const char* paramID, const juce::String& title);
+    void timerCallback() override;
+    void setMode (bool irMode);
+    void updateModeUI();
+    void chooseIRFile();
 
     MasterVerbAudioProcessor& processor;
     MASLookAndFeel& lnf;
     juce::Image emblem, wordmark;
-    Knob preDelay, size, decay, hfDamp, lowCut, mod, mix;
+    Knob preDelay, size, decay, hfDamp, lowCut, mod, mix, irLength, irCut;
+
+    juce::TextButton hallButton { "HALL" }, irButton { "IR" }, loadButton { "LOAD IR" };
+    juce::Label irName;
+    std::unique_ptr<juce::FileChooser> chooser;
+    bool shownIRMode = false;
+    juce::String shownIRName;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MASPanel)
 };
 
-class MasterVerbAudioProcessorEditor : public juce::AudioProcessorEditor
+class MasterVerbAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                       public juce::FileDragAndDropTarget
 {
 public:
     explicit MasterVerbAudioProcessorEditor (MasterVerbAudioProcessor&);
     ~MasterVerbAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
+
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray&, int, int) override { dragHover = true; repaint(); }
+    void fileDragExit (const juce::StringArray&) override { dragHover = false; repaint(); }
+    void filesDropped (const juce::StringArray& files, int, int) override;
 
 private:
     MasterVerbAudioProcessor& processor;
     MASLookAndFeel lnf;
     MASPanel panel;
     bool sizeRestored = false;
+    bool dragHover = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MasterVerbAudioProcessorEditor)
 };
