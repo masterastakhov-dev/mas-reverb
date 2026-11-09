@@ -9,7 +9,8 @@ namespace MASColours
     const juce::Colour bgBottom { 0xff0e0f12 };
     const juce::Colour panel    { 0xff17191e };
     const juce::Colour track    { 0xff2c2f37 };
-    const juce::Colour accent   { 0xffe2a04a };
+    const juce::Colour accent   { 0xffe33f2b };   // brand red
+    const juce::Colour accent2  { 0xfff6b45c };   // brand orange
     const juce::Colour text     { 0xffe9e6df };
     const juce::Colour textDim  { 0xff8b8d93 };
 }
@@ -44,6 +45,7 @@ private:
 
     MASReverbAudioProcessor& processor;
     MASLookAndFeel lnf;
+    juce::Image emblem, wordmark;
     Knob preDelay, size, decay, hfDamp, lowCut, mod, mix;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MASReverbAudioProcessorEditor)

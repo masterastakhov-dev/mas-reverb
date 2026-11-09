@@ -1,10 +1,11 @@
 #include "PluginEditor.h"
+#include "BinaryData.h"
 
 namespace
 {
     constexpr int kWidth  = 860;
-    constexpr int kHeight = 300;
-    constexpr int kHeader = 92;
+    constexpr int kHeight = 312;
+    constexpr int kHeader = 104;
 
     juce::Font uiFont (float height, bool bold = false)
     {
@@ -84,6 +85,9 @@ MASReverbAudioProcessorEditor::MASReverbAudioProcessorEditor (MASReverbAudioProc
 {
     setLookAndFeel (&lnf);
 
+    emblem   = juce::ImageCache::getFromMemory (BinaryData::emblem_png,   BinaryData::emblem_pngSize);
+    wordmark = juce::ImageCache::getFromMemory (BinaryData::wordmark_png, BinaryData::wordmark_pngSize);
+
     addKnob (preDelay, ParamIDs::preDelay, "PRE-DELAY");
     addKnob (size,     ParamIDs::size,     "SIZE");
     addKnob (decay,    ParamIDs::decay,    "DECAY");
@@ -135,21 +139,32 @@ void MASReverbAudioProcessorEditor::paint (juce::Graphics& g)
                                              MASColours::bgBottom, 0.0f, area.getHeight(), false));
     g.fillAll();
 
-    // header
-    g.setColour (MASColours::accent);
-    g.setFont (uiFont (30.0f, true).withExtraKerningFactor (0.18f));
-    g.drawText ("MAS REVERB", 32, 22, 420, 36, juce::Justification::centredLeft);
+    // header: brand emblem, title, wordmark
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+    const float emH = 78.0f;
+    const float emW = emblem.isValid() ? emH * (float) emblem.getWidth() / (float) emblem.getHeight() : 0.0f;
+    if (emblem.isValid())
+        g.drawImage (emblem, juce::Rectangle<float> (26.0f, 12.0f, emW, emH), juce::RectanglePlacement::centred);
+
+    const int tx = (int) (26.0f + emW + 18.0f);
+    g.setColour (MASColours::text);
+    g.setFont (uiFont (31.0f, true).withExtraKerningFactor (0.16f));
+    g.drawText ("MAS REVERB", tx, 20, 420, 38, juce::Justification::centredLeft);
+
+    if (wordmark.isValid())
+    {
+        const float wmH = 13.0f;
+        const float wmW = wmH * (float) wordmark.getWidth() / (float) wordmark.getHeight();
+        g.drawImage (wordmark, juce::Rectangle<float> ((float) tx + 2.0f, 62.0f, wmW, wmH), juce::RectanglePlacement::centred);
+    }
 
     g.setColour (MASColours::textDim);
-    g.setFont (uiFont (13.0f).withExtraKerningFactor (0.08f));
-    g.drawText ("masterastakhovsound", 34, 56, 300, 18, juce::Justification::centredLeft);
-
     g.setFont (uiFont (12.0f).withExtraKerningFactor (0.06f));
-    g.drawText ("ALGORITHMIC HALL  /  v" JucePlugin_VersionString, getWidth() - 332, 30, 300, 18,
+    g.drawText ("ALGORITHMIC HALL  /  v" JucePlugin_VersionString, getWidth() - 332, 34, 300, 18,
                 juce::Justification::centredRight);
 
     // divider
-    g.setColour (MASColours::accent.withAlpha (0.35f));
+    g.setColour (MASColours::accent.withAlpha (0.45f));
     g.fillRect (32.0f, (float) kHeader - 6.0f, area.getWidth() - 64.0f, 1.0f);
 
     // knob panel

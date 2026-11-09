@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 
-project(MASReverb VERSION 1.0.0 LANGUAGES C CXX)
+project(MASReverb VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,10 @@ juce_add_plugin(MASReverb
     AU_MAIN_TYPE                kAudioUnitType_Effect
     VST3_CATEGORIES             Fx Reverb)
 
+juce_add_binary_data(MASReverbData SOURCES
+    Resources/emblem.png
+    Resources/wordmark.png)
+
 target_sources(MASReverb PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
@@ -49,6 +53,7 @@ target_compile_definitions(MASReverb PUBLIC
 
 target_link_libraries(MASReverb
     PRIVATE
+        MASReverbData
         juce::juce_audio_utils
     PUBLIC
         juce::juce_recommended_config_flags
