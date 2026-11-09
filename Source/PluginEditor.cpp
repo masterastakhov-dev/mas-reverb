@@ -1,0 +1,170 @@
+#include "PluginEditor.h"
+
+namespace
+{
+    constexpr int kWidth  = 860;
+    constexpr int kHeight = 300;
+    constexpr int kHeader = 92;
+
+    juce::Font uiFont (float height, bool bold = false)
+    {
+        return juce::Font (juce::FontOptions (height, bold ? juce::Font::bold : juce::Font::plain));
+    }
+}
+
+//==============================================================================
+MASLookAndFeel::MASLookAndFeel()
+{
+    setColour (juce::Slider::textBoxTextColourId, MASColours::text);
+    setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    setColour (juce::Slider::textBoxHighlightColourId, MASColours::accent.withAlpha (0.35f));
+    setColour (juce::Label::textColourId, MASColours::text);
+    setColour (juce::Label::textWhenEditingColourId, MASColours::text);
+    setColour (juce::TextEditor::textColourId, MASColours::text);
+    setColour (juce::TextEditor::backgroundColourId, MASColours::panel);
+    setColour (juce::TextEditor::highlightColourId, MASColours::accent.withAlpha (0.35f));
+    setColour (juce::CaretComponent::caretColourId, MASColours::accent);
+}
+
+void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
+                                       float startAngle, float endAngle, juce::Slider& slider)
+{
+    const auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (4.0f);
+    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    const auto c = bounds.getCentre();
+    const float arcR = radius - 3.0f;
+    const float angle = startAngle + pos * (endAngle - startAngle);
+    const bool hover = slider.isMouseOverOrDragging();
+
+    // outer track
+    juce::Path track;
+    track.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, endAngle, true);
+    g.setColour (MASColours::track);
+    g.strokePath (track, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    // value arc
+    juce::Path value;
+    value.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, angle, true);
+    g.setColour (MASColours::accent.withAlpha (hover ? 1.0f : 0.9f));
+    g.strokePath (value, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    // knob body
+    const float bodyR = arcR - 9.0f;
+    const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3d46), c.x, c.y - bodyR,
+                                             juce::Colour (0xff1d1f25), c.x, c.y + bodyR, false));
+    g.fillEllipse (body);
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.drawEllipse (body, 1.2f);
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.drawEllipse (body.reduced (1.5f), 1.0f);
+
+    // pointer
+    const float p1 = bodyR * 0.35f, p2 = bodyR * 0.88f;
+    const juce::Point<float> a (c.x + p1 * std::sin (angle), c.y - p1 * std::cos (angle));
+    const juce::Point<float> b (c.x + p2 * std::sin (angle), c.y - p2 * std::cos (angle));
+    g.setColour (MASColours::text);
+    g.drawLine ({ a, b }, 2.5f);
+}
+
+juce::Label* MASLookAndFeel::createSliderTextBox (juce::Slider& slider)
+{
+    auto* l = LookAndFeel_V4::createSliderTextBox (slider);
+    l->setFont (uiFont (14.0f));
+    l->setJustificationType (juce::Justification::centred);
+    l->setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    l->setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    return l;
+}
+
+//==============================================================================
+MASReverbAudioProcessorEditor::MASReverbAudioProcessorEditor (MASReverbAudioProcessor& p)
+    : AudioProcessorEditor (&p), processor (p)
+{
+    setLookAndFeel (&lnf);
+
+    addKnob (preDelay, ParamIDs::preDelay, "PRE-DELAY");
+    addKnob (size,     ParamIDs::size,     "SIZE");
+    addKnob (decay,    ParamIDs::decay,    "DECAY");
+    addKnob (hfDamp,   ParamIDs::hfDamp,   "HF DAMPING");
+    addKnob (lowCut,   ParamIDs::lowCut,   "LOW CUT");
+    addKnob (mod,      ParamIDs::mod,      "MOD");
+    addKnob (mix,      ParamIDs::mix,      "MIX");
+
+    setSize (kWidth, kHeight);
+}
+
+MASReverbAudioProcessorEditor::~MASReverbAudioProcessorEditor()
+{
+    setLookAndFeel (nullptr);
+}
+
+void MASReverbAudioProcessorEditor::addKnob (Knob& k, const char* paramID, const juce::String& title)
+{
+    k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 96, 22);
+    k.slider.setRotaryParameters (juce::degreesToRadians (225.0f), juce::degreesToRadians (495.0f), true);
+    k.slider.setMouseDragSensitivity (220);
+    k.slider.setVelocityBasedMode (false);
+    addAndMakeVisible (k.slider);
+
+    k.label.setText (title, juce::dontSendNotification);
+    k.label.setJustificationType (juce::Justification::centred);
+    k.label.setFont (uiFont (12.5f, true).withExtraKerningFactor (0.12f));
+    k.label.setColour (juce::Label::textColourId, MASColours::textDim);
+    addAndMakeVisible (k.label);
+
+    k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, paramID, k.slider);
+
+    if (auto* param = processor.apvts.getParameter (paramID))
+        k.slider.setDoubleClickReturnValue (true, param->convertFrom0to1 (param->getDefaultValue()));
+}
+
+void MASReverbAudioProcessorEditor::paint (juce::Graphics& g)
+{
+    const auto area = getLocalBounds().toFloat();
+
+    g.setGradientFill (juce::ColourGradient (MASColours::bgTop, 0.0f, 0.0f,
+                                             MASColours::bgBottom, 0.0f, area.getHeight(), false));
+    g.fillAll();
+
+    // header
+    g.setColour (MASColours::accent);
+    g.setFont (uiFont (30.0f, true).withExtraKerningFactor (0.18f));
+    g.drawText ("MAS REVERB", 32, 22, 420, 36, juce::Justification::centredLeft);
+
+    g.setColour (MASColours::textDim);
+    g.setFont (uiFont (13.0f).withExtraKerningFactor (0.08f));
+    g.drawText ("masterastakhovsound", 34, 56, 300, 18, juce::Justification::centredLeft);
+
+    g.setFont (uiFont (12.0f).withExtraKerningFactor (0.06f));
+    g.drawText ("ALGORITHMIC HALL  /  v" JucePlugin_VersionString, getWidth() - 332, 30, 300, 18,
+                juce::Justification::centredRight);
+
+    // divider
+    g.setColour (MASColours::accent.withAlpha (0.35f));
+    g.fillRect (32.0f, (float) kHeader - 6.0f, area.getWidth() - 64.0f, 1.0f);
+
+    // knob panel
+    const auto panel = juce::Rectangle<float> (20.0f, (float) kHeader + 6.0f,
+                                               area.getWidth() - 40.0f, area.getHeight() - kHeader - 26.0f);
+    g.setColour (MASColours::panel.withAlpha (0.7f));
+    g.fillRoundedRectangle (panel, 10.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.04f));
+    g.drawRoundedRectangle (panel, 10.0f, 1.0f);
+}
+
+void MASReverbAudioProcessorEditor::resized()
+{
+    auto area = getLocalBounds().withTrimmedTop (kHeader + 14).withTrimmedBottom (26).reduced (28, 0);
+    Knob* knobs[] = { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix };
+    const int colW = area.getWidth() / 7;
+
+    for (auto* k : knobs)
+    {
+        auto col = area.removeFromLeft (colW);
+        k->label.setBounds (col.removeFromTop (22));
+        k->slider.setBounds (col.reduced (6, 2));
+    }
+}

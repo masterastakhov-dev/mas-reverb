@@ -1,0 +1,57 @@
+name: Build macOS (AU + VST3)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64)
+        run: |
+          cmake -B build -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: cmake --build build --config Release --target MASReverb_AU MASReverb_VST3 -- -quiet
+
+      - name: Ad-hoc sign
+        run: |
+          ART="build/MASReverb_artefacts/Release"
+          codesign --force --deep --sign - "$ART/AU/MAS Reverb.component"
+          codesign --force --deep --sign - "$ART/VST3/MAS Reverb.vst3"
+          lipo -info "$ART/AU/MAS Reverb.component/Contents/MacOS/MAS Reverb"
+
+      - name: Validate Audio Unit (auval)
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/MASReverb_artefacts/Release/AU/MAS Reverb.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i "Mast" || true
+          auval -strict -v aufx MasR Mast | tee auval.log
+          grep -q "AU VALIDATION SUCCEEDED" auval.log
+
+      - name: Package
+        run: |
+          ART="build/MASReverb_artefacts/Release"
+          mkdir -p "dist/MAS Reverb"
+          cp -R "$ART/AU/MAS Reverb.component" "dist/MAS Reverb/"
+          cp -R "$ART/VST3/MAS Reverb.vst3" "dist/MAS Reverb/"
+          cp "installer/Install MAS Reverb.command" "dist/MAS Reverb/"
+          cp "installer/README.txt" "dist/MAS Reverb/"
+          chmod +x "dist/MAS Reverb/Install MAS Reverb.command"
+          cp auval.log "dist/MAS Reverb/auval-report.txt"
+          cd dist && ditto -c -k --keepParent "MAS Reverb" "MAS-Reverb-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MAS-Reverb-macOS
+          path: dist/MAS-Reverb-macOS.zip
+          retention-days: 90

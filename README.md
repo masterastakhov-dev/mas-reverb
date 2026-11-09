@@ -1,0 +1,42 @@
+# MAS Reverb
+
+Алгоритмический ревербератор **masterastakhovsound** — Audio Unit и VST3 для macOS.
+
+Ручки: Pre-Delay, Size, Decay (RT60), HF Damping, Low Cut, Mod, Mix.
+
+## Скачать
+
+Каждый push в `main` собирает плагин на macOS (GitHub Actions) и проверяет его через `auval`.
+Готовый архив: вкладка **Actions** → последний успешный запуск → артефакт **MAS-Reverb-macOS**.
+Внутри — `MAS Reverb.component`, `MAS Reverb.vst3`, установщик и инструкция.
+
+## Сборка вручную на Mac
+
+Нужны Xcode и CMake (`brew install cmake`).
+
+```bash
+cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+cmake --build build --config Release --target MASReverb_AU MASReverb_VST3
+```
+
+Плагины появятся в `build/MASReverb_artefacts/Release/`.
+
+## Алгоритм
+
+Собственная реализация «восьмёрочного» бака по открытой схеме из статьи
+J. Dattorro, *Effect Design, Part 1* (JAES, 1997): независимая стерео-диффузия входа,
+затухание, откалиброванное по RT60, масштабируемый размер, демпфирование ВЧ,
+срез НЧ, pre-delay и модуляция двумя LFO с эрмитовой интерполяцией.
+Код DSP — `Source/MASReverbEngine.h`, без зависимостей.
+
+Офлайн-тест движка (Linux/macOS):
+
+```bash
+g++ -O2 -std=c++17 -o tests/render tests/render.cpp
+python3 tests/analyze.py   # RT60, стерео-корреляция, стабильность
+```
+
+## Лицензия фреймворка
+
+Плагин собран на [JUCE](https://juce.com). Для личного использования ограничений нет;
+перед продажей или публичной раздачей проверь условия лицензии JUCE.
