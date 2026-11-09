@@ -6,6 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  dsp-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline engine test (RT60, stereo, stability)
+        run: |
+          pip install --quiet numpy scipy
+          g++ -O2 -std=c++17 -o tests/render tests/render.cpp
+          python3 tests/analyze.py
+
   build:
     runs-on: macos-latest
     timeout-minutes: 45
