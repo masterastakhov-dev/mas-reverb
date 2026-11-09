@@ -4,3 +4,4 @@ dist/
 .DS_Store
 *.f32
 __pycache__/
+.tools/
