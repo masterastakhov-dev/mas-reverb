@@ -97,11 +97,17 @@ MASReverbAudioProcessorEditor::MASReverbAudioProcessorEditor (MASReverbAudioProc
 
 MASReverbAudioProcessorEditor::~MASReverbAudioProcessorEditor()
 {
+    for (auto* k : { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix })
+        k->slider.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
 
 void MASReverbAudioProcessorEditor::addKnob (Knob& k, const char* paramID, const juce::String& title)
 {
+    k.slider.setLookAndFeel (&lnf);
+    k.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    k.slider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    k.slider.setColour (juce::Slider::textBoxTextColourId, MASColours::text);
     k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 96, 22);
     k.slider.setRotaryParameters (juce::degreesToRadians (225.0f), juce::degreesToRadians (495.0f), true);
