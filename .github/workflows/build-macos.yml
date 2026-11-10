@@ -22,10 +22,12 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -DMAS_ATMOS -o tests/render_atmos tests/render_space.cpp
           MS_ATMOS_RENDER=tests/render_atmos python3 tests/atmos_measure.py --check | tee atmos.log
-      - name: Engine stress test (random automation of every parameter, 1.2 and 1.1 Legacy)
+      - name: Engine stress test (random automation of every parameter, 1.2, 1.1 Legacy, ATMOSPHERIC TAIL)
         run: |
           g++ -O2 -std=c++17 -o stress tests/stress_engines.cpp
           ./stress -1 40
+          g++ -O2 -std=c++17 -DMAS_ATMOS -o stress_atmos tests/stress_engines.cpp
+          ./stress_atmos -1 40
 
   plugin-test:
     runs-on: ubuntu-latest

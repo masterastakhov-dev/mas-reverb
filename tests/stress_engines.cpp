@@ -1,12 +1,21 @@
 // Random automation of every parameter on both engines (1.2 and 1.1 Legacy): no runaway allowed.
+// Built with -DMAS_ATMOS it also switches the late engine (room / Atmospheric Tail) and automates BLOOM, MOTION,
+// AIR and Character Lock.
 // usage: stress_engines [param index or -1] [seeds]
 #include "../Source/MasterSpace/MSEngine.h"
 #include "../Source/MasterSpace/legacy/MSEngine11.h"
 #include <cstdio>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <xmmintrin.h>
 #include <pmmintrin.h>
+
+#ifdef MAS_ATMOS
+constexpr int kNumParams = 60;
+#else
+constexpr int kNumParams = 55;
+#endif
 
 template <class P> void randomise (P& p, std::mt19937& g, int which, std::string& name)
 {
@@ -69,7 +78,20 @@ template <class P> void randomise (P& p, std::mt19937& g, int which, std::string
         case 52: p.balance = 2 * u (g) - 1; name = "balance"; break;
         case 53: p.crossfeed = u (g); name = "crossfeed"; break;
         case 54: p.decorrelation = u (g); name = "decorr"; break;
+        default: break;
     }
+#ifdef MAS_ATMOS
+    if constexpr (std::is_same_v<P, mspace::Params>)
+        switch (which)
+        {
+            case 55: p.tailMode = u (g) > 0.3f ? 1 : 0; name = "tail"; break;
+            case 56: p.bloom = u (g); name = "bloom"; break;
+            case 57: p.motion = u (g); name = "motion"; break;
+            case 58: p.air = u (g); name = "air"; break;
+            case 59: p.charLock = u (g) > 0.3f; name = "charlock"; break;
+            default: break;
+        }
+#endif
 }
 
 template <class E, class P> int stress (const char* tag, unsigned seed, double fs, int only = -1)
@@ -82,7 +104,7 @@ template <class E, class P> int stress (const char* tag, unsigned seed, double f
     for (int blk = 0; blk < (int) (fs * 8 / 64); ++blk)
     {
         std::string nm;
-        const int w = only >= 0 ? only : (int) (g() % 55);
+        const int w = only >= 0 ? only : (int) (g() % kNumParams);
         randomise (p, g, w, nm);
         for (int k = 7; k > 0; --k) last[k] = last[k - 1];
         last[0] = nm;

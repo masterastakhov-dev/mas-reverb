@@ -19,7 +19,7 @@ DECAYS = [1.0, 1.6, 3.0, 6.0, 12.0, 20.0, 30.0]
 # reference ATMOSPHERIC TAIL settings (render keys); late engine only
 BASE = dict(tailMode=1, erOn=0, routing=1, mix=1.0, lateLevelDb=0, lockLevel=0, lockDecay=1,
             bloom=0.3, motion=0.5, air=0.5, density=0.7, diffusion=0.7, shape=0.35, spreadMs=60, lateDelayMs=10,
-            lfMult=1.1, lmMult=1.0, hmMult=0.95, hfMult=0.85, xLow=250, xMid=2000, xHigh=7000,
+            lfMult=0.9, lmMult=1.0, hmMult=1.0, hfMult=1.0, xLow=250, xMid=2000, xHigh=7000,
             modRate=0.6, modDepth=0.35, modRandom=0.5, modSmooth=0.6, decorrelation=0.85, charLock=1)
 
 
@@ -71,11 +71,12 @@ def expected_band_rt(decay, kw=None):
     p = {**BASE, **(kw or {})}
     air = p['air']
     lf = p['lfMult']
-    if p['charLock']: lf = 1 + (lf - 1) * min(1.0, max(0.3, 1 - 0.35 * np.log2(decay / 3.0)))
+    if p['charLock'] and lf > 1: lf = 1 + (lf - 1) * min(1.0, max(0.3, 1 - 0.35 * np.log2(decay / 3.0)))
     hf = p['hfMult'] * (0.8 + 0.4 * air); hm = p['hmMult'] * (0.9 + 0.2 * air)
-    cap = 3 + 9 * air
+    cap = 4 + 16 * air
+    capped = lambda r, c: 1 / np.sqrt(1 / r ** 2 + 1 / c ** 2)
     band = lambda f: (decay * lf if f < p['xLow'] else decay * p['lmMult'] if f < p['xMid']
-                      else 1 / (1 / (decay * hm) + 1 / (3 * cap)) if f < p['xHigh'] else 1 / (1 / (decay * hf) + 1 / cap))
+                      else capped(decay * hm, 2.5 * cap) if f < p['xHigh'] else capped(decay * hf, cap))
     return [band(c) for c in OCT]
 
 
@@ -187,17 +188,18 @@ def _sweep_changes(fs, a=1.0, b=30.0, t1=3.0, t2=9.0, steps=50, dur=1.0):
 
 
 def _pitch_track(y, fs, f0=440.0):
-    nper = int(fs * 0.1)
-    f, tt, Z = signal.stft(y.sum(1), fs, nperseg=nper, noverlap=nper * 3 // 4, nfft=nper * 32)
-    P = np.abs(Z)
-    sel = np.nonzero((f > f0 * 0.9) & (f < f0 * 1.1))[0]
-    out = []
-    for j in range(P.shape[1]):
-        k = sel[np.argmax(P[sel, j])]
-        a, b, c = np.log(P[k - 1, j] + 1e-30), np.log(P[k, j] + 1e-30), np.log(P[k + 1, j] + 1e-30)
-        d = 0.5 * (a - c) / (a - 2 * b + c) if (a - 2 * b + c) != 0 else 0.0
-        out.append(1200 * np.log2((f[k] + d * (f[1] - f[0])) / f0))
-    return np.array(out), tt
+    """power-weighted frequency centroid within +-100 cents of f0, both channels (0.2 s frames): a moving read
+    head shifts it; the beating of neighbouring modes (nulls of one channel or of a sum) does not"""
+    nper = int(fs * 0.2)
+    f, tt, Z = signal.stft(y, fs, nperseg=nper, noverlap=nper * 3 // 4, nfft=nper * 16, axis=0)
+    P = (np.abs(Z) ** 2).sum(1)                     # (freq, frames), channels summed in power
+    sel = (f > f0 * 2 ** (-100 / 1200)) & (f < f0 * 2 ** (100 / 1200))
+    cents = 1200 * np.log2(f[sel] / f0)
+    Ps = P[sel]
+    e = Ps.sum(0)
+    cen = (cents[:, None] * Ps).sum(0) / (e + 1e-30)
+    cen[e < e.max() * 1e-5] = np.nan                # too far down to say anything
+    return cen, tt
 
 
 def decay_sweep(fs=FS):
@@ -230,9 +232,9 @@ def decay_sweep(fs=FS):
     y0, _ = run(x, fs=fs, decay=6.0, motion=0.0)
     cp, tt = _pitch_track(yp, fs); c0, _ = _pitch_track(y0, fs)
     sel = (tt > 2.2) & (tt < 6.5)
-    dev = float(np.max(np.abs(cp[sel] - c0[sel])))
+    dev = float(np.nanmax(np.abs(cp[sel] - c0[sel])))
     return dict(finite=finite, peak=float(np.max(np.abs(y))), max_level_jump_db=float(jump), static_level_jump_db=float(jump_static),
-                pitch_dev_cents_max=dev, pitch_static_cents_max=float(np.max(np.abs(c0[sel] - np.median(c0[sel])))),
+                pitch_dev_cents_max=dev, pitch_static_cents_max=float(np.nanmax(np.abs(c0[sel] - np.nanmedian(c0[sel])))),
                 pitch_t=tt[sel].tolist(), pitch_ref_cents=c0[sel].tolist(),
                 level_db_100ms=lev[::10].tolist(), pitch_cents=cp[sel].tolist())
 

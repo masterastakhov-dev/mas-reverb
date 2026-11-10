@@ -139,7 +139,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     // ---- decay EQ / filters
    #ifdef MAS_ATMOS
     // experimental build: defaults for the Atmospheric Tail (nearly flat decay; brightness comes from AIR)
-    constexpr float dLf = 1.1f, dHm = 0.95f, dHf = 0.85f, dXMid = 2000.0f, dXHigh = 7000.0f;
+    constexpr float dLf = 0.9f, dHm = 1.0f, dHf = 1.0f, dXMid = 2000.0f, dXHigh = 7000.0f;
    #else
     constexpr float dLf = 1.2f, dHm = 0.85f, dHf = 0.55f, dXMid = 1500.0f, dXHigh = 6000.0f;
    #endif

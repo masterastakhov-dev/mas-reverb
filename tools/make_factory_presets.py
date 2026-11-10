@@ -180,8 +180,8 @@ preset("Far Away", "Creative Spaces",
 
 # ---- ATMOSPHERIC TAIL (experimental build only: presets/factory-atmos)
 ATMOS_P = []
-ATM = dict(tail="Atmospheric Tail", charlock=True, routing="Aux", mix=100, erlevel=-8, latelevel=0, size=50,
-           lfmult=1.1, lmmult=1.0, hmmult=0.95, hfmult=0.85, xlow=200, xmid=2000, xhigh=7000,
+ATM = dict(tail="Atmospheric Tail", charlock=True, routing="Aux", mix=100, erlevel=-12, latelevel=0, size=50,
+           lfmult=0.9, lmmult=1.0, hmmult=1.0, hfmult=1.0, xlow=250, xmid=2000, xhigh=7000,
            decorr=85, crossfeed=15, modrate=0.6, moddepth=35, modrandom=50, modsmooth=60, latedelay=12, diffusion=70, density=70,
            shape=35, spread=60)
 def atmos(name, category, description, **kw):
@@ -189,11 +189,11 @@ def atmos(name, category, description, **kw):
     ATMOS_P.append((name, category, description, merged))
 
 atmos("ATMOS Vocal Glow", "Vocal Spaces", "Atmospheric Tail, 1.6 s: soft, moving air around a lead vocal.",
-      decay=1.6, bloom=25, motion=50, air=55)
+      decay=1.6, bloom=25, motion=50, air=55, lowcut=90)
 atmos("ATMOS Smoky Ballad", "Vocal Spaces", "Atmospheric Tail, 2.4 s with 20 ms pre-delay: warm, smoky vocal tail.",
-      decay=2.4, bloom=35, motion=60, air=45, density=75, predelay=20, erlevel=-10)
+      decay=2.4, bloom=35, motion=60, air=45, density=75, predelay=20, erlevel=-14, lowcut=90)
 atmos("ATMOS Sax Haze", "Vocal Spaces", "Atmospheric Tail, 2.8 s: lush motion for sax and solo instruments.",
-      decay=2.8, bloom=30, motion=65, air=50, density=75)
+      decay=2.8, bloom=30, motion=65, air=50, density=75, lowcut=80)
 atmos("ATMOS Wide Hall", "Halls", "Atmospheric Tail, 3 s: wide, transparent hall-like space.",
       decay=3.0, bloom=30, motion=50, air=55, size=65)
 atmos("ATMOS Floating Hall", "Halls", "Atmospheric Tail, 6 s: the tail opens up and floats.",
