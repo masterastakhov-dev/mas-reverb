@@ -1,5 +1,5 @@
 // MASTER SPACE 1.1 DSP engine, frozen copy of release-1.1 (namespace renamed to mspace11).
-// Used for the "1.1 Legacy" engine mode so projects saved with 1.1 keep their sound. Do not change.
+// Used for the "1.1 Legacy" engine mode so projects saved with 1.1 keep their sound. Do not change the DSP. (1.2 added snap(), not used while processing, and the loop-gain stability limit, which is inactive for every setting where the decay bands differ by less than 60 dB per loop pass.)
 // MASTER SPACE — spatial engine
 // (c) masterastakhovsound            "Don't add reverb. Create space."
 //
@@ -750,6 +750,24 @@ public:
             double g[4];
             for (int b = 0; b < 4; ++b)
                 g[b] = std::pow (10.0, -(rate[b] * loopSec - rate[1] * (apSec1 + apSec2)) / 20.0);
+            // Stability (1.2): a band may lose at most 60 dB more per pass than the strongest band.
+            // Beyond that it is silent anyway, and the shelf cascade could not realise the ratio
+            // (a very short Decay with extreme band multipliers made the loop gain exceed 1).
+            // Never active for settings where the bands differ by less than 60 dB per pass.
+            {
+                const double gMax = std::max ({ g[0], g[1], g[2], g[3] });
+                for (int b = 0; b < 4; ++b)
+                    g[b] = std::max (g[b], gMax * 1.0e-3);
+                // The line gains compensate the energy the absorbent all-passes are assumed to lose (a1, a2).
+                // An absorbent all-pass passes up to max((g+a)/(1+ga), |a-g|/(1-ga)) >= a at some frequency,
+                // so with a large loss the loop could exceed unity there: bound it at 0.995. Inactive for
+                // all normal settings (the bound is far above the design gains); it only stops runaway.
+                const double ga = (double) apG;
+                auto apPeak = [ga] (double a) { return std::max ((ga + a) / (1.0 + ga * a), std::abs (a - ga) / (1.0 - ga * a)); };
+                const double cap = 0.995 / std::max (1.0e-9, apPeak ((double) apA1[i]) * apPeak ((double) apA2[i]));
+                for (int b = 0; b < 4; ++b)
+                    g[b] = std::min (g[b], cap);
+            }
             baseGain[i] = (float) g[1];
             shLow[i].set (f1, g[0] / g[1], fs, false);
             shMid[i].set (f2, g[2] / g[1], fs, true);
@@ -938,6 +956,19 @@ public:
     }
 
     void setParams (const Params& p) { pending = p; }
+
+    // Jumps to the given parameters with no smoothing and clears all audio state (as after prepare()).
+    // No allocation: safe on the audio thread. Used for click-free preset / A-B transitions, where a
+    // second engine instance starts from this clean state and is faded in.
+    void snap (const Params& p)
+    {
+        pending = p;
+        params.algorithm = -1;
+        algoSwitchPending = false;
+        algoGain = 1.0f;
+        applyParams (true);
+        reset();
+    }
 
     void process (float* left, float* right, int numSamples)
     {
