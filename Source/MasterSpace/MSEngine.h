@@ -28,6 +28,15 @@ static constexpr double kPi = 3.14159265358979323846;
 
 inline float dbToGain (float db) { return db <= -59.9f ? 0.0f : std::pow (10.0f, db / 20.0f); }
 
+// sin (2 pi phase), phase in [0, 1): parabolic approximation with one correction step (error < 0.001),
+// enough for an LFO and much cheaper than std::sin for 16 lines per sample
+inline float fastSin2Pi (double phase) noexcept
+{
+    const float q = (float) (phase - std::floor (phase + 0.5));     // [-0.5, 0.5)
+    const float y = 8.0f * q - 16.0f * q * std::abs (q);
+    return 0.225f * (y * std::abs (y) - y) + y;
+}
+
 //==============================================================================
 class DelayLine
 {
@@ -75,14 +84,31 @@ private:
     int mask = 0, writePos = 0;
 };
 
+// Schroeder all-pass with a fractional, possibly modulated delay.
+// The delay is read with cubic (Hermite) interpolation: with linear interpolation the feedback and
+// feed-forward paths no longer match at high frequencies, the section stops being an all-pass and
+// becomes a comb with peaks every 1/delay (about 2.5 dB of ripple at 8 kHz for g = 0.43).
+// In a feedback network that ripple accumulates every pass and is heard as metallic ringing.
 class Allpass
 {
 public:
     void allocate (int maxD) { line.allocate (maxD); }
     void clear() { line.clear(); }
-    inline float process (float x, float d, float g) noexcept
+    // a: gain of the internal delay ("absorbent" all-pass, Jot). Inside a decaying feedback network
+    // the all-pass must lose energy at the same rate per second as the delay lines; otherwise the
+    // energy that circulates in its own loop decays slower and the poles leave the common radius
+    // (narrow bands that ring several times longer than the set decay).
+    inline float process (float x, float d, float g, float a = 1.0f) noexcept
     {
-        const float wd = line.readLinear (d);
+        const float wd = a * line.readHermite (std::max (2.0f, d));
+        const float w = x + g * wd;
+        line.push (w);
+        return wd - g * w;
+    }
+    // static delay in whole samples (exact all-pass, no interpolation)
+    inline float process (float x, int d, float g) noexcept
+    {
+        const float wd = line.read (std::max (1, d));
         const float w = x + g * wd;
         line.push (w);
         return wd - g * w;
@@ -104,14 +130,14 @@ struct Biquad
 {
     float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, x1 = 0, x2 = 0, y1 = 0, y2 = 0;
 
-    void setHighPass (double hz, double fs) { set (hz, fs, true); }
-    void setLowPass (double hz, double fs)  { set (hz, fs, false); }
+    void setHighPass (double hz, double fs, double q = 0.70710678) { set (hz, fs, true, q); }
+    void setLowPass (double hz, double fs, double q = 0.70710678)  { set (hz, fs, false, q); }
 
-    void set (double hz, double fs, bool highPass)
+    void set (double hz, double fs, bool highPass, double q = 0.70710678)
     {
         hz = std::clamp (hz, 5.0, 0.45 * fs);
         const double w0 = 2.0 * kPi * hz / fs, c = std::cos (w0), s = std::sin (w0);
-        const double alpha = s / (2.0 * 0.70710678), a0 = 1.0 + alpha;
+        const double alpha = s / (2.0 * q), a0 = 1.0 + alpha;
         if (highPass) { b0 = (float) ((1.0 + c) * 0.5 / a0); b1 = (float) (-(1.0 + c) / a0); }
         else          { b0 = (float) ((1.0 - c) * 0.5 / a0); b1 = (float) ((1.0 - c) / a0); }
         b2 = b0;
@@ -312,12 +338,13 @@ public:
     void prepare (double sampleRate)
     {
         fs = sampleRate;
-        for (auto& l : input) l.allocate ((int) std::ceil (0.62 * fs));
+        for (auto& l : input) l.allocate ((int) std::ceil (0.64 * fs));
         for (int c = 0; c < 2; ++c)
         {
-            for (auto& a : diff[c]) a.allocate ((int) std::ceil (0.02 * fs));
             color[c].prepare (fs);
             lowBus[c].setLowPass (1500.0, fs);
+            airLP[c].setLowPass (11087.0, fs, 0.491);
+            scatterBus[c].setHighPass (1500.0, fs);
         }
         reset();
     }
@@ -325,7 +352,7 @@ public:
     void reset()
     {
         for (auto& l : input) l.clear();
-        for (int c = 0; c < 2; ++c) { for (auto& a : diff[c]) a.clear(); color[c].clear(); lowBus[c].clear(); }
+        for (int c = 0; c < 2; ++c) { color[c].clear(); lowBus[c].clear(); airLP[c].clear(); scatterBus[c].clear(); }
         haveSet = false; fading = false;
     }
 
@@ -333,13 +360,12 @@ public:
     void update (const Params& p)
     {
         color[0].set (p.erColor); color[1].set (p.erColor);
-        diffG = 0.72f * std::clamp (p.erDiffusion, 0.0f, 1.0f);
-        diffScale = (float) std::clamp (std::sqrt (sizeScale (p.size)), 0.7, 1.4);
+        airMix = erDiffRamp (std::clamp (p.erDiffusion, 0.0f, 1.0f));
 
         Key k;
         k.v = { p.roomW, p.roomD, p.roomH, p.size, p.srcX, p.lisX, p.lisY, p.depth, p.erDensity,
-                p.erStartMs, p.erStopMs, p.erPreDelayMs, p.lockTone ? 1.0f : 0.0f };
-        for (int s = 0; s < numSurfaces; ++s) k.v[(size_t) (13 + s)] = (float) p.materials[(size_t) s];
+                p.erStartMs, p.erStopMs, p.erPreDelayMs, p.lockTone ? 1.0f : 0.0f, p.erDiffusion };
+        for (int s = 0; s < numSurfaces; ++s) k.v[(size_t) (14 + s)] = (float) p.materials[(size_t) s];
 
         if (haveSet && (fading || k == key))
             return;
@@ -367,33 +393,30 @@ public:
     void process (const float* inL, const float* inR, float* outL, float* outR, int n)
     {
         const float fadeStep = (float) (1.0 / (0.04 * fs));
-        static constexpr float apMs[3] = { 1.7f, 3.1f, 5.3f };
 
         for (int i = 0; i < n; ++i)
         {
             input[0].push (inL[i]);
             input[1].push (inR[i]);
 
-            float fL = 0, fR = 0, lL = 0, lR = 0;
-            accumulate (sets[active], fading ? 1.0f - fadePos : 1.0f, fL, fR, lL, lR);
+            float fL = 0, fR = 0, lL = 0, lR = 0, hL = 0, hR = 0;
+            accumulate (sets[active], fading ? 1.0f - fadePos : 1.0f, fL, fR, lL, lR, hL, hR);
             if (fading)
             {
-                accumulate (sets[1 - active], fadePos, fL, fR, lL, lR);
+                accumulate (sets[1 - active], fadePos, fL, fR, lL, lR, hL, hR);
                 fadePos += fadeStep;
                 if (fadePos >= 1.0f) { fading = false; active = 1 - active; fadePos = 0.0f; }
             }
 
-            float yl = fL + lowBus[0].process (lL);
-            float yr = fR + lowBus[1].process (lR);
-
-            if (diffG > 0.001f)
-                for (int s = 0; s < 3; ++s)
-                {
-                    const float dl = (float) (apMs[s] * 0.001 * fs) * diffScale;
-                    yl = diff[0][s].process (yl, dl, diffG);
-                    yr = diff[1][s].process (yr, dl * 1.13f, diffG);
-                }
-
+            // no recursive diffusion here: short all-passes on the early pattern ring at the harmonics
+            // of their delay (heard as a metallic tone right on the direct sound). Diffusion is done
+            // by the scattering clusters built in build().
+            // scatter bus: Butterworth high-pass, power complementary to the low bus split
+            float yl = fL + lowBus[0].process (lL) + scatterBus[0].process (hL);
+            float yr = fR + lowBus[1].process (lR) + scatterBus[1].process (hR);
+            // diffuse-reflection tone: top end of the diffused early pattern as in 1.0 (2nd-order, 11 kHz)
+            yl += airMix * (airLP[0].process (yl) - yl);
+            yr += airMix * (airLP[1].process (yr) - yr);
             outL[i] = color[0].process (yl);
             outR[i] = color[1].process (yr);
         }
@@ -403,12 +426,22 @@ public:
     struct Point { float x, y; int surface; };
 
 private:
-    struct Tap { float delay = 1, fL = 0, fR = 0, lL = 0, lR = 0; int src = 0; };
-    struct TapSet { std::array<Tap, kMaxTaps * 3> taps {}; int count = 0; float energy = 0, energyLow = 0, energyHigh = 0, spread = 0; };
+    static constexpr int kSide = 6;       // scattered arrivals per reflection and channel (half before, half after)
+    struct MainTap { int delay = 1, src = 0; float full = 0, low = 0; };
+    struct SideTap { int delay = 1, src = 0; float w = 0; };
+    // Tap delays are whole samples: a pattern never moves while it plays (changes are cross-faded
+    // between two patterns), so fractional delays would only add an interpolation low-pass.
+    struct TapSet
+    {
+        std::array<MainTap, kMaxTaps> main[2] {};           // specular arrival per channel
+        std::array<SideTap, kMaxTaps * kSide> side[2] {};   // scattered arrivals per channel (high band)
+        int count = 0, sideCount = 0;
+        float energy = 0, energyLow = 0, energyHigh = 0, spread = 0;
+    };
     struct Cand { float delayMs = 0, gLow = 0, gHigh = 0, pan = 0; };
     struct Key
     {
-        std::array<float, 19> v {};
+        std::array<float, 20> v {};
         bool operator== (const Key& o) const
         {
             for (size_t i = 0; i < v.size(); ++i)
@@ -417,16 +450,27 @@ private:
         }
     };
 
-    inline void accumulate (const TapSet& s, float w, float& fL, float& fR, float& lL, float& lR) const noexcept
+    // main (specular) arrivals feed the full-band and low buses, scattered arrivals the scatter bus
+    inline void accumulate (const TapSet& s, float w, float& fL, float& fR, float& lL, float& lR, float& hL, float& hR) const noexcept
     {
         if (w <= 0.0f) return;
-        for (int t = 0; t < s.count; ++t)
+        float f[2] = { 0, 0 }, l[2] = { 0, 0 }, h[2] = { 0, 0 };
+        for (int c = 0; c < 2; ++c)
         {
-            const Tap& tp = s.taps[(size_t) t];
-            const float x = input[tp.src].readLinear (tp.delay) * w;
-            fL += x * tp.fL; fR += x * tp.fR;
-            lL += x * tp.lL; lR += x * tp.lR;
+            for (int t = 0; t < s.count; ++t)
+            {
+                const MainTap& tp = s.main[c][(size_t) t];
+                const float x = input[tp.src].read (tp.delay);
+                f[c] += x * tp.full;
+                l[c] += x * tp.low;
+            }
+            for (int t = 0; t < s.sideCount; ++t)
+            {
+                const SideTap& tp = s.side[c][(size_t) t];
+                h[c] += input[tp.src].read (tp.delay) * tp.w;
+            }
         }
+        fL += w * f[0]; fR += w * f[1]; lL += w * l[0]; lR += w * l[1]; hL += w * h[0]; hR += w * h[1];
     }
 
     void build (const Params& p, float depth, TapSet& out) const
@@ -483,7 +527,7 @@ private:
         const float window = std::max (stop - start, 1.0f);
         const float scatter = std::clamp (p.erDiffusion, 0.0f, 1.0f);
         double eLow = 0, eHigh = 0, sideNum = 0, midNum = 0;
-        int t = 0;
+        int t = 0, sc = 0;
         for (int i = 0; i < count; ++i)
         {
             const Cand& cd = c[i];
@@ -493,25 +537,52 @@ private:
             const float pl = std::sqrt (0.5f * (1.0f - cd.pan)), pr = std::sqrt (0.5f * (1.0f + cd.pan));
             const int src = cd.pan < 0.0f ? 0 : 1;
 
-            // surface scattering: each specular reflection becomes a short cluster (energy preserving),
-            // which fills the comb notches between the direct sound and the reflections
-            const float wMain = std::sqrt (1.0f - 0.66f * scatter);
-            const float wSide = std::sqrt (0.33f * scatter);
-            const float h1 = 0.5f + std::fmod ((float) i * 0.618034f, 1.0f), h2 = 0.5f + std::fmod ((float) i * 0.381966f + 0.3f, 1.0f);
-            const float spreadMs = 0.4f + 2.2f * scatter;
-            const float offs[3] = { 0.0f, spreadMs * h1 * 0.55f, spreadMs * h2 };
-            const float ws[3]   = { wMain, wSide, -wSide };
-            const int parts = scatter > 0.01f ? 3 : 1;
-
-            for (int k = 0; k < parts; ++k)
+            // ER DIFFUSION: every reflection becomes a short cluster with the time / energy profile of
+            // a diffusing surface: a main arrival delayed by D0 plus scattered arrivals before and after
+            // it. Positions and signs are drawn per reflection and per channel, so the clusters share no
+            // period and the pattern cannot ring (a recursive all-pass diffuser applies the same filter
+            // to every reflection: a fixed comb at the harmonics of its delays). Different clusters in
+            // the two channels decorrelate them, which is where most of the early width comes from.
+            // The profile (D0 = 10.1 ms left / 11.4 ms right at the default size, share of energy
+            // before / at / after D0) follows the diffuser of version 1.0.
+            const float eb = scatter > 0.001f ? erShareBefore (scatter) : 0.0f;
+            const float ea = scatter > 0.001f ? erShareAfter (scatter) : 0.0f;
+            const float wMain = std::sqrt (std::max (0.0f, 1.0f - eb - ea));
+            const float pan[2] = { pl, pr };
+            for (int ch = 0; ch < 2; ++ch)
             {
-                Tap& tp = out.taps[(size_t) t++];
-                tp.delay = std::max (1.0f, (float) ((cd.delayMs + offs[k] + p.erPreDelayMs) * 0.001 * fs));
-                const float w = ws[k];
-                tp.fL = w * gh * pl;        tp.fR = w * gh * pr;           // full band at the high-band gain
-                tp.lL = w * (gl - gh) * pl; tp.lR = w * (gl - gh) * pr;    // plus the difference below ~1.5 kHz
-                tp.src = src;
+                const float d0 = erDiffDelayMs (p) * (ch == 0 ? 1.0f : 1.13f);
+                const float base = cd.delayMs + p.erPreDelayMs;
+                auto toSamples = [this] (float ms) { return std::max (1, (int) std::lround (ms * 0.001 * fs)); };
+
+                // Scattering is a mid / high frequency effect: below ~1.5 kHz the wavelength is large
+                // against the surface detail and the reflection stays specular. So the main arrival
+                // carries all of the low band, the scattered arrivals only the band above the split.
+                MainTap& mt = out.main[ch][(size_t) t];
+                mt.delay = toSamples (base + d0);
+                mt.src = src;
+                mt.full = wMain * gh * pan[ch];
+                mt.low = (gl - wMain * gh) * pan[ch];
+
+                if (scatter > 0.001f)
+                {
+                    std::uint32_t hs = (0x9E3779B9u * (std::uint32_t) (i + 1)) ^ (std::uint32_t) (cd.delayMs * 977.0f) ^ (ch ? 0x5bd1e995u : 0u);
+                    auto rnd = [&hs]() { hs ^= hs << 13; hs ^= hs >> 17; hs ^= hs << 5; return (float) (hs & 0xffffu) / 65535.0f; };
+                    for (int k = 0; k < kSide; ++k)
+                    {
+                        const bool before = k < kSide / 2;
+                        const int slot = before ? k : k - kSide / 2;                     // stratified
+                        const float u = ((float) slot + 0.15f + 0.7f * rnd()) / (float) (kSide / 2);
+                        const float off = before ? d0 * (0.12f + 0.80f * u) : d0 * (1.08f + 0.67f * u);
+                        SideTap& st = out.side[ch][(size_t) (sc + k)];
+                        st.delay = toSamples (base + off);
+                        st.src = src;
+                        st.w = std::sqrt ((before ? eb : ea) / (float) (kSide / 2)) * (rnd() < 0.5f ? -1.0f : 1.0f) * gh * pan[ch];
+                    }
+                }
             }
+            ++t;
+            if (scatter > 0.001f) sc += kSide;
 
             eLow += (double) gl * gl;
             eHigh += (double) gh * gh;
@@ -521,22 +592,42 @@ private:
             midNum  += w * (1.0 + cosTerm);     //              (pl + pr)^2
         }
         out.count = t;
+        out.sideCount = sc;
         out.energyLow = (float) eLow;
         out.energyHigh = (float) eHigh;
         out.energy = (float) (0.5 * (eLow + eHigh));
         out.spread = midNum > 1e-12 ? (float) (sideNum / midNum) : 0.0f;
     }
 
+    // diffusion delay: 0 at ER DIFFUSION 0, full from 0.1 on (scaled with SIZE)
+    static float erDiffRamp (float scatter) { return std::clamp (scatter / 0.1f, 0.0f, 1.0f); }
+    static float erDiffDelayMs (const Params& p)
+    {
+        const float sc = (float) std::clamp (std::sqrt (sizeScale (p.size)), 0.7, 1.4);
+        return 10.1f * sc * erDiffRamp (std::clamp (p.erDiffusion, 0.0f, 1.0f));
+    }
+    static float interp (const float* x, const float* y, int n, float v)
+    {
+        if (v <= x[0]) return y[0];
+        for (int k = 1; k < n; ++k)
+            if (v <= x[k]) return y[k - 1] + (y[k] - y[k - 1]) * (v - x[k - 1]) / (x[k] - x[k - 1]);
+        return y[n - 1];
+    }
+    static float erShareBefore (float d) { static const float x[6] = { 0, .1f, .2f, .4f, .7f, 1 }, y[6] = { 0, .02f, .07f, .25f, .56f, .75f }; return interp (x, y, 6, d); }
+    static float erShareAfter (float d)  { static const float x[6] = { 0, .1f, .2f, .4f, .7f, 1 }, y[6] = { 0, .01f, .05f, .17f, .29f, .24f }; return interp (x, y, 6, d); }
+
     double fs = 48000.0;
     DelayLine input[2];
-    Allpass diff[2][3];
     Tilt color[2];
+    Biquad airLP[2], scatterBus[2];
+    float airMix = 0.0f;
     Biquad lowBus[2];
     TapSet sets[2], refSet;
     mutable std::array<Cand, 1200> candBuf {};
     int active = 0;
     bool haveSet = false, fading = false;
-    float fadePos = 0.0f, diffG = 0.3f, diffScale = 1.0f;
+    float fadePos = 0.0f;
+
     Key key {};
 };
 
@@ -546,6 +637,14 @@ class LateReverb
 public:
     static constexpr int N = 16;
     static constexpr int K = 8;           // build-up taps per channel
+    // In-loop all-passes (Density): two sections per line, delay as a fraction of the line length,
+    // modulated in opposite directions so the frequencies where they stretch the loop keep moving
+    // (a static high-gain all-pass makes the harmonics of its delay decay slower than their
+    // neighbours: a fixed comb in the tail).
+    static constexpr float kApR1 = 0.19f, kApR2 = 0.31f, kApGMax = 0.50f;
+    // Minimum total loop delay (s). Below this the modes are too sparse and the tail rings
+    // (small rooms, Studio Room); independent of Decay so turning Decay never moves the pitch.
+    static constexpr double kMinLoopSec = 0.55;
 
     void prepare (double sampleRate)
     {
@@ -554,7 +653,8 @@ public:
         for (int i = 0; i < N; ++i)
         {
             lines[i].allocate ((int) std::ceil (maxLineMs * 0.001 * fs));
-            loopAP[i].allocate ((int) std::ceil (0.2 * maxLineMs * 0.001 * fs));
+            loopAP[i].allocate ((int) std::ceil (kApR1 * 1.5 * maxLineMs * 0.001 * fs));
+            loopAP2[i].allocate ((int) std::ceil (kApR2 * 1.5 * maxLineMs * 0.001 * fs));
         }
         for (int c = 0; c < 2; ++c)
         {
@@ -568,8 +668,8 @@ public:
 
     void reset()
     {
-        for (int i = 0; i < N; ++i) { lines[i].clear(); loopAP[i].clear(); shLow[i].clear(); shMid[i].clear(); shHigh[i].clear(); modZ[i] = 0; }
-        for (int c = 0; c < 2; ++c) { build[c].clear(); for (auto& a : inDiff[c]) a.clear(); color[c].clear(); }
+        for (int i = 0; i < N; ++i) { lines[i].clear(); loopAP[i].clear(); loopAP2[i].clear(); shLow[i].clear(); shMid[i].clear(); shHigh[i].clear(); modZ[i] = 0; }
+        for (int c = 0; c < 2; ++c) { inTone[c].clear(); build[c].clear(); for (auto& a : inDiff[c]) a.clear(); color[c].clear(); }
         for (int i = 0; i < N; ++i) { modPhase[i] = (double) i / N; modTarget[i] = 0; }
     }
 
@@ -589,7 +689,9 @@ public:
         static constexpr int order[N] = { 0, 9, 4, 13, 2, 11, 6, 15, 1, 8, 5, 12, 3, 10, 7, 14 };
         std::array<float, N> tmp {};
         for (int i = 0; i < N; ++i) tmp[(size_t) i] = baseMs[order[i]];
-        for (int i = 0; i < N; ++i) baseMs[i] = tmp[(size_t) i];
+        double sumMs = 0.0;
+        for (int i = 0; i < N; ++i) { baseMs[i] = tmp[(size_t) i]; sumMs += baseMs[i] * (1.0 + kApR1 + kApR2); }
+        minScale = kMinLoopSec * 1000.0 / sumMs;
 
         // per-line modulation speed / depth spread
         for (int i = 0; i < N; ++i)
@@ -605,13 +707,19 @@ public:
     // roomScale: late size relative to the reference room; rt60: effective decay
     void update (const Params& p, double roomScale, double rt60, bool force)
     {
-        const double scale = roomScale * (1.25 - 0.45 * std::clamp ((double) p.density, 0.0, 1.0));
+        const double rawScale = roomScale * (1.25 - 0.45 * std::clamp ((double) p.density, 0.0, 1.0));
+        const double scale = std::clamp (rawScale, minScale, kMaxRoomScale * 1.25);
+        // reverberant energy goes as 1 / loop length: keep the level the short lines would have had
+        lineComp = (float) std::sqrt (scale / rawScale);
         targetScale = (float) scale;
         if (force) curScale = targetScale;
 
-        apG = 0.62f * std::clamp (p.density, 0.0f, 1.0f);
+        apG = kApGMax * std::clamp (p.density, 0.0f, 1.0f);
         inDiffG = 0.75f * std::clamp (p.diffusion, 0.0f, 1.0f);
         inDiffScale = (float) std::sqrt (roomScale);
+        for (int c = 0; c < 2; ++c)
+            for (int a = 0; a < 4; ++a)
+                inDiffLen[c][a] = (int) std::lround (kInDiffMs[a] * (c ? 1.07 : 1.0) * 0.001 * fs * inDiffScale);
 
         // RT60 per band -> loop gains (using the target lengths).
         // Realised as base gain (low-mid band) x low shelf x two high shelves, so each band's
@@ -624,10 +732,22 @@ public:
         const double f3 = std::clamp ((double) p.xHigh, f2 * 1.5, 18000.0);
         for (int i = 0; i < N; ++i)
         {
-            const double loopSec = baseMs[i] * 1.2 * scale * 0.001;   // line + in-loop all-pass
+            const double loopSec = baseMs[i] * (1.0 + kApR1 + kApR2) * scale * 0.001;   // line + in-loop all-passes
+            // decay rate per band (dB/s) + air absorption in the two upper bands (~f^2, per algorithm).
+            // Deterministic and sample-rate independent; sets the same high-frequency decay as 1.0.
+            static constexpr double airDb10k[numAlgorithms] = { 49.0, 20.0, 10.5 };   // dB/s at 10 kHz
+            static constexpr double airW[4] = { 0.0, 0.0, 0.08, 1.0 };
+            double rate[4];                                                    // dB per second
+            for (int b = 0; b < 4; ++b)
+                rate[b] = 60.0 / (rt * mult[b]) + airDb10k[algo] * airW[b];
+            // all-pass sections lose energy at the low-mid rate inside their own delay; the line
+            // filter takes the rest, so that every band decays at its rate over the whole loop
+            const double apSec1 = baseMs[i] * kApR1 * scale * 0.001, apSec2 = baseMs[i] * kApR2 * scale * 0.001;
+            apA1[i] = (float) std::pow (10.0, -rate[1] * apSec1 / 20.0);
+            apA2[i] = (float) std::pow (10.0, -rate[1] * apSec2 / 20.0);
             double g[4];
             for (int b = 0; b < 4; ++b)
-                g[b] = std::pow (10.0, -3.0 * loopSec / (rt * mult[b]));
+                g[b] = std::pow (10.0, -(rate[b] * loopSec - rate[1] * (apSec1 + apSec2)) / 20.0);
             baseGain[i] = (float) g[1];
             shLow[i].set (f1, g[0] / g[1], fs, false);
             shMid[i].set (f2, g[2] / g[1], fs, true);
@@ -661,7 +781,8 @@ public:
             default:         rnd *= 0.35f; break;
         }
         modRateHz = rate;
-        modDepthSamples = (float) (depthMs * 0.001 * fs * std::sqrt (roomScale));
+        modDepthSamples = (float) (depthMs * 0.001 * fs * std::max (1.0, std::sqrt (roomScale)));
+        apMod = 0.08f + 0.3f * std::clamp (p.modDepth, 0.0f, 1.0f);
         modRnd = rnd;
         modSmoothCoef = (float) (1.0 - std::exp (-2.0 * kPi * (double) rate * (4.0 - 3.5 * smooth) / fs));
 
@@ -670,7 +791,12 @@ public:
         decor = std::clamp (p.decorrelation, 0.0f, 1.0f);
 
         // gentle level compensation so long decays are louder, but not explosive
-        levelComp = (float) (0.60 * std::pow (std::max (rt, 0.1) / 1.5, -0.32));
+        static constexpr float algoTrim[numAlgorithms] = { 1.05f, 1.096f, 1.11f };
+        levelComp = (float) (0.60 * std::pow (std::max (rt, 0.1) / 1.5, -0.32)) * lineComp * algoTrim[algo];
+
+        // input tone: gentle high shelf that keeps the tail's top end where 1.0 had it
+        static constexpr double toneGain[numAlgorithms] = { 0.40, 0.55, 0.52 };
+        for (auto& t : inTone) t.set (6500.0, toneGain[algo], fs, true);
     }
 
     // inL/inR: pre-delayed input.  outL/outR: late reverb (overwrites)
@@ -687,13 +813,12 @@ public:
             curScale += sScale * (targetScale - curScale);
 
             // input diffusion (Diffusion)
-            float x[2] = { inL[s], inR[s] };
+            float x[2] = { inTone[0].process (inL[s]), inTone[1].process (inR[s]) };
             if (inDiffG > 0.001f)
             {
-                static constexpr float apMs[4] = { 4.7f, 3.6f, 12.7f, 9.3f };
                 for (int c = 0; c < 2; ++c)
                     for (int a = 0; a < 4; ++a)
-                        x[c] = inDiff[c][a].process (x[c], (float) (apMs[a] * (c ? 1.07 : 1.0) * 0.001 * fs) * inDiffScale, inDiffG);
+                        x[c] = inDiff[c][a].process (x[c], inDiffLen[c][a], inDiffG);
             }
             build[0].push (x[0]);
             build[1].push (x[1]);
@@ -718,12 +843,14 @@ public:
                 if (modPhase[i] >= 1.0) modPhase[i] -= 1.0;
                 if (modRnd > 0.0f && rng.uni() < (float) (phaseInc * modRateMul[i] * 2.0)) modTarget[i] = rng.bi();
                 modZ[i] += modSmoothCoef * (modTarget[i] - modZ[i]);
-                const float lfo = (1.0f - modRnd) * (float) std::sin (2.0 * kPi * modPhase[i]) + modRnd * modZ[i];
+                const float lfo = (1.0f - modRnd) * fastSin2Pi (modPhase[i]) + modRnd * modZ[i];
 
                 const float len = baseMs[i] * 0.001f * (float) fs * curScale;
                 const float d = std::max (4.0f, len + modDepthSamples * modDepthMul[i] * (1.0f + lfo));
                 float v = lines[i].readHermite (d);
-                v = loopAP[i].process (v, len * 0.2f, apG);
+                const float am = apMod * lfo * modDepthMul[i];
+                v = loopAP[i].process (v, len * kApR1 * (1.0f + am), apG, apA1[i]);
+                v = loopAP2[i].process (v, len * kApR2 * (1.0f - am), apG, apA2[i]);
                 y[i] = v;
 
                 z[i] = shHigh[i].process (shMid[i].process (shLow[i].process (v * baseGain[i])));
@@ -760,19 +887,24 @@ private:
     double fs = 48000.0;
     int algo = Chamber;
     DelayLine lines[N];
-    Allpass loopAP[N];
+    Allpass loopAP[N], loopAP2[N];
     Shelf shLow[N], shMid[N], shHigh[N];
-    float baseGain[N] {};
+    float baseGain[N] {}, apA1[N] {}, apA2[N] {};
     float baseMs[N] {};
     DelayLine build[2];
     Allpass inDiff[2][4];
+    static constexpr float kInDiffMs[4] = { 4.7f, 3.6f, 12.7f, 9.3f };
+    int inDiffLen[2][4] {};
     Tilt color[2];
     float tapTime[K] {}, tapW[K] {};
     float targetScale = 1.0f, curScale = 1.0f, apG = 0.4f, inDiffG = 0.5f, inDiffScale = 1.0f;
     double modPhase[N] {};
     float modRateMul[N] {}, modDepthMul[N] {}, modZ[N] {}, modTarget[N] {};
     double modRateHz = 0.6;
-    float modDepthSamples = 0.0f, modRnd = 0.3f, modSmoothCoef = 0.001f;
+    float modDepthSamples = 0.0f, modRnd = 0.3f, modSmoothCoef = 0.001f, apMod = 0.2f;
+    double minScale = 0.35;
+    float lineComp = 1.0f;
+    Shelf inTone[2];
     float decor = 0.85f, levelComp = 0.42f;
     Rng rng { 777u };
 };

@@ -66,8 +66,12 @@ function(mas_add_plugin target product code bundle version srcdir description)
 endfunction()
 
 # MASTER SPACE: spatial engine (Spatial DNA + Depth + locks), separate product.
-mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.0.0
+mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.1.0
                Source/MasterSpace "Spatial reverb: room, depth, early and late")
+
+# MASTER SPACE 1.0 kept unchanged under its own name and code, for A/B against the current version.
+mas_add_plugin(MasterSpaceRef "MASTER SPACE 1.0" MSp0 com.masterastakhovsound.masterspace10 1.0.0
+               Source/MasterSpaceRef "MASTER SPACE 1.0 (reference for A/B)")
 
 # MASTER VERB 1.x and its twins ALENTEY VERB, ALEX HOOK VERB (same engine and UI, different name).
 mas_add_plugin(MasterVerb  "MASTER VERB"  MVrb com.masterastakhovsound.masterverb 1.2.0

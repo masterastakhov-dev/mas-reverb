@@ -1,4 +1,4 @@
-__NAME__ 1.0 — masterastakhovsound
+__NAME__ 1.1 — masterastakhovsound
 "Don't add reverb. Create space."
 
 Установка
@@ -12,6 +12,12 @@ __NAME__ 1.0 — masterastakhovsound
   cp -R "__NAME__.component" ~/Library/Audio/Plug-Ins/Components/
   cp -R "__NAME__.vst3" ~/Library/Audio/Plug-Ins/VST3/
   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"__NAME__.component" ~/Library/Audio/Plug-Ins/VST3/"__NAME__.vst3"
+
+Что нового в 1.1
+  Убрана металлическая окраска ранних отражений и хвоста. Объём, плотность,
+  глубина, время затухания и громкость оставлены как в 1.0. Для сравнения
+  рядом можно поставить «MASTER SPACE 1.0» (отдельный архив) — у них разные
+  имена, обе версии видны в DAW одновременно.
 
 Как это работает
   Внутри — виртуальная комната (Spatial DNA): размеры, материалы стен,

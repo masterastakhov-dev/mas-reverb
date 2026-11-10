@@ -17,6 +17,7 @@ jobs:
           g++ -O2 -std=c++17 -o tests/render_space tests/render_space.cpp
           python3 tests/analyze_space.py | tee space.log
           ! grep -q "nan True" space.log
+          python3 tests/metal.py --check
 
   build:
     name: build (${{ matrix.name }})
@@ -30,10 +31,10 @@ jobs:
             name: MASTER SPACE
             code: MSpc
             slug: MASTER-SPACE
-          - target: AlexHookVerb
-            name: ALEX HOOK VERB
-            code: AHvb
-            slug: ALEX-HOOK-VERB
+          - target: MasterSpaceRef
+            name: MASTER SPACE 1.0
+            code: MSp0
+            slug: MASTER-SPACE-1.0-AB
     env:
       TARGET: ${{ matrix.target }}
       NAME: ${{ matrix.name }}
