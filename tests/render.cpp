@@ -1,7 +1,7 @@
 // Offline test harness for the MASTER VERB engine.
 // usage: render <in.f32> <out.f32> <sampleRate> <preMs> <size> <decay> <damp> <lowcut> <mod> <mix> [block]
 // Files are raw float32, interleaved stereo.
-#include "../Source/MasterVerbEngine.h"
+#include "../Source/MasterVerb/MasterVerbEngine.h"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>

@@ -140,36 +140,6 @@ struct HighPass
     void clear() { x1 = x2 = y1 = y2 = 0; }
 };
 
-// RBJ biquad low-pass (Butterworth Q)
-struct LowPass
-{
-    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-    float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-
-    void set (double hz, double fs)
-    {
-        hz = std::min (hz, 0.45 * fs);
-        const double w0 = 2.0 * kPi * hz / fs;
-        const double c = std::cos (w0), s = std::sin (w0);
-        const double alpha = s / (2.0 * 0.70710678);
-        const double a0 = 1.0 + alpha;
-        b0 = (float) (((1.0 - c) * 0.5) / a0);
-        b1 = (float) ((1.0 - c) / a0);
-        b2 = b0;
-        a1 = (float) ((-2.0 * c) / a0);
-        a2 = (float) ((1.0 - alpha) / a0);
-    }
-
-    inline float process (float x) noexcept
-    {
-        const float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        x2 = x1; x1 = x; y2 = y1; y1 = y;
-        return y;
-    }
-
-    void clear() { x1 = x2 = y1 = y2 = 0; }
-};
-
 //==============================================================================
 struct ReverbParams
 {

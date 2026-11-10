@@ -26,8 +26,6 @@ MASLookAndFeel::MASLookAndFeel()
     setColour (juce::TextEditor::backgroundColourId, MASColours::panel);
     setColour (juce::TextEditor::highlightColourId, MASColours::accent.withAlpha (0.35f));
     setColour (juce::CaretComponent::caretColourId, MASColours::accent);
-    setColour (juce::TextButton::textColourOffId, MASColours::text);
-    setColour (juce::TextButton::textColourOnId, juce::Colours::white);
 }
 
 void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
@@ -39,25 +37,24 @@ void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, i
     const float arcR = radius - 3.0f;
     const float angle = startAngle + pos * (endAngle - startAngle);
     const bool hover = slider.isMouseOverOrDragging();
-    const float dim = slider.isEnabled() ? 1.0f : 0.28f;
 
     // outer track
     juce::Path track;
     track.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, endAngle, true);
-    g.setColour (MASColours::track.withMultipliedAlpha (dim));
+    g.setColour (MASColours::track);
     g.strokePath (track, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
     // value arc
     juce::Path value;
     value.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, angle, true);
-    g.setColour (MASColours::accent.withAlpha ((hover ? 1.0f : 0.9f) * dim));
+    g.setColour (MASColours::accent.withAlpha (hover ? 1.0f : 0.9f));
     g.strokePath (value, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
     // knob body
     const float bodyR = arcR - 9.0f;
     const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3d46).withMultipliedAlpha (dim), c.x, c.y - bodyR,
-                                             juce::Colour (0xff1d1f25).withMultipliedAlpha (dim), c.x, c.y + bodyR, false));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3d46), c.x, c.y - bodyR,
+                                             juce::Colour (0xff1d1f25), c.x, c.y + bodyR, false));
     g.fillEllipse (body);
     g.setColour (juce::Colours::black.withAlpha (0.6f));
     g.drawEllipse (body, 1.2f);
@@ -68,27 +65,8 @@ void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, i
     const float p1 = bodyR * 0.35f, p2 = bodyR * 0.88f;
     const juce::Point<float> a (c.x + p1 * std::sin (angle), c.y - p1 * std::cos (angle));
     const juce::Point<float> b (c.x + p2 * std::sin (angle), c.y - p2 * std::cos (angle));
-    g.setColour (MASColours::text.withMultipliedAlpha (dim));
+    g.setColour (MASColours::text);
     g.drawLine ({ a, b }, 2.5f);
-}
-
-void MASLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&,
-                                           bool highlighted, bool down)
-{
-    const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    const bool on = b.getToggleState();
-    auto fill = on ? MASColours::accent : MASColours::track;
-    if (highlighted && ! on) fill = fill.brighter (0.15f);
-    if (down) fill = fill.darker (0.2f);
-    g.setColour (fill);
-    g.fillRoundedRectangle (r, 5.0f);
-    g.setColour (juce::Colours::white.withAlpha (on ? 0.0f : 0.07f));
-    g.drawRoundedRectangle (r, 5.0f, 1.0f);
-}
-
-juce::Font MASLookAndFeel::getTextButtonFont (juce::TextButton&, int)
-{
-    return uiFont (12.0f, true).withExtraKerningFactor (0.1f);
 }
 
 juce::Label* MASLookAndFeel::createSliderTextBox (juce::Slider& slider)
@@ -117,111 +95,15 @@ MASPanel::MASPanel (MasterVerbAudioProcessor& p, MASLookAndFeel& lf)
     addKnob (lowCut,   ParamIDs::lowCut,   "LOW CUT");
     addKnob (mod,      ParamIDs::mod,      "MOD");
     addKnob (mix,      ParamIDs::mix,      "MIX");
-    addKnob (irLength, ParamIDs::irLength, "LENGTH");
-    addKnob (irCut,    ParamIDs::irCut,    "HIGH CUT");
-
-    for (auto* b : { &hallButton, &irButton })
-    {
-        b->setClickingTogglesState (false);
-        addAndMakeVisible (*b);
-    }
-    hallButton.onClick = [this] { setMode (false); };
-    irButton.onClick   = [this] { setMode (true); };
-    hallButton.setTooltip ("Algorithmic hall");
-    irButton.setTooltip ("Convolution with your own impulse response");
-
-    loadButton.onClick = [this] { chooseIRFile(); };
-    addAndMakeVisible (loadButton);
-
-    irName.setJustificationType (juce::Justification::centredRight);
-    irName.setFont (uiFont (12.5f));
-    irName.setColour (juce::Label::textColourId, MASColours::textDim);
-    irName.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (irName);
 
     setSize (baseWidth, baseHeight);
-    updateModeUI();
-    startTimerHz (15);
 }
 
 MASPanel::~MASPanel()
 {
-    stopTimer();
-    for (auto* k : { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix, &irLength, &irCut })
+    for (auto* k : { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix })
         k->slider.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
-}
-
-void MASPanel::setMode (bool irMode)
-{
-    if (auto* param = processor.apvts.getParameter (ParamIDs::mode))
-    {
-        param->beginChangeGesture();
-        param->setValueNotifyingHost (irMode ? 1.0f : 0.0f);
-        param->endChangeGesture();
-    }
-    updateModeUI();
-}
-
-void MASPanel::updateModeUI()
-{
-    const bool ir = processor.apvts.getRawParameterValue (ParamIDs::mode)->load() > 0.5f;
-    shownIRMode = ir;
-
-    hallButton.setToggleState (! ir, juce::dontSendNotification);
-    irButton.setToggleState (ir, juce::dontSendNotification);
-
-    // the IR controls share columns with the algorithmic ones
-    decay.slider.setVisible (! ir);   decay.label.setVisible (! ir);
-    hfDamp.slider.setVisible (! ir);  hfDamp.label.setVisible (! ir);
-    irLength.slider.setVisible (ir);  irLength.label.setVisible (ir);
-    irCut.slider.setVisible (ir);     irCut.label.setVisible (ir);
-
-    for (auto* k : { &size, &mod })
-    {
-        k->slider.setEnabled (! ir);
-        k->label.setAlpha (ir ? 0.35f : 1.0f);
-    }
-
-    loadButton.setVisible (ir);
-
-    shownIRName = processor.getIRDisplayName();
-    if (! ir)
-        irName.setText ("ALGORITHMIC HALL  /  v" JucePlugin_VersionString, juce::dontSendNotification);
-    else if (shownIRName.isEmpty())
-        irName.setText ("Drop a WAV / AIFF / FLAC here", juce::dontSendNotification);
-    else
-        irName.setText ("IR: " + shownIRName, juce::dontSendNotification);
-
-    irName.setColour (juce::Label::textColourId, ir && shownIRName.isNotEmpty() ? MASColours::text : MASColours::textDim);
-    resized();
-}
-
-void MASPanel::timerCallback()
-{
-    const bool ir = processor.apvts.getRawParameterValue (ParamIDs::mode)->load() > 0.5f;
-    if (ir != shownIRMode || processor.getIRDisplayName() != shownIRName)
-        updateModeUI();
-}
-
-void MASPanel::chooseIRFile()
-{
-    chooser = std::make_unique<juce::FileChooser> ("Choose an impulse response", processor.getLastIRFolder(),
-                                                   "*.wav;*.aif;*.aiff;*.flac");
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                          [this] (const juce::FileChooser& fc)
-                          {
-                              const auto f = fc.getResult();
-                              if (f.existsAsFile())
-                                  loadIRFile (f);
-                          });
-}
-
-void MASPanel::loadIRFile (const juce::File& f)
-{
-    if (processor.loadImpulseResponse (f))
-        setMode (true);
-    updateModeUI();
 }
 
 void MASPanel::addKnob (Knob& k, const char* paramID, const juce::String& title)
@@ -276,6 +158,11 @@ void MASPanel::paint (juce::Graphics& g)
         g.drawImage (wordmark, juce::Rectangle<float> ((float) tx + 2.0f, 62.0f, wmW, wmH), juce::RectanglePlacement::centred);
     }
 
+    g.setColour (MASColours::textDim);
+    g.setFont (uiFont (12.0f).withExtraKerningFactor (0.06f));
+    g.drawText ("ALGORITHMIC HALL  /  v" JucePlugin_VersionString, getWidth() - 332, 34, 300, 18,
+                juce::Justification::centredRight);
+
     // divider
     g.setColour (MASColours::accent.withAlpha (0.45f));
     g.fillRect (32.0f, (float) kHeader - 6.0f, area.getWidth() - 64.0f, 1.0f);
@@ -292,30 +179,15 @@ void MASPanel::paint (juce::Graphics& g)
 void MASPanel::resized()
 {
     auto area = getLocalBounds().withTrimmedTop (kHeader + 14).withTrimmedBottom (26).reduced (28, 0);
-    Knob* columns[7][2] = { { &preDelay, nullptr }, { &size, nullptr }, { &decay, &irLength },
-                            { &hfDamp, &irCut }, { &lowCut, nullptr }, { &mod, nullptr }, { &mix, nullptr } };
+    Knob* knobs[] = { &preDelay, &size, &decay, &hfDamp, &lowCut, &mod, &mix };
     const int colW = area.getWidth() / 7;
 
-    for (auto& column : columns)
+    for (auto* k : knobs)
     {
         auto col = area.removeFromLeft (colW);
-        const auto labelArea = col.removeFromTop (22);
-        const auto knobArea = col.reduced (6, 2);
-        for (auto* k : column)
-            if (k != nullptr)
-            {
-                k->label.setBounds (labelArea);
-                k->slider.setBounds (knobArea);
-            }
+        k->label.setBounds (col.removeFromTop (22));
+        k->slider.setBounds (col.reduced (6, 2));
     }
-
-    // header, right side: mode switch, IR loader / info line
-    const int right = baseWidth - 32;
-    irButton.setBounds (right - 64, 20, 64, 26);
-    hallButton.setBounds (right - 64 - 70, 20, 66, 26);
-    loadButton.setBounds (right - 92, 56, 92, 24);
-    irName.setBounds (shownIRMode ? juce::Rectangle<int> (right - 92 - 330, 56, 322, 24)
-                                  : juce::Rectangle<int> (right - 330, 56, 330, 24));
 }
 
 //==============================================================================
@@ -348,41 +220,6 @@ MasterVerbAudioProcessorEditor::~MasterVerbAudioProcessorEditor()
 void MasterVerbAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (MASColours::bgBottom);
-}
-
-void MasterVerbAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
-{
-    if (! dragHover)
-        return;
-
-    const auto r = getLocalBounds().toFloat().reduced (6.0f);
-    g.setColour (MASColours::accent.withAlpha (0.12f));
-    g.fillRoundedRectangle (r, 12.0f);
-    g.setColour (MASColours::accent);
-    g.drawRoundedRectangle (r, 12.0f, 2.0f);
-    g.setColour (MASColours::text);
-    g.setFont (juce::Font (juce::FontOptions ((float) getHeight() * 0.07f, juce::Font::bold)));
-    g.drawText ("DROP IMPULSE RESPONSE", getLocalBounds(), juce::Justification::centred);
-}
-
-bool MasterVerbAudioProcessorEditor::isInterestedInFileDrag (const juce::StringArray& files)
-{
-    for (const auto& f : files)
-        if (MasterVerbAudioProcessor::isSupportedIRFile (f))
-            return true;
-    return false;
-}
-
-void MasterVerbAudioProcessorEditor::filesDropped (const juce::StringArray& files, int, int)
-{
-    dragHover = false;
-    repaint();
-    for (const auto& f : files)
-        if (MasterVerbAudioProcessor::isSupportedIRFile (f))
-        {
-            panel.loadIRFile (juce::File (f));
-            break;
-        }
 }
 
 void MasterVerbAudioProcessorEditor::resized()

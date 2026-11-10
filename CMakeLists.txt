@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 
-project(MasterVerb VERSION 1.3.0 LANGUAGES C CXX)
+project(MasAudio VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,16 +25,16 @@ juce_add_binary_data(MasBrandData SOURCES
     Resources/emblem.png
     Resources/wordmark.png)
 
-# One engine and UI, several branded products.
-# mas_add_variant(<cmake target> <product name> <4-char AU code> <bundle id>)
-function(mas_add_variant target product code bundle)
+# mas_add_plugin(<cmake target> <product name> <4-char AU code> <bundle id> <version> <source dir> <description>)
+function(mas_add_plugin target product code bundle version srcdir description)
     juce_add_plugin(${target}
         PRODUCT_NAME                "${product}"
+        VERSION                     ${version}
         COMPANY_NAME                "masterastakhovsound"
         BUNDLE_ID                   ${bundle}
         PLUGIN_MANUFACTURER_CODE    Mast
         PLUGIN_CODE                 ${code}
-        DESCRIPTION                 "Algorithmic hall reverb"
+        DESCRIPTION                 "${description}"
         FORMATS                     ${MAS_FORMATS}
         IS_SYNTH                    FALSE
         NEEDS_MIDI_INPUT            FALSE
@@ -46,8 +46,8 @@ function(mas_add_variant target product code bundle)
         VST3_CATEGORIES             Fx Reverb)
 
     target_sources(${target} PRIVATE
-        Source/PluginProcessor.cpp
-        Source/PluginEditor.cpp)
+        ${srcdir}/PluginProcessor.cpp
+        ${srcdir}/PluginEditor.cpp)
 
     target_compile_definitions(${target} PUBLIC
         JUCE_WEB_BROWSER=0
@@ -65,5 +65,12 @@ function(mas_add_variant target product code bundle)
             juce::juce_recommended_warning_flags)
 endfunction()
 
-mas_add_variant(MasterVerb  "MASTER VERB"  MVrb com.masterastakhovsound.masterverb)
-mas_add_variant(AlenteyVerb "ALENTEY VERB" AVrb com.masterastakhovsound.alenteyverb)
+# MASTER SPACE: spatial engine (Spatial DNA + Depth + locks), separate product.
+mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.0.0
+               Source/MasterSpace "Spatial reverb: room, depth, early and late")
+
+# MASTER VERB 1.x and its ALENTEY VERB twin (same engine and UI, different name).
+mas_add_plugin(MasterVerb  "MASTER VERB"  MVrb com.masterastakhovsound.masterverb 1.2.0
+               Source/MasterVerb "Algorithmic hall reverb")
+mas_add_plugin(AlenteyVerb "ALENTEY VERB" AVrb com.masterastakhovsound.alenteyverb 1.2.0
+               Source/MasterVerb "Algorithmic hall reverb")

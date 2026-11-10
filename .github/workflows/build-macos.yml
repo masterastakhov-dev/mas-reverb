@@ -11,11 +11,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Offline engine test (RT60, stereo, stability)
+      - name: Offline MASTER SPACE engine test (depth, locks, materials, automation, stability)
         run: |
           pip install --quiet numpy scipy
-          g++ -O2 -std=c++17 -o tests/render tests/render.cpp
-          python3 tests/analyze.py
+          g++ -O2 -std=c++17 -o tests/render_space tests/render_space.cpp
+          python3 tests/analyze_space.py | tee space.log
+          ! grep -q "nan True" space.log
 
   build:
     name: build (${{ matrix.name }})
@@ -25,14 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: MasterVerb
-            name: MASTER VERB
-            code: MVrb
-            slug: MASTER-VERB
-          - target: AlenteyVerb
-            name: ALENTEY VERB
-            code: AVrb
-            slug: ALENTEY-VERB
+          - target: MasterSpace
+            name: MASTER SPACE
+            code: MSpc
+            slug: MASTER-SPACE
     env:
       TARGET: ${{ matrix.target }}
       NAME: ${{ matrix.name }}
@@ -75,7 +72,9 @@ jobs:
           cp -R "$ART/AU/$NAME.component" "$OUT/"
           cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
           sed "s/__NAME__/$NAME/g" installer/install.command.in > "$OUT/Install $NAME.command"
-          sed "s/__NAME__/$NAME/g" installer/README.txt.in > "$OUT/README.txt"
+          README_IN="installer/README-${TARGET}.txt.in"
+          [ -f "$README_IN" ] || README_IN="installer/README.txt.in"
+          sed "s/__NAME__/$NAME/g" "$README_IN" > "$OUT/README.txt"
           chmod +x "$OUT/Install $NAME.command"
           cp auval.log "$OUT/auval-report.txt"
           cd dist && ditto -c -k --keepParent "$NAME" "$SLUG-macOS.zip"

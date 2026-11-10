@@ -1,5 +1,5 @@
 #!/bin/bash
-# MASTER VERB / ALENTEY VERB — build and install on this Mac (no full Xcode needed).
+# MASTER SPACE — build and install on this Mac (no full Xcode needed).
 # Right-click this file -> Open (first time), then wait.
 
 cd "$(dirname "$0")" || exit 1
@@ -7,7 +7,7 @@ cd "$(dirname "$0")" || exit 1
 pause() { echo ""; read -n 1 -s -r -p "Нажми любую клавишу, чтобы закрыть окно..."; echo ""; }
 fail()  { echo ""; echo "ОШИБКА: $1"; pause; exit 1; }
 
-echo "=== MASTER VERB и ALENTEY VERB: сборка на этом Mac ==="
+echo "=== MASTER SPACE: сборка на этом Mac ==="
 
 # 1. Apple Command Line Tools (compiler + SDK)
 if ! xcode-select -p >/dev/null 2>&1; then
@@ -38,7 +38,7 @@ echo "CMake: $CMAKE"
 # 3. Configure + build (first run downloads JUCE, takes a few minutes)
 "$CMAKE" -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" || fail "настройка проекта не удалась"
-"$CMAKE" --build build --target MasterVerb_AU MasterVerb_VST3 AlenteyVerb_AU AlenteyVerb_VST3 \
+"$CMAKE" --build build --target MasterSpace_AU MasterSpace_VST3 \
     -j "$(sysctl -n hw.ncpu)" || fail "сборка не удалась — пришли Claude текст из этого окна"
 
 # 4. Sign, install and validate every variant
@@ -65,8 +65,10 @@ install_variant() {   # <cmake target> <product name> <AU code>
     echo "Установлен: $AU_DIR/$NAME.component и $VST3_DIR/$NAME.vst3"
 }
 
-install_variant MasterVerb  "MASTER VERB"  MVrb
-install_variant AlenteyVerb "ALENTEY VERB" AVrb
+install_variant MasterSpace "MASTER SPACE" MSpc
+# MASTER VERB 1.x / ALENTEY VERB: build targets MasterVerb_AU / AlenteyVerb_AU and add
+#   install_variant MasterVerb  "MASTER VERB"  MVrb
+#   install_variant AlenteyVerb "ALENTEY VERB" AVrb
 
 echo ""
 echo "Готово! Перезапусти DAW. В Logic: Audio FX > Audio Units > masterastakhovsound"
