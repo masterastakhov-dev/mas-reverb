@@ -19,6 +19,7 @@ namespace
         e.setColour (juce::TextEditor::textColourId, MASColours::text);
         e.setTextToShowWhenEmpty (hint, MASColours::textDim);
         e.setIndents (8, 6);
+        e.setJustification (juce::Justification::centredLeft);
     }
 
     void styleSmallLabel (juce::Label& l, const juce::String& text)
@@ -43,6 +44,7 @@ PresetDialog::PresetDialog (MASLookAndFeel& l) : lnf (l)
     styleEditor (authorEdit, "Your name");
     styleEditor (descEdit, "What it is for, on what material it was checked");
     descEdit.setMultiLine (true, true);
+    descEdit.setJustification (juce::Justification::topLeft);
     descEdit.setReturnKeyStartsNewLine (true);
     nameEdit.onReturnKey = [this] { submit(); };
     nameEdit.onEscapeKey = [this] { close(); };

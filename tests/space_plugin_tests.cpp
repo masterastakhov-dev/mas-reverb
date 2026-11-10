@@ -109,10 +109,56 @@ namespace
     double nowMs() { return std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now().time_since_epoch()).count(); }
 }
 
+// --snapshot <dir>: renders the editor pages to PNG files (layout check without a display)
+static int snapshots (const juce::File& dir)
+{
+    dir.createDirectory();
+    auto p = std::make_unique<MasterSpaceAudioProcessor>();
+    p->setRateAndBufferSizeDetails (48000, 512);
+    p->prepareToPlay (48000, 512);
+    auto& pm = p->getPresetManager();
+    pm.load (pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room 1.2 Open"));
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+    ed->setSize (1000, 680);
+    pump (200);
+
+    std::function<juce::Button* (juce::Component&, const juce::String&)> findButton = [&] (juce::Component& c, const juce::String& text) -> juce::Button*
+    {
+        for (auto* ch : c.getChildren())
+        {
+            if (auto* b = dynamic_cast<juce::Button*> (ch)) if (b->getButtonText() == text) return b;
+            if (auto* r = findButton (*ch, text)) return r;
+        }
+        return nullptr;
+    };
+    auto shot = [&] (const juce::String& name)
+    {
+        pump (300);
+        const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        juce::FileOutputStream fo (dir.getChildFile (name + ".png"));
+        fo.setPosition (0); fo.truncate();
+        juce::PNGImageFormat().writeImageToStream (img, fo);
+        std::printf ("  wrote %s.png\n", name.toRawUTF8());
+    };
+    shot ("1_main");
+    for (const char* tab : { "ADVANCED", "PRESETS" })
+        if (auto* b = findButton (*ed, tab)) { b->triggerClick(); pump (200); shot (juce::String ("2_") + tab); }
+    if (auto* b = findButton (*ed, "B")) { b->triggerClick(); pump (200); }
+    if (auto* b = findButton (*ed, "SAVE AS")) { b->triggerClick(); pump (200); shot ("3_save_as"); }
+    ed.reset();
+    return 0;
+}
+
 int main (int argc, char** argv)
 {
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
+    if (argc > 2 && juce::String (argv[1]) == "--snapshot")
+    {
+        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-snap-presets");
+        setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
+        return snapshots (juce::File (juce::String (argv[2])));
+    }
 
     const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-preset-test-" + juce::String (juce::Time::currentTimeMillis()));
     root.createDirectory();

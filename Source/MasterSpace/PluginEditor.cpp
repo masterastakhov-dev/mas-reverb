@@ -88,6 +88,9 @@ MASLookAndFeel::MASLookAndFeel()
     setColour (juce::PopupMenu::textColourId, MASColours::text);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, MASColours::accent);
     setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+    setColour (juce::ScrollBar::thumbColourId, MASColours::textDim.withAlpha (0.5f));
+    setColour (juce::ScrollBar::trackColourId, juce::Colours::transparentBlack);
+    setColour (juce::ListBox::backgroundColourId, MASColours::panel);
 }
 
 void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,

@@ -24,7 +24,9 @@ namespace
         return r;
     }
 
-    juce::String fmtMs (float v)   { return juce::String (v, v < 10.0f ? 1 : 0) + " ms"; }
+    // juce::String (v, 0) would print every digit (69.7697): round explicitly
+    juce::String fixed (float v, int decimals) { return decimals > 0 ? juce::String (v, decimals) : juce::String (juce::roundToInt (v)); }
+    juce::String fmtMs (float v)   { return fixed (v, v < 10.0f ? 1 : 0) + " ms"; }
     juce::String fmtSec (float v)  { return v < 10.0f ? juce::String (v, 2) + " s" : juce::String (v, 1) + " s"; }
     juce::String fmtPct (float v)  { return juce::String (juce::roundToInt (v)) + " %"; }
     juce::String fmtHz (float v)   { return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz"
@@ -105,7 +107,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     addBool (lockWidth, "Width Lock", false);
 
     // ---- Spatial DNA
-    auto metres = [] (float v) { return juce::String (v, v < 10.0f ? 1 : 0) + " m"; };
+    auto metres = [] (float v) { return fixed (v, v < 10.0f ? 1 : 0) + " m"; };
     addF (roomW, "Room Width",  range (2.0f, 40.0f, 10.0f), 7.5f,  metres);
     addF (roomD, "Room Depth",  range (2.0f, 60.0f, 12.0f), 10.0f, metres);
     addF (roomH, "Room Height", range (2.0f, 20.0f, 5.0f),  4.0f,  metres);
