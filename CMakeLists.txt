@@ -76,6 +76,17 @@ mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspa
 target_sources(MasterSpace PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp)
 target_link_libraries(MasterSpace PRIVATE MasterSpacePresets)
 
+# MASTER SPACE ATMOS: experimental build with the ATMOSPHERIC TAIL late engine (MAS_ATMOS). Same sources as
+# MASTER SPACE 1.2, its own name, code, bundle id and preset folder, so it installs next to 1.2 without conflicts.
+mas_add_plugin(MasterSpaceAtmos "MASTER SPACE ATMOS" MSpA com.masterastakhovsound.masterspaceatmos 1.3.0
+               Source/MasterSpace "MASTER SPACE with the experimental ATMOSPHERIC TAIL engine")
+target_sources(MasterSpaceAtmos PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp)
+target_compile_definitions(MasterSpaceAtmos PRIVATE MAS_ATMOS=1)
+file(GLOB MAS_ATMOS_PRESETS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/presets/factory-atmos/*.json)
+juce_add_binary_data(MasterSpaceAtmosPresets HEADER_NAME MasterSpacePresets.h NAMESPACE MasterSpacePresets
+    SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
+target_link_libraries(MasterSpaceAtmos PRIVATE MasterSpaceAtmosPresets)
+
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
                Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
@@ -107,5 +118,20 @@ if(MAS_BUILD_TESTS)
         JucePlugin_Name="MASTER SPACE" JucePlugin_VersionString="1.2.0")
     target_link_libraries(MasterSpaceTests PRIVATE
         MasterSpacePresets MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # the same tests on the experimental ATMOS build
+    juce_add_console_app(MasterSpaceAtmosTests PRODUCT_NAME "MasterSpaceAtmosTests")
+    target_sources(MasterSpaceAtmosTests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp)
+    target_compile_definitions(MasterSpaceAtmosTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 MAS_ATMOS=1
+        JucePlugin_Name="MASTER SPACE ATMOS" JucePlugin_VersionString="1.3.0")
+    target_link_libraries(MasterSpaceAtmosTests PRIVATE
+        MasterSpaceAtmosPresets MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

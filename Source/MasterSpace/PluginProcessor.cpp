@@ -137,13 +137,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     addF (lateColor, "Late Color", range (-100.0f, 100.0f),     0.0f,  bipolar ("Dark", "Bright"));
 
     // ---- decay EQ / filters
-    addF (lfMult, "LF Decay",       range (0.1f, 4.0f, 1.0f), 1.2f,  fmtMult);
+   #ifdef MAS_ATMOS
+    // experimental build: defaults for the Atmospheric Tail (nearly flat decay; brightness comes from AIR)
+    constexpr float dLf = 1.1f, dHm = 0.95f, dHf = 0.85f, dXMid = 2000.0f, dXHigh = 7000.0f;
+   #else
+    constexpr float dLf = 1.2f, dHm = 0.85f, dHf = 0.55f, dXMid = 1500.0f, dXHigh = 6000.0f;
+   #endif
+    addF (lfMult, "LF Decay",       range (0.1f, 4.0f, 1.0f), dLf,   fmtMult);
     addF (lmMult, "Low-Mid Decay",  range (0.1f, 4.0f, 1.0f), 1.0f,  fmtMult);
-    addF (hmMult, "High-Mid Decay", range (0.1f, 4.0f, 1.0f), 0.85f, fmtMult);
-    addF (hfMult, "HF Decay",       range (0.1f, 4.0f, 1.0f), 0.55f, fmtMult);
+    addF (hmMult, "High-Mid Decay", range (0.1f, 4.0f, 1.0f), dHm,   fmtMult);
+    addF (hfMult, "HF Decay",       range (0.1f, 4.0f, 1.0f), dHf,   fmtMult);
     addF (xLow,  "Crossover Low",  range (40.0f, 1000.0f, 200.0f),    200.0f,  fmtHz, parseHz);
-    addF (xMid,  "Crossover Mid",  range (300.0f, 8000.0f, 1500.0f),  1500.0f, fmtHz, parseHz);
-    addF (xHigh, "Crossover High", range (1500.0f, 18000.0f, 6000.0f), 6000.0f, fmtHz, parseHz);
+    addF (xMid,  "Crossover Mid",  range (300.0f, 8000.0f, 1500.0f),  dXMid,   fmtHz, parseHz);
+    addF (xHigh, "Crossover High", range (1500.0f, 18000.0f, 6000.0f), dXHigh, fmtHz, parseHz);
     addF (lowCut,  "Low Cut",  range (20.0f, 2000.0f, 150.0f),   20.0f,    [] (float v) { return v <= 20.5f ? juce::String ("Off") : fmtHz (v); }, parseHz);
     addF (highCut, "High Cut", range (1000.0f, 20000.0f, 6000.0f), 20000.0f, [] (float v) { return v >= 19900.0f ? juce::String ("Off") : fmtHz (v); }, parseHz);
 
@@ -165,6 +171,20 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     // ---- 1.2: DSP engine version. Projects saved before 1.2 have no value and load as "1.1 Legacy".
     p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ParamIDs::engine, kVersionHint12 }, "DSP Engine",
                                                                juce::StringArray { "1.1 Legacy", "1.2" }, 1));
+
+   #ifdef MAS_ATMOS
+    // ---- ATMOSPHERIC TAIL (experimental). States without "tail" load with the room algorithm.
+    {
+        constexpr int kHintAtmos = 3;
+        p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ParamIDs::tail, kHintAtmos }, "Late Engine",
+                                                                   juce::StringArray { "Room Algorithm", "Atmospheric Tail" }, 1));
+        auto pctAttr = juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return fmtPct (v); });
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ParamIDs::bloom, kHintAtmos }, "Bloom", range (0.0f, 100.0f), 30.0f, pctAttr));
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ParamIDs::motion, kHintAtmos }, "Motion", range (0.0f, 100.0f), 50.0f, pctAttr));
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { ParamIDs::air, kHintAtmos }, "Air", range (0.0f, 100.0f), 50.0f, pctAttr));
+        p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ParamIDs::charLock, kHintAtmos }, "Character Lock", true));
+    }
+   #endif
 
     return { p.begin(), p.end() };
 }
@@ -267,6 +287,16 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
     p.balance       = get (balance) * 0.01f;
     p.crossfeed     = get (crossfeed) * 0.01f;
     p.decorrelation = get (decorrelation) * 0.01f;
+   #ifdef MAS_ATMOS
+    if constexpr (std::is_same_v<P, mspace::Params>)
+    {
+        p.tailMode = get (tail) > 0.5f ? 1 : 0;
+        p.bloom    = get (bloom) * 0.01f;
+        p.motion   = get (motion) * 0.01f;
+        p.air      = get (air) * 0.01f;
+        p.charLock = get (charLock) > 0.5f;
+    }
+   #endif
 }
 
 //==============================================================================
@@ -1230,9 +1260,15 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
         return;   // unreadable state: keep the current one rather than resetting the sound
 
     // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
-    bool hasEngine = false;
+    bool hasEngine = false, hasTail = false;
     for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
-        if (e->getStringAttribute ("id") == ParamIDs::engine) { hasEngine = true; break; }
+    {
+        if (e->getStringAttribute ("id") == ParamIDs::engine) hasEngine = true;
+       #ifdef MAS_ATMOS
+        if (e->getStringAttribute ("id") == ParamIDs::tail) hasTail = true;
+       #endif
+    }
+    juce::ignoreUnused (hasTail);
 
     auto tree = juce::ValueTree::fromXml (*xml);
     tree.removeChild (tree.getChildWithName ("ABCompare"), nullptr);
@@ -1242,6 +1278,11 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
     if (! hasEngine)
         if (auto* prm = apvts.getParameter (ParamIDs::engine))
             prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));
+   #ifdef MAS_ATMOS
+    if (! hasTail)
+        if (auto* prm = apvts.getParameter (ParamIDs::tail))
+            prm->setValueNotifyingHost (prm->convertTo0to1 (0.0f));
+   #endif
     endStateTransition();
 
     restoreCompareState (*xml);

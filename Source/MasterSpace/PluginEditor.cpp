@@ -10,7 +10,12 @@ namespace
     constexpr int kTabsY    = 146;
     constexpr int kTabsH    = 30;
     constexpr int kPageY    = 184;
+   #ifdef MAS_ATMOS
+    constexpr int kAtmosPage = 8;
+    constexpr int kPresetsPage = 9;
+   #else
     constexpr int kPresetsPage = 8;
+   #endif
     constexpr int kMinWidth = 700;    // 70 %
     constexpr int kMaxWidth = 2000;   // 200 %
 
@@ -648,7 +653,15 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
             addAndMakeVisible (b);
         }
     };
+   #ifdef MAS_ATMOS
+    makeGroup (algoButtons,  { "STUDIO ROOM", "CHAMBER", "HALL", "ATMOS" }, ParamIDs::algorithm);
+    for (int i = 0; i < 3; ++i)
+        algoButtons[i]->onClick = [this, i] { setParamPlain (processor.apvts, ParamIDs::tail, 0.0f); setChoice (ParamIDs::algorithm, i); };
+    algoButtons[3]->onClick = [this] { setChoice (ParamIDs::tail, 1); showPage (kAtmosPage); };
+    algoButtons[3]->setTooltip ("ATMOSPHERIC TAIL (experimental late engine)");
+   #else
     makeGroup (algoButtons,  { "STUDIO ROOM", "CHAMBER", "HALL" }, ParamIDs::algorithm);
+   #endif
     makeGroup (routeButtons, { "INSERT", "AUX" }, ParamIDs::routing);
     makeGroup (modeButtons,  { "ALGO", "IR" }, ParamIDs::mode);
     routeButtons[0]->setTooltip ("Direct sound is moved into the space too");
@@ -722,7 +735,23 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::choice, ParamIDs::engine, "DSP ENGINE" }, { K::empty }, { K::empty }, { K::empty }, { K::empty }, { K::empty } } };
     pages.add (new ControlPage (processor.apvts, lnf, advRows, 6));
 
+   #ifdef MAS_ATMOS
+    // ATMOS: the five main controls, then the shaping controls, then routing of the late engine
+    const std::vector<std::vector<ControlPage::Spec>> atmosRows {
+        { { K::knob, decay, "DECAY", true }, { K::knob, ParamIDs::bloom, "BLOOM", true }, { K::knob, ParamIDs::motion, "MOTION", true },
+          { K::knob, ParamIDs::air, "AIR", true }, { K::knob, density, "DENSITY", true }, { K::knob, lateLevel, "LATE LEVEL" } },
+        { { K::knob, shape, "SHAPE", true }, { K::knob, spread, "SPREAD", true }, { K::knob, diffusion, "DIFFUSION", true },
+          { K::knob, size, "SIZE", true }, { K::knob, lateDelay, "LATE DELAY", true }, { K::toggle, ParamIDs::charLock, "CHARACTER LOCK", true } },
+        { { K::choice, ParamIDs::tail, "LATE ENGINE", true }, { K::toggle, erOn, "EARLY REFLECTIONS" }, { K::knob, modRate, "MOTION RATE", true },
+          { K::knob, decorrelation, "DECORRELATION" }, { K::knob, mix, "MIX" }, { K::knob, output, "OUTPUT" } } };
+    pages.add (new ControlPage (processor.apvts, lnf, atmosRows, 6));
+   #endif
+
+   #ifdef MAS_ATMOS
+    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS", "PRESETS" };
+   #else
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "PRESETS" };
+   #endif
     for (int i = 0; i < tabNames.size(); ++i)
     {
         auto* b = tabButtons.add (new juce::TextButton (tabNames[i]));
@@ -813,9 +842,21 @@ void MASPanel::updateState()
     const int algo = juce::roundToInt (processor.apvts.getRawParameterValue (ParamIDs::algorithm)->load());
     const int route = juce::roundToInt (processor.apvts.getRawParameterValue (ParamIDs::routing)->load());
     shownIR = ir; shownAlgo = algo; shownRoute = route;
+   #ifdef MAS_ATMOS
+    if (processor.apvts.getRawParameterValue (ParamIDs::tail)->load() > 0.5f) shownAlgo += 4;
+   #endif
     shownIRName = processor.getIRDisplayName();
 
+   #ifdef MAS_ATMOS
+    const bool atmos = processor.apvts.getRawParameterValue (ParamIDs::tail)->load() > 0.5f;
+    for (int i = 0; i < algoButtons.size(); ++i)
+    {
+        algoButtons[i]->setToggleState (i == 3 ? atmos : (! atmos && i == algo), juce::dontSendNotification);
+        algoButtons[i]->setEnabled (! ir);
+    }
+   #else
     for (int i = 0; i < algoButtons.size(); ++i)  { algoButtons[i]->setToggleState (i == algo, juce::dontSendNotification); algoButtons[i]->setEnabled (! ir); }
+   #endif
     for (int i = 0; i < routeButtons.size(); ++i) routeButtons[i]->setToggleState (i == route, juce::dontSendNotification);
     for (int i = 0; i < modeButtons.size(); ++i)  modeButtons[i]->setToggleState (i == (ir ? 1 : 0), juce::dontSendNotification);
 
@@ -838,7 +879,10 @@ void MASPanel::updateState()
 void MASPanel::timerCallback()
 {
     const bool ir = processor.apvts.getRawParameterValue (ParamIDs::mode)->load() > 0.5f;
-    const int algo = juce::roundToInt (processor.apvts.getRawParameterValue (ParamIDs::algorithm)->load());
+    int algo = juce::roundToInt (processor.apvts.getRawParameterValue (ParamIDs::algorithm)->load());
+   #ifdef MAS_ATMOS
+    if (processor.apvts.getRawParameterValue (ParamIDs::tail)->load() > 0.5f) algo += 4;
+   #endif
     const int route = juce::roundToInt (processor.apvts.getRawParameterValue (ParamIDs::routing)->load());
     if (ir != shownIR || algo != shownAlgo || route != shownRoute || processor.getIRDisplayName() != shownIRName)
         updateState();
@@ -900,8 +944,8 @@ void MASPanel::resized()
 
     // row 1: algorithms
     {
-        const int w = 112, gap = 6;
-        int x = right - (3 * w + 2 * gap);
+        const int n = algoButtons.size(), gap = 6, w = n > 3 ? 98 : 112;
+        int x = right - (n * w + (n - 1) * gap);
         for (auto* b : algoButtons) { b->setBounds (x, 16, w, 28); x += w + gap; }
     }
     // row 2: routing + mode, IR loader / info

@@ -24,6 +24,9 @@ static void setKV (mspace::Params& p, const std::string& k, float v)
     F(lfMult) F(lmMult) F(hmMult) F(hfMult) F(xLow) F(xMid) F(xHigh) F(lowCutHz) F(highCutHz) F(modRate) F(modDepth)
     F(modRandom) F(modSmooth) I(modCharacter) F(balance) F(crossfeed) F(decorrelation)
     B(lockLevel) B(lockTone) B(lockDecay) B(lockWidth)
+#ifdef MAS_ATMOS
+    I(tailMode) F(bloom) F(motion) F(air) B(charLock)
+#endif
     if (k.size() == 4 && k.rfind ("mat", 0) == 0) { p.materials[(size_t) (k[3] - '0')] = (int) v; return; }
     std::fprintf (stderr, "unknown param %s\n", k.c_str()); std::exit (2);
 }

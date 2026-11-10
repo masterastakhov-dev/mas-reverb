@@ -86,6 +86,14 @@ namespace ParamIDs
     inline constexpr const char* irLength    = "irlength";
     // DSP engine version (1.2): 0 = 1.1 Legacy, 1 = 1.2
     inline constexpr const char* engine      = "engine";
+   #ifdef MAS_ATMOS
+    // ATMOSPHERIC TAIL (experimental build)
+    inline constexpr const char* tail        = "tail";        // 0 room algorithm, 1 Atmospheric Tail
+    inline constexpr const char* bloom       = "bloom";
+    inline constexpr const char* motion      = "motion";
+    inline constexpr const char* air         = "air";
+    inline constexpr const char* charLock    = "charlock";
+   #endif
 
     inline constexpr const char* materials[6] = { matFront, matBack, matLeft, matRight, matFloor, matCeiling };
 }

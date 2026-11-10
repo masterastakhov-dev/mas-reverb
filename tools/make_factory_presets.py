@@ -178,6 +178,38 @@ preset("Far Away", "Creative Spaces",
        spread=150, latedelay=45, roomw=18, roomd=28, roomh=12, lowcut=200, highcut=6000, hfmult=0.6)
 
 
+# ---- ATMOSPHERIC TAIL (experimental build only: presets/factory-atmos)
+ATMOS_P = []
+ATM = dict(tail="Atmospheric Tail", charlock=True, routing="Aux", mix=100, erlevel=-8, latelevel=0, size=50,
+           lfmult=1.1, lmmult=1.0, hmmult=0.95, hfmult=0.85, xlow=200, xmid=2000, xhigh=7000,
+           decorr=85, crossfeed=15, modrate=0.6, moddepth=35, modrandom=50, modsmooth=60, latedelay=12, diffusion=70, density=70,
+           shape=35, spread=60)
+def atmos(name, category, description, **kw):
+    merged = dict(ATM); merged.update(kw)
+    ATMOS_P.append((name, category, description, merged))
+
+atmos("ATMOS Vocal Glow", "Vocal Spaces", "Atmospheric Tail, 1.6 s: soft, moving air around a lead vocal.",
+      decay=1.6, bloom=25, motion=50, air=55)
+atmos("ATMOS Smoky Ballad", "Vocal Spaces", "Atmospheric Tail, 2.4 s with 20 ms pre-delay: warm, smoky vocal tail.",
+      decay=2.4, bloom=35, motion=60, air=45, density=75, predelay=20, erlevel=-10)
+atmos("ATMOS Sax Haze", "Vocal Spaces", "Atmospheric Tail, 2.8 s: lush motion for sax and solo instruments.",
+      decay=2.8, bloom=30, motion=65, air=50, density=75)
+atmos("ATMOS Wide Hall", "Halls", "Atmospheric Tail, 3 s: wide, transparent hall-like space.",
+      decay=3.0, bloom=30, motion=50, air=55, size=65)
+atmos("ATMOS Floating Hall", "Halls", "Atmospheric Tail, 6 s: the tail opens up and floats.",
+      decay=6.0, bloom=50, motion=60, air=55, shape=45, spread=100)
+atmos("ATMOS Soft Ambience", "Ambiences", "Atmospheric Tail, 1 s: short, dense and soft.",
+      decay=1.0, bloom=10, motion=35, air=60, density=80, spread=30)
+atmos("ATMOS Drum Bloom", "Drum Spaces", "Atmospheric Tail, 1.4 s: dense bloom behind drums.",
+      decay=1.4, bloom=40, motion=30, air=50, density=85, diffusion=80)
+atmos("ATMOS Cinematic 12 s", "Creative Spaces", "Atmospheric Tail, 12 s, late engine only: huge cinematic space.",
+      decay=12.0, bloom=70, motion=65, air=60, shape=55, spread=140, eron=False)
+atmos("ATMOS Late Only 20 s", "Creative Spaces", "Atmospheric Tail, 20 s, early reflections off: long, soft atmosphere.",
+      decay=20.0, bloom=60, motion=55, air=55, shape=50, spread=160, eron=False)
+atmos("ATMOS Endless 30 s", "Creative Spaces", "Atmospheric Tail, 30 s, late engine only: endless but controlled.",
+      decay=30.0, bloom=80, motion=55, air=50, shape=60, spread=180, eron=False)
+
+
 def slug(s):
     return re.sub(r"[^A-Za-z0-9]+", "_", s).strip("_")
 
@@ -195,14 +227,32 @@ def build(trims):
     return out
 
 
-if __name__ == "__main__":
-    trims = json.load(open(sys.argv[1])) if len(sys.argv) > 1 else {}
-    folder = os.path.join(os.path.dirname(__file__), "..", "presets", "factory")
+def write(folder, docs, prefix=""):
+    os.makedirs(folder, exist_ok=True)
     for f in os.listdir(folder):
         if f.endswith(".json"): os.remove(os.path.join(folder, f))
-    for i, doc in enumerate(build(trims)):
-        fn = os.path.join(folder, f"{i:02d}_{slug(doc['name'])}.json")
-        with open(fn, "w") as fh:
+    for i, doc in enumerate(docs):
+        with open(os.path.join(folder, f"{prefix}{i:02d}_{slug(doc['name'])}.json"), "w") as fh:
             json.dump(doc, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
-    print(len(P), "presets written")
+
+
+def build_atmos(trims):
+    out = []
+    for name, cat, desc, kw in ATMOS_P:
+        params = dict(DEFAULTS); params.update(kw)
+        params["output"] = round(params.get("output", 0) + trims.get(name, 0.0), 1)
+        out.append({"format": "MASTER SPACE Preset", "schemaVersion": 1, "pluginVersion": "1.3.0",
+                    "name": name, "category": cat, "author": "masterastakhovsound", "description": desc,
+                    "engine": "1.2", "dspVersion": "1.3.0 (engine 1.2, ATMOSPHERIC TAIL prototype)", "algorithm": "Atmospheric Tail",
+                    "parameters": params})
+    return out
+
+
+if __name__ == "__main__":
+    here = os.path.dirname(__file__)
+    trims = json.load(open(sys.argv[1])) if len(sys.argv) > 1 and sys.argv[1] != "-" else {}
+    trims_atmos = json.load(open(sys.argv[2])) if len(sys.argv) > 2 else {}
+    write(os.path.join(here, "..", "presets", "factory"), build(trims))
+    write(os.path.join(here, "..", "presets", "factory-atmos"), build_atmos(trims_atmos), "A")
+    print(len(P), "presets +", len(ATMOS_P), "ATMOS presets written")

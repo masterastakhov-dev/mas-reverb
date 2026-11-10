@@ -29,6 +29,9 @@ MATS = ["matfront", "matback", "matleft", "matright", "matfloor", "matceiling"]
 def render_args(p):
     kw = {"algorithm": CHOICES["algo"].index(p["algo"]), "routing": CHOICES["routing"].index(p["routing"]),
           "modCharacter": CHOICES["modchar"].index(p["modchar"])}
+    if "tail" in p:   # ATMOSPHERIC TAIL presets (experimental build)
+        kw.update(tailMode=1 if p["tail"] == "Atmospheric Tail" else 0, bloom=p["bloom"] / 100.0, motion=p["motion"] / 100.0,
+                  air=p["air"] / 100.0, charLock=1 if p["charlock"] else 0)
     for k, v in PCT.items(): kw[v] = p[k] / 100.0
     for k, v in PLAIN.items(): kw[v] = p[k]
     for k, v in BOOL.items(): kw[v] = 1 if p[k] else 0
@@ -61,8 +64,10 @@ def pink(n, seed=1):
 
 
 def main():
-    files = sorted(glob.glob(os.path.join(os.path.dirname(__file__), '..', 'presets', 'factory', '*.json')))
+    sub = 'factory-atmos' if '--atmos' in sys.argv else 'factory'
+    files = sorted(glob.glob(os.path.join(os.path.dirname(__file__), '..', 'presets', sub, '*.json')))
     new_r, old_r = os.environ.get('MV2_RENDER', '/tmp/r12b'), os.environ.get('MS_LEGACY_RENDER', '/tmp/r11')
+    if '--atmos' in sys.argv: new_r = os.environ.get('MS_ATMOS_RENDER', '/tmp/ra')
     x = pink(4 * FS); xs = np.stack([x, x], 1).astype(np.float32)
     lin = lufs(xs[FS:])
     rows, ok = [], True
@@ -71,7 +76,7 @@ def main():
         a.R = old_r if p["engine"].startswith("1.1") else new_r
         kw = render_args(p)
         y, _ = a.run(xs, fs=FS, block=512, **kw)
-        h, _ = a.run(a.impulse(FS, max(3.0, p["decay"] * 2.5)), fs=FS, block=512, **kw)
+        h, _ = a.run(a.impulse(FS, max(3.0, min(p["decay"] * 2.5, p["decay"] + 8))), fs=FS, block=512, **kw)
         nan = not np.all(np.isfinite(y)) or not np.all(np.isfinite(h))
         loud = lufs(y[FS:]) - lin
         peak = 20 * np.log10(np.max(np.abs(y)) + 1e-12)

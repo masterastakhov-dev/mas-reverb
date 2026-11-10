@@ -71,12 +71,17 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
+   #ifdef MAS_ATMOS
+    const char* product = "MASTER SPACE ATMOS";    // experimental build: its own library, 1.2 presets untouched
+   #else
+    const char* product = "MASTER SPACE";
+   #endif
    #if JUCE_MAC
     return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-               .getChildFile ("Library/Audio/Presets/masterastakhovsound/MASTER SPACE");
+               .getChildFile ("Library/Audio/Presets/masterastakhovsound").getChildFile (product);
    #else
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-               .getChildFile ("masterastakhovsound").getChildFile ("MASTER SPACE").getChildFile ("Presets");
+               .getChildFile ("masterastakhovsound").getChildFile (product).getChildFile ("Presets");
    #endif
 }
 
@@ -113,6 +118,21 @@ juce::var PresetManager::toJson (const juce::String& name, const juce::String& c
     o->setProperty ("author", author.trim());
     o->setProperty ("description", description.trim());
     o->setProperty ("engine", engine);
+   #ifdef MAS_ATMOS
+    {
+        // DSP version and the algorithm actually heard, stated explicitly
+        auto choiceText = [&] (const char* id) -> juce::String
+        {
+            for (const auto& pi : params)
+                if (pi.id == id) { const auto it = values.find (pi.id); const int idx = juce::roundToInt (it != values.end() ? it->second : pi.def);
+                                   return pi.choices[juce::jlimit (0, pi.choices.size() - 1, idx)]; }
+            return {};
+        };
+        const bool atmos = choiceText (ParamIDs::tail) == "Atmospheric Tail" && engine == "1.2";
+        o->setProperty ("dspVersion", juce::String (JucePlugin_VersionString) + " (engine " + engine + (atmos ? ", ATMOSPHERIC TAIL prototype" : "") + ")");
+        o->setProperty ("algorithm", atmos ? juce::String ("Atmospheric Tail") : choiceText (ParamIDs::algorithm));
+    }
+   #endif
     o->setProperty ("parameters", juce::var (parameters));
     if (irFile.isNotEmpty())
         o->setProperty ("irFile", irFile);
@@ -170,9 +190,21 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                                                            : (out.pluginVersion.isNotEmpty() && versionNumber (out.pluginVersion) < 10200);
                 value = legacy ? (float) MasterSpaceAudioProcessor::engineLegacy11 : (float) MasterSpaceAudioProcessor::engine12;
             }
+           #ifdef MAS_ATMOS
+            else if (pi.id == ParamIDs::tail)
+            {
+                value = 0.0f;   // presets made before the Atmospheric Tail use the room algorithm
+            }
+           #endif
             else
             {
-                missing.add (pi.id);
+               #ifdef MAS_ATMOS
+                // parameters of the Atmospheric Tail: older presets simply do not use it
+                const bool addedLater = pi.id == ParamIDs::bloom || pi.id == ParamIDs::motion || pi.id == ParamIDs::air || pi.id == ParamIDs::charLock;
+               #else
+                const bool addedLater = false;
+               #endif
+                if (! addedLater) missing.add (pi.id);
             }
         }
         else if (pi.kind == ParamInfo::Kind::choice)

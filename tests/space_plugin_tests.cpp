@@ -170,7 +170,12 @@ int main (int argc, char** argv)
         auto p = makeProcessor (48000, 512);
         auto& pm = p->getPresetManager();
         const auto& all = pm.getPresets();
-        check (all.size() == 26, "26 factory presets (" + juce::String ((int) all.size()) + ")");
+       #ifdef MAS_ATMOS
+        constexpr size_t kFactory = 36;
+       #else
+        constexpr size_t kFactory = 26;
+       #endif
+        check (all.size() == kFactory, juce::String ((int) kFactory) + " factory presets (" + juce::String ((int) all.size()) + ")");
         bool cats = true, notes = true, params = true;
         for (const auto& pr : all)
         {
@@ -188,6 +193,19 @@ int main (int argc, char** argv)
         check (pm.find (mspreset::kViewAll, "leadvox").size() == 3, "search 'leadvox' finds 3");
         const int legacyIdx = pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room (1.1 Legacy)");
         check (legacyIdx >= 0 && pm.getPresets()[(size_t) legacyIdx].engineName() == "1.1 Legacy", "LeadVox 1.1 preset uses the 1.1 Legacy engine");
+       #ifdef MAS_ATMOS
+        {
+            int atmosOk = 0, roomOk = 0, atmosN = 0;
+            for (const auto& pr : all)
+            {
+                const bool isAtmos = pr.name.startsWith ("ATMOS");
+                const float tail = pr.values.at (ParamIDs::tail);
+                if (isAtmos) { ++atmosN; atmosOk += tail > 0.5f ? 1 : 0; } else roomOk += tail < 0.5f ? 1 : 0;
+            }
+            check (atmosN == 10 && atmosOk == 10, "10 ATMOS presets use the Atmospheric Tail");
+            check (roomOk == 26, "the 26 room presets keep the room algorithm (no tail parameter in their files)");
+        }
+       #endif
     }
 
     //==========================================================================
@@ -264,10 +282,17 @@ int main (int argc, char** argv)
         auto& pm = p->getPresetManager();
         const auto& all = pm.getPresets();
         // a continuous tone + noise through the plugin; switch between very different presets
+       #ifdef MAS_ATMOS
+        const int pairs[][2] = { { pm.indexOf ("factory:Halls/Cathedral Stone"), pm.indexOf ("factory:Creative Spaces/ATMOS Endless 30 s") },
+                                 { pm.indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"), pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room (1.2)") },
+                                 { pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room (1.1 Legacy)"), pm.indexOf ("factory:Halls/ATMOS Floating Hall") },
+                                 { pm.indexOf ("factory:Ambiences/ATMOS Soft Ambience"), pm.indexOf ("factory:Creative Spaces/ATMOS Cinematic 12 s") } };
+       #else
         const int pairs[][2] = { { pm.indexOf ("factory:Halls/Cathedral Stone"), pm.indexOf ("factory:Ambiences/Ambience Wood") },
                                  { pm.indexOf ("factory:Early Reflections/ER Studio Depth"), pm.indexOf ("factory:Chambers/Stone Chamber") },
                                  { pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room (1.1 Legacy)"), pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room (1.2)") },
                                  { pm.indexOf ("factory:Studio Rooms/Small Tight Room"), pm.indexOf ("factory:Creative Spaces/Far Away") } };
+       #endif
         for (const auto& pr : pairs)
         {
             pm.load (pr[0]);
@@ -501,8 +526,14 @@ int main (int argc, char** argv)
     {
         auto p = makeProcessor (fs, 256);
         auto& pm = p->getPresetManager();
+       #ifdef MAS_ATMOS
+        for (const char* key : { "factory:Studio Rooms/Studio A Natural", "factory:Halls/Cathedral Stone",
+                                 "factory:Vocal Spaces/LeadVox Studio Room (1.1 Legacy)", "factory:Vocal Spaces/ATMOS Vocal Glow",
+                                 "factory:Creative Spaces/ATMOS Endless 30 s" })
+       #else
         for (const char* key : { "factory:Studio Rooms/Studio A Natural", "factory:Halls/Cathedral Stone",
                                  "factory:Vocal Spaces/LeadVox Studio Room (1.1 Legacy)" })
+       #endif
         {
             pm.load (pm.indexOf (key));
             auto sig = pinkish (fs, 1.0);

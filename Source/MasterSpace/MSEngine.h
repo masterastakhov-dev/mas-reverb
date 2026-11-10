@@ -296,6 +296,13 @@ struct Params
 
     // locks
     bool lockLevel = true, lockTone = false, lockDecay = true, lockWidth = false;
+
+#ifdef MAS_ATMOS
+    // ATMOSPHERIC TAIL (experimental): late engine 0 = room algorithm (Studio Room / Chamber / Hall), 1 = Atmospheric Tail
+    int   tailMode = 0;
+    float bloom = 0.3f, motion = 0.5f, air = 0.5f;
+    bool  charLock = true;
+#endif
 };
 
 inline double sizeScale (float size01) { return 0.5 * std::pow (4.0, (double) std::clamp (size01, 0.0f, 1.0f)); }
@@ -961,6 +968,11 @@ private:
     Rng rng { 777u };
 };
 
+#ifdef MAS_ATMOS
+//==============================================================================
+#include "AtmosTail.h"
+#endif
+
 //==============================================================================
 // Full processor: input conditioning, direct path (Insert), Spatial DNA + Late, locks, stereo, mix.
 class Engine
@@ -972,6 +984,9 @@ public:
         for (auto& d : preDelay) d.allocate ((int) std::ceil (0.52 * fs));
         er.prepare (fs);
         late.prepare (fs);
+       #ifdef MAS_ATMOS
+        atmos.prepare (fs);
+       #endif
         scratch.assign (8 * kChunk, 0.0f);
         params.algorithm = -1;
         applyParams (true);
@@ -984,6 +999,9 @@ public:
         for (int c = 0; c < 2; ++c) { lowCut[c].clear(); highCut[c].clear(); directAir[c].clear(); toneShelf[c].clear(); }
         er.reset();
         late.reset();
+       #ifdef MAS_ATMOS
+        atmos.reset();
+       #endif
         er.update (params);
     }
 
@@ -997,6 +1015,9 @@ public:
         pending = p;
         params.algorithm = -1;
         algoSwitchPending = false;
+       #ifdef MAS_ATMOS
+        tailSwitchPending = false;
+       #endif
         algoGain = 1.0f;
         applyParams (true);
         reset();
@@ -1014,6 +1035,10 @@ public:
     double getTailSeconds() const
     {
         const double maxMult = std::max ({ (double) params.lfMult, (double) params.lmMult, (double) params.hmMult, (double) params.hfMult });
+       #ifdef MAS_ATMOS
+        if (curTail == 1)
+            return std::min (60.0, effectiveRT (params) * maxMult * 1.1 + (params.preDelayMs + params.lateDelayMs + params.erStopMs) * 0.001 + atmos.extraTailSeconds() + 0.2);
+       #endif
         return std::min (60.0, effectiveRT (params) * maxMult * 1.1 + (params.preDelayMs + params.lateDelayMs + params.spreadMs + params.erStopMs) * 0.001 + 0.2);
     }
 
@@ -1041,11 +1066,24 @@ private:
         static constexpr float base[numAlgorithms] = { 0.13f, 0.095f, 0.06f };
         return base[std::clamp (algorithm, 0, (int) numAlgorithms - 1)] * (float) std::pow (std::max (rt, 0.1) / 1.8, 0.1);
     }
+   #ifdef MAS_ATMOS
+    // Atmospheric Tail keeps its initial level, so its power grows with the decay (measured, pink noise)
+    float lateEnergyNow (double rt) const { return curTail == 1 ? 0.06f * (float) std::pow (std::max (rt, 0.1) / 1.8, 0.7) : lateEnergy (params.algorithm, rt); }
+   #else
+    float lateEnergyNow (double rt) const { return lateEnergy (params.algorithm, rt); }
+   #endif
 
     void applyParams (bool force)
     {
         const bool algoChanged = pending.algorithm != params.algorithm;
+       #ifdef MAS_ATMOS
+        const bool tailChanged = pending.tailMode != curTail && ! (tailSwitchPending && pending.tailMode == nextTail);
+       #endif
         params = pending;
+       #ifdef MAS_ATMOS
+        if (tailChanged && force) curTail = std::clamp (params.tailMode, 0, 1);
+        else if (tailChanged) { tailSwitchPending = true; nextTail = std::clamp (params.tailMode, 0, 1); }
+       #endif
 
         if (algoChanged && force)
             late.configure (params.algorithm);
@@ -1060,6 +1098,10 @@ private:
         Params forLate = params;
         forLate.algorithm = algoSwitchPending ? late.getAlgorithm() : params.algorithm;
         late.update (forLate, scale, rt, force);
+       #ifdef MAS_ATMOS
+        if (curTail == 1 || tailSwitchPending)
+            atmos.update (params, scale, rt, force);
+       #endif
         er.update (params);
 
         // input filters
@@ -1089,7 +1131,7 @@ private:
             const float mixD = insert ? std::cos (std::clamp (params.mix, 0.0f, 1.0f) * 1.5707963f) : 0.0f;
             const float eE = params.erOn ? dbToGain (params.erLevelDb) : 0.0f;
             const float eL = params.lateOn ? dbToGain (params.lateLevelDb) : 0.0f;
-            const float lateE = eL * eL * lateEnergy (params.algorithm, rt);
+            const float lateE = eL * eL * lateEnergyNow (rt);
             const float lateHF = 0.5f * (params.hmMult + params.hfMult), lateLF = 0.5f * (params.lfMult + params.lmMult);
             const Geometry gRef = computeGeometry (params, kDepthRef);
             const float dRef = insert ? directGain (gRef.direct) : 0.0f;
@@ -1117,7 +1159,7 @@ private:
             const float mixD = insert ? std::cos (std::clamp (params.mix, 0.0f, 1.0f) * 1.5707963f) : 0.0f;
             const float eE = params.erOn ? dbToGain (params.erLevelDb) : 0.0f;
             const float eL = params.lateOn ? dbToGain (params.lateLevelDb) : 0.0f;
-            const float lateE = eL * eL * lateEnergy (params.algorithm, rt);
+            const float lateE = eL * eL * lateEnergyNow (rt);
             const Geometry gRef = computeGeometry (params, kDepthRef);
             const float dRef = insert ? directGain (gRef.direct) : 0.0f;
 
@@ -1174,6 +1216,10 @@ private:
         }
 
         er.process (inL, inR, erL, erR, n);
+       #ifdef MAS_ATMOS
+        if (curTail == 1) atmos.process (inL, inR, ltL, ltR, n);
+        else
+       #endif
         late.process (inL, inR, ltL, ltR, n);
 
         const bool insert = params.routing == Insert;
@@ -1199,6 +1245,27 @@ private:
             curMakeup  += sSlow * (targetMakeup - curMakeup);
             curRouteDry += sFast * (tRouteDry - curRouteDry);
 
+           #ifdef MAS_ATMOS
+            if (tailSwitchPending)
+            {
+                switchedThisChunk = true;
+                algoGain -= switchStep;
+                if (algoGain <= 0.0f)
+                {
+                    algoGain = 0.0f;
+                    curTail = nextTail;
+                    tailSwitchPending = false;
+                    if (curTail == 1) { atmos.reset(); atmos.update (params, lateScale (params), effectiveRT (params), true); }
+                    else
+                    {
+                        if (algoSwitchPending) { late.configure (nextAlgorithm); algoSwitchPending = false; }
+                        late.reset();
+                        late.update (params, lateScale (params), effectiveRT (params), true);
+                    }
+                }
+            }
+            else
+           #endif
             if (algoSwitchPending)
             {
                 switchedThisChunk = true;
@@ -1248,6 +1315,11 @@ private:
     Shelf directAir[2], toneShelf[2];
     SpatialEarly er;
     LateReverb late;
+   #ifdef MAS_ATMOS
+    AtmosTail atmos;
+    int curTail = 0, nextTail = 0;
+    bool tailSwitchPending = false;
+   #endif
     std::vector<float> scratch;
     double curLow = 20.0, curHigh = 20000.0;
     float targetDirect = 1.0f, targetMakeup = 1.0f, targetErWidthComp = 1.0f, targetTone = 1.0f, curTone = 1.0f;
