@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "PresetManager.h"
 
 using APF  = juce::AudioParameterFloat;
 using Attr = juce::AudioParameterFloatAttributes;
@@ -13,6 +14,8 @@ namespace
     constexpr int    kVersionHint  = 1;       // MASTER SPACE 1.0 parameter set
     constexpr int    kVersionHint12 = 2;      // parameters added in 1.2
     constexpr double kEngineFadeSec = 0.03;
+    constexpr double kStateFadeSec  = 0.06;   // preset / A-B transition: old path out, new path in (linear: direct sound stays constant)
+    constexpr double kStateHoldSec  = 0.10;   // longest wait for the message thread to finish writing a new state
 
     juce::NormalisableRange<float> range (float lo, float hi, float centre = 0.0f)
     {
@@ -177,6 +180,16 @@ MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
 MasterSpaceAudioProcessor::~MasterSpaceAudioProcessor()
 {
     stopTimer();
+    matchGeneration.fetch_add (1);
+    matchPool.removeAllJobs (true, 10000);
+    presetManager.reset();
+}
+
+mspreset::PresetManager& MasterSpaceAudioProcessor::getPresetManager()
+{
+    if (presetManager == nullptr)
+        presetManager = std::make_unique<mspreset::PresetManager> (*this);
+    return *presetManager;
 }
 
 mspace::Params MasterSpaceAudioProcessor::readParams() const
@@ -186,9 +199,16 @@ mspace::Params MasterSpaceAudioProcessor::readParams() const
     return p;
 }
 
-// Fills the parameter set of either engine (1.2 or the frozen 1.1); both share these fields.
 template <class P>
 void MasterSpaceAudioProcessor::fillParams (P& p) const
+{
+    fillParamsWith (p, [this] (const char* id) { return get (id); });
+}
+
+// Fills the parameter set of either engine (1.2 or the frozen 1.1) from plain parameter values;
+// both engines share these fields.
+template <class P, class Get>
+void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
 {
     using namespace ParamIDs;
     p.algorithm    = juce::roundToInt (get (algorithm));
@@ -262,17 +282,19 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     }
     chunkSize = juce::jmax (64, samplesPerBlock);
 
-    engine.setParams (readParams());
-    engine.prepare (sampleRate);
     {
-        mspace11::Params lp; fillParams (lp);
-        legacyEngine.setParams (lp);
-        legacyEngine.prepare (sampleRate);
+        curP = readParams();
+        fillParams (curLP);
+        curLegacy = isLegacyEngine();
+        haveCur = true;
+        for (auto& path : paths)
+            path.prepare (sampleRate, chunkSize, curP, curLP, curLegacy);
+        txScratch.setSize (3, chunkSize);
+        activePath = 0;
+        txState = Tx::idle;
+        txGain = 1.0f;
+        transitionSeen = transitionRequest.load();
     }
-    engineScratch.setSize (2, chunkSize);
-    engineGain = isLegacyEngine() ? 0.0f : 1.0f;
-    newRunning = engineGain > 0.0f;
-    legacyRunning = engineGain < 1.0f;
 
     convolver.prepare ({ sampleRate, (juce::uint32) chunkSize, 2 });
     for (auto& d : irPreDelay) d.allocate ((int) std::ceil (0.52 * sampleRate) + 8);
@@ -297,8 +319,10 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 
 void MasterSpaceAudioProcessor::reset()
 {
-    engine.reset();
-    legacyEngine.reset();
+    for (auto& path : paths) path.reset();
+    if (txState == Tx::fading) activePath = 1 - activePath;
+    txState = Tx::idle;
+    txGain = 1.0f;
     resetIRPath();
 }
 
@@ -361,11 +385,50 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     if (n == 0) return;
 
     takePendingIR();
-    engine.setParams (readParams());
+
+    // Parameters of this block. They are read BEFORE the transition counters: the message thread
+    // raises the request counter before it writes a new state, so a block that sees any new value
+    // also sees the request and keeps the running path on the previous block's (old) state.
+    const mspace::Params p = readParams();
+    mspace11::Params lp; fillParams (lp);
+    const bool legacyNow = isLegacyEngine();
+    const auto req = transitionRequest.load();
+    const auto ready = transitionReady.load();
+
+    if (req != transitionSeen)
     {
-        mspace11::Params lp; fillParams (lp);
-        legacyEngine.setParams (lp);
+        transitionSeen = req;
+        if (txState == Tx::idle)
+        {
+            frozenP = haveCur ? curP : p;
+            frozenLP = haveCur ? curLP : lp;
+            frozenLegacy = haveCur ? curLegacy : legacyNow;
+            txState = Tx::holding;
+            txHold = 0;
+        }
+        // a new state while fading in: the incoming path just follows it (smoothed like automation)
     }
+    else if (txState == Tx::holding)
+    {
+        // start one block after the new state was seen complete, so all of it is in p
+        txHold += n;
+        if (ready == req || txHold > (int) (kStateHoldSec * sampleRateHz))
+        {
+            paths[1 - activePath].snap (p, lp, legacyNow);
+            txGain = 0.0f;
+            txState = Tx::fading;
+        }
+    }
+
+    if (txState == Tx::idle)
+        paths[activePath].setParams (p, lp);
+    else
+    {
+        paths[activePath].setParams (frozenP, frozenLP);
+        if (txState == Tx::fading)
+            paths[1 - activePath].setParams (p, lp);
+    }
+    curP = p; curLP = lp; curLegacy = legacyNow; haveCur = true;
 
     if (numOut >= 2 && numIn == 1)
         buffer.copyFrom (1, 0, buffer, 0, 0, n);   // mono in -> stereo out
@@ -389,6 +452,22 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
     for (int ch = juce::jmax (2, numIn); ch < numOut; ++ch)
         buffer.clear (ch, 0, n);
+
+    // A/B level match: trim on the B slot (smoothed, ~30 ms)
+    const float tTrim = (levelMatchOn.load() && audioSlot.load() == 1) ? juce::Decibels::decibelsToGain (matchTrimDb.load()) : 1.0f;
+    if (std::abs (tTrim - curTrim) > 1.0e-6f || std::abs (curTrim - 1.0f) > 1.0e-6f)
+    {
+        const float a = (float) (1.0 - std::exp (-1.0 / (0.03 * sampleRateHz)));
+        const int chans = juce::jmin (2, numOut);
+        float g = curTrim;
+        for (int i = 0; i < n; ++i)
+        {
+            g += a * (tTrim - g);
+            for (int ch = 0; ch < chans; ++ch)
+                buffer.getWritePointer (ch)[i] *= g;
+        }
+        curTrim = std::abs (g - tTrim) < 1.0e-5f ? tTrim : g;
+    }
 }
 
 void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
@@ -405,8 +484,14 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
 
     if (needAlgo)
     {
-        if (! algoRunning) { engine.reset(); legacyEngine.reset(); algoRunning = true; }
-        processEngines (left, right, n);
+        if (! algoRunning)
+        {
+            if (txState == Tx::fading) activePath = 1 - activePath;
+            txState = Tx::idle;
+            paths[activePath].snap (curP, curLP, curLegacy);
+            algoRunning = true;
+        }
+        processAlgo (left, right, n);
     }
     else
     {
@@ -435,10 +520,40 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
     }
 }
 
-// Runs the 1.2 engine, the frozen 1.1 engine, or both while cross-fading after a switch.
-void MasterSpaceAudioProcessor::processEngines (float* left, float* right, int n)
+//==============================================================================
+void AlgoPath::prepare (double fs, int maxBlock, const mspace::Params& p, const mspace11::Params& lp, bool legacyActive)
 {
-    const float target = isLegacyEngine() ? 0.0f : 1.0f;
+    engine.setParams (p);
+    engine.prepare (fs);
+    legacy.setParams (lp);
+    legacy.prepare (fs);
+    scratch.setSize (5, maxBlock);
+    engineGain = legacyActive ? 0.0f : 1.0f;
+    newRunning = ! legacyActive;
+    legacyRunning = legacyActive;
+}
+
+void AlgoPath::snap (const mspace::Params& p, const mspace11::Params& lp, bool legacyActive)
+{
+    engine.snap (p);
+    legacy.snap (lp);
+    engineGain = legacyActive ? 0.0f : 1.0f;
+    newRunning = ! legacyActive;
+    legacyRunning = legacyActive;
+}
+
+double AlgoPath::getTailSeconds (bool legacyActive) const
+{
+    return legacyActive ? legacy.getTailSeconds() : engine.getTailSeconds();
+}
+
+// Runs the 1.2 engine, the frozen 1.1 engine, or both while cross-fading after a switch.
+// The engine that comes in starts from silence and gets a faded-in INPUT (its reflections then build
+// up smoothly, no onset clicks on sustained notes); the engine that goes out gets a faded-out OUTPUT.
+// Both ramps are the same linear ramp, so the direct sound (Insert) is cross-faded at constant level.
+void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, double fs)
+{
+    const float target = legacyTarget ? 0.0f : 1.0f;
     const bool needNew = target > 0.0f || engineGain > 0.0f;
     const bool needOld = target < 1.0f || engineGain < 1.0f;
 
@@ -451,29 +566,80 @@ void MasterSpaceAudioProcessor::processEngines (float* left, float* right, int n
     }
     if (needOld && ! needNew)
     {
-        if (! legacyRunning) { legacyEngine.reset(); legacyRunning = true; }
+        if (! legacyRunning) { legacy.reset(); legacyRunning = true; }
         newRunning = false;
-        legacyEngine.process (left, right, n);
+        legacy.process (left, right, n);
         return;
     }
 
-    // both: the engine that was idle starts from silence, the other one fades out
     if (! newRunning)    { engine.reset(); newRunning = true; }
-    if (! legacyRunning) { legacyEngine.reset(); legacyRunning = true; }
-    float* oL = engineScratch.getWritePointer (0);
-    float* oR = engineScratch.getWritePointer (1);
-    juce::FloatVectorOperations::copy (oL, left, n);
-    juce::FloatVectorOperations::copy (oR, right, n);
-    engine.process (left, right, n);
-    legacyEngine.process (oL, oR, n);
+    if (! legacyRunning) { legacy.reset(); legacyRunning = true; }
 
-    const float step = (float) (1.0 / (kEngineFadeSec * sampleRateHz));
+    // per-sample gains of the new engine (g) along the ramp
+    float* gains = scratch.getWritePointer (0);
+    float* oL = scratch.getWritePointer (1);
+    float* oR = scratch.getWritePointer (2);
+    float* nL = scratch.getWritePointer (3);
+    float* nR = scratch.getWritePointer (4);
+    const float step = (float) (1.0 / (kEngineFadeSec * fs));
     for (int i = 0; i < n; ++i)
     {
         engineGain = target > engineGain ? juce::jmin (target, engineGain + step) : juce::jmax (target, engineGain - step);
-        const float gNew = std::sin (engineGain * 1.5707963f), gOld = std::cos (engineGain * 1.5707963f);
-        left[i]  = left[i] * gNew + oL[i] * gOld;
-        right[i] = right[i] * gNew + oR[i] * gOld;
+        gains[i] = engineGain;
+    }
+    const bool newComesIn = target > 0.5f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float gNew = gains[i], gOld = 1.0f - gains[i];
+        nL[i] = left[i] * (newComesIn ? gNew : 1.0f);  nR[i] = right[i] * (newComesIn ? gNew : 1.0f);
+        oL[i] = left[i] * (newComesIn ? 1.0f : gOld);  oR[i] = right[i] * (newComesIn ? 1.0f : gOld);
+    }
+    engine.process (nL, nR, n);
+    legacy.process (oL, oR, n);
+    for (int i = 0; i < n; ++i)
+    {
+        const float gNew = gains[i], gOld = 1.0f - gains[i];
+        left[i]  = nL[i] * (newComesIn ? 1.0f : gNew) + oL[i] * (newComesIn ? gOld : 1.0f);
+        right[i] = nR[i] * (newComesIn ? 1.0f : gNew) + oR[i] * (newComesIn ? gOld : 1.0f);
+    }
+}
+
+// Algorithmic path with state transitions. While fading, the old path (old state) keeps running and its
+// output fades out; the new path (clean engine, new state) gets the same input with a fade-in, so its
+// reflections and tail build up smoothly from the moment of the switch. The two linear ramps add up to
+// one, so the direct sound stays at constant level.
+void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n)
+{
+    if (txState != Tx::fading)
+    {
+        paths[activePath].process (left, right, n, txState == Tx::holding ? frozenLegacy : curLegacy, sampleRateHz);
+        return;
+    }
+
+    float* oL = txScratch.getWritePointer (0);
+    float* oR = txScratch.getWritePointer (1);
+    float* g  = txScratch.getWritePointer (2);
+    const float step = (float) (1.0 / (kStateFadeSec * sampleRateHz));
+    for (int i = 0; i < n; ++i)
+    {
+        txGain = juce::jmin (1.0f, txGain + step);
+        g[i] = txGain;
+        oL[i] = left[i];
+        oR[i] = right[i];
+        left[i]  *= txGain;
+        right[i] *= txGain;
+    }
+    paths[activePath].process (oL, oR, n, frozenLegacy, sampleRateHz);      // outgoing
+    paths[1 - activePath].process (left, right, n, curLegacy, sampleRateHz);   // incoming (faded-in input)
+    for (int i = 0; i < n; ++i)
+    {
+        left[i]  += oL[i] * (1.0f - g[i]);
+        right[i] += oR[i] * (1.0f - g[i]);
+    }
+    if (txGain >= 1.0f)
+    {
+        activePath = 1 - activePath;
+        txState = Tx::idle;
     }
 }
 
@@ -556,7 +722,7 @@ double MasterSpaceAudioProcessor::getTailLengthSeconds() const
     if (get (ParamIDs::mode) > 0.5f)
         return juce::jmin (kMaxIRSeconds, irSeconds.load() + get (ParamIDs::preDelay) * 0.001 + 0.3);
 
-    return isLegacyEngine() ? legacyEngine.getTailSeconds() : engine.getTailSeconds();
+    return paths[activePath].getTailSeconds (isLegacyEngine());
 }
 
 //==============================================================================
@@ -717,36 +883,373 @@ void MasterSpaceAudioProcessor::timerCallback()
 }
 
 //==============================================================================
+ParamMap MasterSpaceAudioProcessor::captureParamMap() const
+{
+    ParamMap m;
+    for (auto* prm : getParameters())
+        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
+            m[r->getParameterID()] = r->convertFrom0to1 (r->getValue());
+    return m;
+}
+
+ParamMap MasterSpaceAudioProcessor::defaultParamMap() const
+{
+    ParamMap m;
+    for (auto* prm : getParameters())
+        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
+            m[r->getParameterID()] = r->convertFrom0to1 (r->getDefaultValue());
+    return m;
+}
+
+void MasterSpaceAudioProcessor::applyParamMap (const ParamMap& values, const juce::String& irPath)
+{
+    jassert (juce::MessageManager::getInstanceWithoutCreating() == nullptr
+             || juce::MessageManager::getInstance()->isThisTheMessageThread());
+
+    beginStateTransition();
+    for (auto* prm : getParameters())
+    {
+        auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm);
+        if (r == nullptr) continue;
+        const auto it = values.find (r->getParameterID());
+        const float norm = it != values.end() ? r->convertTo0to1 (r->getNormalisableRange().snapToLegalValue (it->second))
+                                              : r->getDefaultValue();
+        if (std::abs (norm - r->getValue()) > 1.0e-7f)
+        {
+            r->beginChangeGesture();
+            r->setValueNotifyingHost (norm);
+            r->endChangeGesture();
+        }
+    }
+    endStateTransition();
+
+    if (irPath.isNotEmpty() && irPath != getIRPath())
+    {
+        const juce::File f (irPath);
+        if (f.existsAsFile())
+            loadImpulseResponse (f);
+        else
+            irDisplayName = "Not found: " + f.getFileName();
+    }
+}
+
+//==============================================================================
+// A/B compare
+juce::int64 MasterSpaceAudioProcessor::hashOf (const ParamMap& m)
+{
+    juce::String s;
+    for (const auto& [id, v] : m) s << id << '=' << juce::String (v, 5) << ';';
+    return s.hashCode64();
+}
+
+int MasterSpaceAudioProcessor::getActiveSlot() const
+{
+    const juce::ScopedLock sl (compareLock);
+    return compare.active;
+}
+
+bool MasterSpaceAudioProcessor::slotHasState (int slot) const
+{
+    const juce::ScopedLock sl (compareLock);
+    return compare.has[slot & 1] || (slot & 1) == compare.active;
+}
+
+void MasterSpaceAudioProcessor::captureLiveInto (CompareContext& c) const
+{
+    const int a = c.active;
+    c.slot[a] = captureParamMap();
+    c.has[a] = true;
+    c.irPath[a] = getIRPath();
+    c.presetKey[a] = apvts.state.getProperty ("presetKey").toString();
+    c.presetName[a] = apvts.state.getProperty ("presetName").toString();
+}
+
+void MasterSpaceAudioProcessor::setLivePresetInfo (const juce::String& key, const juce::String& name)
+{
+    apvts.state.setProperty ("presetKey", key, nullptr);
+    apvts.state.setProperty ("presetName", name, nullptr);
+}
+
+void MasterSpaceAudioProcessor::selectSlot (int slot)
+{
+    slot &= 1;
+    CompareContext target;
+    {
+        const juce::ScopedLock sl (compareLock);
+        if (slot == compare.active) return;
+        captureLiveInto (compare);
+        previous = compare; hasPrevious = true;
+        if (! compare.has[slot])
+        {
+            // first visit: the other slot starts as a copy of the current one (no audible change)
+            const int a = compare.active;
+            compare.slot[slot] = compare.slot[a];
+            compare.irPath[slot] = compare.irPath[a];
+            compare.presetKey[slot] = compare.presetKey[a];
+            compare.presetName[slot] = compare.presetName[a];
+            compare.has[slot] = true;
+        }
+        compare.active = slot;
+        target = compare;
+    }
+    applyParamMap (target.slot[slot], target.irPath[slot]);
+    setLivePresetInfo (target.presetKey[slot], target.presetName[slot]);
+    audioSlot = slot;
+    if (presetManager != nullptr) presetManager->stateReplaced();
+}
+
+void MasterSpaceAudioProcessor::copyActiveToOther()
+{
+    const juce::ScopedLock sl (compareLock);
+    captureLiveInto (compare);
+    previous = compare; hasPrevious = true;
+    const int a = compare.active, o = 1 - a;
+    compare.slot[o] = compare.slot[a];
+    compare.irPath[o] = compare.irPath[a];
+    compare.presetKey[o] = compare.presetKey[a];
+    compare.presetName[o] = compare.presetName[a];
+    compare.has[o] = true;
+}
+
+void MasterSpaceAudioProcessor::pushCompareHistory()
+{
+    const juce::ScopedLock sl (compareLock);
+    captureLiveInto (compare);
+    previous = compare; hasPrevious = true;
+}
+
+bool MasterSpaceAudioProcessor::canUndoCompare() const
+{
+    const juce::ScopedLock sl (compareLock);
+    return hasPrevious;
+}
+
+void MasterSpaceAudioProcessor::undoCompare()
+{
+    CompareContext target;
+    {
+        const juce::ScopedLock sl (compareLock);
+        if (! hasPrevious) return;
+        CompareContext now = compare;
+        captureLiveInto (now);
+        compare = previous;
+        previous = now;                          // a second undo goes back again (redo)
+        target = compare;
+        audioSlot = compare.active;
+    }
+    const int a = target.active;
+    applyParamMap (target.slot[a], target.irPath[a]);
+    setLivePresetInfo (target.presetKey[a], target.presetName[a]);
+    if (presetManager != nullptr) presetManager->stateReplaced();
+}
+
+void MasterSpaceAudioProcessor::setLevelMatch (bool on)
+{
+    levelMatchOn = on;
+    matchedHash = 0;
+    if (! on) { matchTrimDb = 0.0f; matchStatus = {}; }
+    refreshLevelMatch();
+}
+
+juce::String MasterSpaceAudioProcessor::getMatchStatus() const
+{
+    return matchStatus;
+}
+
+// Level match: the B slot gets a trim so its loudness for pink noise equals that of A. Measured
+// offline on a background thread with separate engine instances; nothing runs on the audio thread
+// except one smoothed gain.
+void MasterSpaceAudioProcessor::refreshLevelMatch()
+{
+    if (! levelMatchOn) return;
+
+    ParamMap a, b;
+    {
+        const juce::ScopedLock sl (compareLock);
+        if (! compare.has[1 - compare.active]) { matchStatus = "MATCH: set up B first"; matchTrimDb = 0.0f; return; }
+        a = compare.active == 0 ? captureParamMap() : compare.slot[0];
+        b = compare.active == 1 ? captureParamMap() : compare.slot[1];
+    }
+    const auto h = hashOf (a) ^ (hashOf (b) * 31);
+    if (h == matchedHash) return;
+    if (h != pendingMatchHash) { pendingMatchHash = h; matchStatus = "MATCH: waiting..."; return; }   // settle first
+    matchedHash = h;
+
+    const auto isIR = [] (const ParamMap& m) { const auto it = m.find (ParamIDs::mode); return it != m.end() && it->second > 0.5f; };
+    if (isIR (a) || isIR (b)) { matchStatus = "MATCH: n/a in IR mode"; matchTrimDb = 0.0f; return; }
+
+    matchStatus = "MATCH: measuring...";
+    const int gen = matchGeneration.fetch_add (1) + 1;
+    const double fs = sampleRateHz > 0 ? sampleRateHz : 48000.0;
+    matchPool.addJob ([this, a, b, gen, fs, alive = std::weak_ptr<bool> (aliveFlag)]
+    {
+        const double la = measureLoudness (a, fs);
+        if (matchGeneration.load() != gen) return;
+        const double lb = measureLoudness (b, fs);
+        if (matchGeneration.load() != gen) return;
+        const float trim = (float) juce::jlimit (-12.0, 12.0, la - lb);
+        juce::MessageManager::callAsync ([this, gen, trim, alive]
+        {
+            if (alive.expired() || matchGeneration.load() != gen) return;
+            matchTrimDb = trim;
+            matchStatus = "B " + juce::String (trim >= 0 ? "+" : "") + juce::String (trim, 1) + " dB";
+        });
+    });
+}
+
+double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
+{
+    auto getter = [&m] (const char* id) { const auto it = m.find (id); return it != m.end() ? it->second : 0.0f; };
+    mspace::Params p; fillParamsWith (p, getter);
+    mspace11::Params lp; fillParamsWith (lp, getter);
+    const bool legacy = getter (ParamIDs::engine) < 0.5f;
+
+    constexpr int block = 512;
+    auto path = std::make_unique<AlgoPath>();
+    path->prepare (fs, block, p, lp, legacy);
+
+    // K-weighting (ITU-R BS.1770), coefficients for any sample rate
+    struct BQ { double b0, b1, b2, a1, a2, z1 = 0, z2 = 0;
+                double run (double x) { const double y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; } };
+    auto kw = [fs]
+    {
+        std::array<BQ, 2> f {};
+        { const double f0 = 1681.974450955533, G = 3.999843853973347, Q = 0.7071752369554196;
+          const double K = std::tan (juce::MathConstants<double>::pi * f0 / fs), Vh = std::pow (10.0, G / 20.0), Vb = std::pow (Vh, 0.4996667741545416);
+          const double a0 = 1.0 + K / Q + K * K;
+          f[0] = { (Vh + Vb * K / Q + K * K) / a0, 2.0 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0 }; }
+        { const double f0 = 38.13547087602444, Q = 0.5003270373238773;
+          const double K = std::tan (juce::MathConstants<double>::pi * f0 / fs), a0 = 1.0 + K / Q + K * K;
+          f[1] = { 1.0, -2.0, 1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0 }; }
+        return f;
+    };
+    auto kL = kw(), kR = kw();
+
+    // pink noise (Paul Kellet), same signal on both channels like a centred source, -18 dBFS RMS
+    juce::Random rng (0x5eed1234);
+    double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    juce::AudioBuffer<float> buf (2, block);
+    const int total = (int) (3.0 * fs), skip = (int) (1.0 * fs);
+    double sum = 0.0; long long count = 0;
+    for (int pos = 0; pos < total; pos += block)
+    {
+        const int n = juce::jmin (block, total - pos);
+        for (int i = 0; i < n; ++i)
+        {
+            const double w = rng.nextDouble() * 2.0 - 1.0;
+            b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
+            b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
+            const double pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+            buf.setSample (0, i, (float) (pink * 0.5));
+            buf.setSample (1, i, (float) (pink * 0.5));
+        }
+        path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs);
+        for (int i = 0; i < n; ++i)
+        {
+            double l = buf.getSample (0, i), r = buf.getSample (1, i);
+            for (auto& f : kL) l = f.run (l);
+            for (auto& f : kR) r = f.run (r);
+            if (pos + i >= skip) { sum += l * l + r * r; ++count; }
+        }
+    }
+    return -0.691 + 10.0 * std::log10 (std::max (1.0e-12, sum / (double) std::max (1LL, count)));
+}
+
+void MasterSpaceAudioProcessor::storeCompareState (juce::ValueTree& state) const
+{
+    const juce::ScopedLock sl (compareLock);
+    juce::ValueTree ab ("ABCompare");
+    ab.setProperty ("active", compare.active, nullptr);
+    ab.setProperty ("levelMatch", levelMatchOn.load(), nullptr);
+    ab.setProperty ("matchTrim", matchTrimDb.load(), nullptr);
+    for (int i = 0; i < 2; ++i)
+    {
+        if (! compare.has[i] || i == compare.active) continue;   // the active slot is the live state
+        juce::ValueTree slot ("Slot");
+        slot.setProperty ("index", i, nullptr);
+        slot.setProperty ("irPath", compare.irPath[i], nullptr);
+        slot.setProperty ("presetKey", compare.presetKey[i], nullptr);
+        slot.setProperty ("presetName", compare.presetName[i], nullptr);
+        for (const auto& [id, v] : compare.slot[i])
+            slot.setProperty (juce::Identifier (id), v, nullptr);
+        ab.appendChild (slot, nullptr);
+    }
+    state.appendChild (ab, nullptr);
+}
+
+void MasterSpaceAudioProcessor::restoreCompareState (const juce::XmlElement& xml)
+{
+    const juce::ScopedLock sl (compareLock);
+    compare = {};
+    hasPrevious = false;
+    if (auto* ab = xml.getChildByName ("ABCompare"))
+    {
+        compare.active = ab->getIntAttribute ("active", 0) & 1;
+        levelMatchOn = ab->getBoolAttribute ("levelMatch", false);
+        matchTrimDb = levelMatchOn ? (float) juce::jlimit (-12.0, 12.0, ab->getDoubleAttribute ("matchTrim", 0.0)) : 0.0f;
+        const auto defaults = defaultParamMap();
+        for (auto* slot : ab->getChildWithTagNameIterator ("Slot"))
+        {
+            const int i = slot->getIntAttribute ("index", 0) & 1;
+            ParamMap m = defaults;
+            for (auto& [id, v] : m)
+                if (slot->hasAttribute (id)) v = (float) slot->getDoubleAttribute (id, v);
+            compare.slot[i] = m;
+            compare.irPath[i] = slot->getStringAttribute ("irPath");
+            compare.presetKey[i] = slot->getStringAttribute ("presetKey");
+            compare.presetName[i] = slot->getStringAttribute ("presetName");
+            compare.has[i] = true;
+        }
+    }
+    else
+    {
+        levelMatchOn = false;
+        matchTrimDb = 0.0f;
+    }
+    audioSlot = compare.active;
+    matchedHash = pendingMatchHash = 0;
+}
+
+//==============================================================================
 void MasterSpaceAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.setProperty ("stateVersion", 2, nullptr);       // 2 = MASTER SPACE 1.2 (engine parameter, A/B, preset info)
+    state.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
+    storeCompareState (state);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
 void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return;   // unreadable state: keep the current one rather than resetting the sound
+
+    // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
+    bool hasEngine = false;
+    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        if (e->getStringAttribute ("id") == ParamIDs::engine) { hasEngine = true; break; }
+
+    auto tree = juce::ValueTree::fromXml (*xml);
+    tree.removeChild (tree.getChildWithName ("ABCompare"), nullptr);
+
+    beginStateTransition();
+    apvts.replaceState (tree);
+    if (! hasEngine)
+        if (auto* prm = apvts.getParameter (ParamIDs::engine))
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));
+    endStateTransition();
+
+    restoreCompareState (*xml);
+    if (presetManager != nullptr) presetManager->stateReplaced();
+
+    const auto path = apvts.state.getProperty ("irPath").toString();
+    if (path.isNotEmpty())
     {
-        if (xml->hasTagName (apvts.state.getType()))
-        {
-            // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
-            bool hasEngine = false;
-            for (auto* e : xml->getChildIterator())
-                if (e->getStringAttribute ("id") == ParamIDs::engine) { hasEngine = true; break; }
-
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-
-            if (! hasEngine)
-                if (auto* prm = apvts.getParameter (ParamIDs::engine))
-                    prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));
-
-            const auto path = apvts.state.getProperty ("irPath").toString();
-            if (path.isNotEmpty())
-            {
-                const juce::SpinLock::ScopedLockType lock (requestLock);
-                requestedIRPath = path;
-            }
-        }
+        const juce::SpinLock::ScopedLockType lock (requestLock);
+        requestedIRPath = path;
     }
 }
 

@@ -103,13 +103,17 @@ private:
     int leftWidth = 0;
 };
 
+class PresetBar;
+class PresetBrowser;
+class PresetDialog;
+
 //==============================================================================
 class MASPanel : public juce::Component,
                  private juce::Timer
 {
 public:
     static constexpr int baseWidth  = 1000;
-    static constexpr int baseHeight = 640;
+    static constexpr int baseHeight = 680;
 
     MASPanel (MasterSpaceAudioProcessor&, MASLookAndFeel&);
     ~MASPanel() override;
@@ -137,6 +141,9 @@ private:
     juce::OwnedArray<ControlPage> pages;
     RoomView* roomView = nullptr;
     int currentPage = 0;
+    std::unique_ptr<PresetDialog> presetDialog;
+    std::unique_ptr<PresetBar> presetBar;
+    std::unique_ptr<PresetBrowser> presetBrowser;
 
     std::unique_ptr<juce::FileChooser> chooser;
     bool shownIR = false;

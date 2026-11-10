@@ -1,12 +1,16 @@
 #include "PluginEditor.h"
+#include "PresetPanel.h"
 #include "BinaryData.h"
 
 namespace
 {
     constexpr int kHeader   = 100;
-    constexpr int kTabsY    = 106;
+    constexpr int kBarY     = 106;    // preset bar
+    constexpr int kBarH     = 30;
+    constexpr int kTabsY    = 146;
     constexpr int kTabsH    = 30;
-    constexpr int kPageY    = 144;
+    constexpr int kPageY    = 184;
+    constexpr int kPresetsPage = 8;
     constexpr int kMinWidth = 700;    // 70 %
     constexpr int kMaxWidth = 2000;   // 200 %
 
@@ -144,6 +148,9 @@ juce::Label* MASLookAndFeel::createSliderTextBox (juce::Slider& slider)
 void MASLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&,
                                            bool highlighted, bool down)
 {
+    if (b.getProperties().getWithDefault ("presetName", false))
+        return;   // drawn by the preset bar
+
     const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
     const bool on = b.getToggleState();
     const float dim = b.isEnabled() ? 1.0f : 0.35f;
@@ -174,6 +181,8 @@ void MASLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, c
 
 void MASLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool)
 {
+    if (b.getProperties().getWithDefault ("presetName", false))
+        return;
     const bool tab = b.getProperties().getWithDefault ("tab", false);
     const bool on = b.getToggleState();
     const float dim = b.isEnabled() ? 1.0f : 0.35f;
@@ -706,10 +715,11 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::knob, output, "OUTPUT" }, { K::knob, mix, "MIX" }, { K::choice, routing, "ROUTING" },
           { K::knob, irLength, "IR LENGTH" }, { K::knob, lowCut, "LOW CUT" }, { K::knob, highCut, "HIGH CUT" } },
         { { K::toggle, lockLevel, "LEVEL LOCK", true }, { K::toggle, lockTone, "TONE LOCK", true }, { K::toggle, lockDecay, "DECAY LOCK", true },
-          { K::toggle, lockWidth, "WIDTH LOCK", true }, { K::choice, mode, "MODE" }, { K::choice, algorithm, "ALGORITHM", true } } };
+          { K::toggle, lockWidth, "WIDTH LOCK", true }, { K::choice, mode, "MODE" }, { K::choice, algorithm, "ALGORITHM", true } },
+        { { K::choice, ParamIDs::engine, "DSP ENGINE" }, { K::empty }, { K::empty }, { K::empty }, { K::empty }, { K::empty } } };
     pages.add (new ControlPage (processor.apvts, lnf, advRows, 6));
 
-    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED" };
+    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "PRESETS" };
     for (int i = 0; i < tabNames.size(); ++i)
     {
         auto* b = tabButtons.add (new juce::TextButton (tabNames[i]));
@@ -719,12 +729,21 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     }
     for (auto* pg : pages) addChildComponent (pg);
 
+    // presets: quick bar, browser page, in-window dialog (on top of everything)
+    presetDialog = std::make_unique<PresetDialog> (lnf);
+    presetBar = std::make_unique<PresetBar> (processor, lnf, *presetDialog, [this] { showPage (kPresetsPage); });
+    presetBrowser = std::make_unique<PresetBrowser> (processor, lnf, *presetDialog, *presetBar);
+    addAndMakeVisible (*presetBar);
+    addChildComponent (*presetBrowser);
+
     // room presets (set geometry + materials)
     roomPreset.setLookAndFeel (&lnf);
     roomPreset.setTextWhenNothingSelected ("Room type...");
     roomPreset.addItemList ({ "Vocal Booth", "Studio Room", "Live Room", "Chamber", "Stone Chamber", "Concert Hall", "Church", "Glass Room" }, 1);
     roomPreset.onChange = [this] { applyRoomPreset (roomPreset.getSelectedItemIndex()); };
     addChildComponent (roomPreset);
+
+    addChildComponent (*presetDialog);
 
     setSize (baseWidth, baseHeight);
     showPage (0);
@@ -735,6 +754,9 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
 MASPanel::~MASPanel()
 {
     stopTimer();
+    presetBrowser.reset();
+    presetBar.reset();
+    presetDialog.reset();
     roomPreset.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
@@ -773,12 +795,13 @@ void MASPanel::showPage (int index)
 {
     currentPage = index;
     for (int i = 0; i < pages.size(); ++i)
-    {
         pages[i]->setVisible (i == index);
+    for (int i = 0; i < tabButtons.size(); ++i)
         tabButtons[i]->setToggleState (i == index, juce::dontSendNotification);
-    }
+    if (presetBrowser != nullptr) presetBrowser->setVisible (index == kPresetsPage);
     roomPreset.setVisible (index == 1);
     roomPreset.toFront (false);
+    if (presetDialog != nullptr && presetDialog->isVisible()) presetDialog->toFront (true);
 }
 
 void MASPanel::updateState()
@@ -900,6 +923,9 @@ void MASPanel::resized()
 
     const auto pageArea = juce::Rectangle<int> (20, kPageY, baseWidth - 40, baseHeight - kPageY - 18);
     for (auto* pg : pages) pg->setBounds (pageArea);
+    if (presetBrowser != nullptr) presetBrowser->setBounds (pageArea);
+    if (presetBar != nullptr) presetBar->setBounds (26, kBarY, baseWidth - 52, kBarH);
+    if (presetDialog != nullptr) presetDialog->setBounds (getLocalBounds());
     roomPreset.setBounds (pageArea.getX() + 22, pageArea.getY() + 14, 160, 26);
 }
 

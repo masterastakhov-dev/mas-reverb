@@ -25,6 +25,11 @@ juce_add_binary_data(MasBrandData SOURCES
     Resources/emblem.png
     Resources/wordmark.png)
 
+# MASTER SPACE factory preset library (JSON, one file per preset). New presets need no DSP code changes.
+file(GLOB MAS_SPACE_PRESETS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/presets/factory/*.json)
+juce_add_binary_data(MasterSpacePresets HEADER_NAME MasterSpacePresets.h NAMESPACE MasterSpacePresets
+    SOURCES ${MAS_SPACE_PRESETS})
+
 # mas_add_plugin(<cmake target> <product name> <4-char AU code> <bundle id> <version> <source dir> <description>)
 function(mas_add_plugin target product code bundle version srcdir description)
     juce_add_plugin(${target}
@@ -66,8 +71,14 @@ function(mas_add_plugin target product code bundle version srcdir description)
 endfunction()
 
 # MASTER SPACE: spatial engine (Spatial DNA + Depth + locks), separate product.
-mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.1.0
+mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.2.0
                Source/MasterSpace "Spatial reverb: room, depth, early and late")
+target_sources(MasterSpace PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp)
+target_link_libraries(MasterSpace PRIVATE MasterSpacePresets)
+
+# MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
+mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
+               Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
 
 # MASTER SPACE 1.0 kept unchanged under its own name and code, for A/B against the current version.
 mas_add_plugin(MasterSpaceRef "MASTER SPACE 1.0" MSp0 com.masterastakhovsound.masterspace10 1.0.0
@@ -80,3 +91,21 @@ mas_add_plugin(AlenteyVerb "ALENTEY VERB" AVrb com.masterastakhovsound.alenteyve
                Source/MasterVerb "Algorithmic hall reverb")
 mas_add_plugin(AlexHookVerb "ALEX HOOK VERB" AHvb com.masterastakhovsound.alexhookverb 1.2.0
                Source/MasterVerb "Algorithmic hall reverb")
+
+# Headless tests of the MASTER SPACE processor (presets, A/B, state, transitions, CPU): -DMAS_BUILD_TESTS=ON
+option(MAS_BUILD_TESTS "Build the MASTER SPACE headless tests" OFF)
+if(MAS_BUILD_TESTS)
+    juce_add_console_app(MasterSpaceTests PRODUCT_NAME "MasterSpaceTests")
+    target_sources(MasterSpaceTests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp)
+    target_compile_definitions(MasterSpaceTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        JucePlugin_Name="MASTER SPACE" JucePlugin_VersionString="1.2.0")
+    target_link_libraries(MasterSpaceTests PRIVATE
+        MasterSpacePresets MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+endif()
