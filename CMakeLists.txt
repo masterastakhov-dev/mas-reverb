@@ -69,8 +69,10 @@ endfunction()
 mas_add_plugin(MasterSpace "MASTER SPACE" MSpc com.masterastakhovsound.masterspace 1.0.0
                Source/MasterSpace "Spatial reverb: room, depth, early and late")
 
-# MASTER VERB 1.x and its ALENTEY VERB twin (same engine and UI, different name).
+# MASTER VERB 1.x and its twins ALENTEY VERB, ALEX HOOK VERB (same engine and UI, different name).
 mas_add_plugin(MasterVerb  "MASTER VERB"  MVrb com.masterastakhovsound.masterverb 1.2.0
                Source/MasterVerb "Algorithmic hall reverb")
 mas_add_plugin(AlenteyVerb "ALENTEY VERB" AVrb com.masterastakhovsound.alenteyverb 1.2.0
+               Source/MasterVerb "Algorithmic hall reverb")
+mas_add_plugin(AlexHookVerb "ALEX HOOK VERB" AHvb com.masterastakhovsound.alexhookverb 1.2.0
                Source/MasterVerb "Algorithmic hall reverb")

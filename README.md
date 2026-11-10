@@ -7,6 +7,7 @@ Audio Unit и VST3 для macOS (Apple Silicon + Intel). В репозитори
 | **MASTER SPACE 1.0** | `Source/MasterSpace` | `MSpc` | пространственный ревербератор: виртуальная комната, Depth, Early/Late, локи |
 | **MASTER VERB 1.2** | `Source/MasterVerb` | `MVrb` | простой алгоритмический хол |
 | **ALENTEY VERB 1.2** | `Source/MasterVerb` | `AVrb` | тот же MASTER VERB под другим именем |
+| **ALEX HOOK VERB 1.2** | `Source/MasterVerb` | `AHvb` | тот же MASTER VERB под другим именем |
 
 ## MASTER SPACE — «Don't add reverb. Create space.»
 
@@ -27,8 +28,8 @@ Audio Unit и VST3 для macOS (Apple Silicon + Intel). В репозитори
 
 ## Скачать
 
-Каждый push в `main` собирает MASTER SPACE на macOS (GitHub Actions) и проверяет его через `auval -strict`.
-Готовый архив: вкладка **Actions** → последний успешный запуск → артефакт **MASTER-SPACE-macOS**
+Каждый push в `main` собирает MASTER SPACE и ALEX HOOK VERB на macOS (GitHub Actions) и проверяет его через `auval -strict`.
+Готовый архив: вкладка **Actions** → последний успешный запуск → артефакты **MASTER-SPACE-macOS** и **ALEX-HOOK-VERB-macOS**
 (`.component`, `.vst3`, установщик и инструкция).
 
 ## Сборка на своём Mac одним файлом
@@ -44,7 +45,7 @@ Audio Unit и VST3 для macOS (Apple Silicon + Intel). В репозитори
 ```bash
 cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 cmake --build build --config Release --target MasterSpace_AU MasterSpace_VST3
-# MASTER VERB / ALENTEY VERB: MasterVerb_AU MasterVerb_VST3 AlenteyVerb_AU AlenteyVerb_VST3
+# MASTER VERB / ALENTEY VERB / ALEX HOOK VERB: MasterVerb_AU, AlenteyVerb_AU, AlexHookVerb_AU (+ _VST3)
 ```
 
 Плагины появятся в `build/<Target>_artefacts/Release/`.

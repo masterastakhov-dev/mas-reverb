@@ -30,6 +30,10 @@ jobs:
             name: MASTER SPACE
             code: MSpc
             slug: MASTER-SPACE
+          - target: AlexHookVerb
+            name: ALEX HOOK VERB
+            code: AHvb
+            slug: ALEX-HOOK-VERB
     env:
       TARGET: ${{ matrix.target }}
       NAME: ${{ matrix.name }}
