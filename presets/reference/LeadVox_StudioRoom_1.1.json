@@ -1,0 +1,23 @@
+{
+  "format": "MASTER SPACE Preset",
+  "schemaVersion": 1,
+  "pluginVersion": "1.1.0",
+  "engine": "1.1 Legacy",
+  "name": "LeadVox Studio Room (1.1)",
+  "category": "Studio Rooms",
+  "author": "masterastakhovsound",
+  "description": "Settings used for 'MASTER SPACE test 2' (Track 19 LeadVox1), compared with M7 Studio A. Read from the plugin window in REAPER on 2026-11-10.",
+  "parameters": {
+    "algo": "Studio Room", "mode": "Algorithmic", "routing": "Insert",
+    "depth": 24, "decay": 0.69, "size": 34, "predelay": 0, "erlevel": -5.9, "latelevel": -4.0,
+    "diffusion": 25, "density": 60, "shape": 35, "spread": 69.7697, "width": 100, "mix": 100, "output": -3.6,
+    "locklevel": true, "locktone": false, "lockdecay": false, "lockwidth": false,
+    "roomw": 7.5, "roomd": 10, "roomh": 4.0, "srcx": 49, "lisx": 50, "lisy": 72,
+    "matfront": "Plaster", "matback": "Wood", "matleft": "Plaster", "matright": "Plaster", "matfloor": "Wood", "matceiling": "Plaster",
+    "eron": true, "erdensity": 60, "erdiffusion": 40, "ercolor": 0, "erwidth": 101, "erstart": 0, "erstop": 139.921, "erpredelay": 0,
+    "lateon": true, "latedelay": 30.8616, "latewidth": 100, "latecolor": 0,
+    "lfmult": 1.06, "lmmult": 0.80, "hmmult": 0.87, "hfmult": 0.55, "xlow": 200, "xmid": 1500, "xhigh": 6000, "lowcut": 20, "highcut": 20000,
+    "modchar": "Smooth", "modrate": 0.60, "moddepth": 35, "modrandom": 50, "modsmooth": 60,
+    "balance": 0, "crossfeed": 15, "decorr": 40, "irlength": 100
+  }
+}

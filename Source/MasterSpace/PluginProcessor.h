@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_dsp/juce_dsp.h>
 #include "MSEngine.h"
+#include "legacy/MSEngine11.h"
 
 namespace ParamIDs
 {
@@ -77,6 +78,8 @@ namespace ParamIDs
     inline constexpr const char* decorrelation = "decorr";
     // impulse response
     inline constexpr const char* irLength    = "irlength";
+    // DSP engine version (1.2): 0 = 1.1 Legacy, 1 = 1.2
+    inline constexpr const char* engine      = "engine";
 
     inline constexpr const char* materials[6] = { matFront, matBack, matLeft, matRight, matFloor, matCeiling };
 }
@@ -125,6 +128,9 @@ public:
     // snapshot of all parameters (for the room view)
     mspace::Params getParamsSnapshot() const { return readParams(); }
 
+    enum EngineVersion { engineLegacy11 = 0, engine12 = 1 };
+    bool isLegacyEngine() const { return get (ParamIDs::engine) < 0.5f; }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -138,6 +144,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     float get (const char* id) const { return apvts.getRawParameterValue (id)->load(); }
     mspace::Params readParams() const;
+    template <class P> void fillParams (P& p) const;
 
     void timerCallback() override;
     juce::String irShapeSignature() const;
@@ -145,10 +152,15 @@ private:
     void takePendingIR() noexcept;
     void processStereo (float* left, float* right, int numSamples);
     void processIRPath (int numSamples);
+    void processEngines (float* left, float* right, int numSamples);
     void resetIRPath();
 
-    // ---- algorithmic path
+    // ---- algorithmic path: current engine and the frozen 1.1 engine (Legacy mode)
     mspace::Engine engine;
+    mspace11::Engine legacyEngine;
+    juce::AudioBuffer<float> engineScratch;
+    float engineGain = 1.0f;                 // 0 = legacy 1.1, 1 = 1.2 (cross-faded on switch)
+    bool newRunning = true, legacyRunning = false;
 
     // ---- impulse-response path
     juce::dsp::Convolution convolver { juce::dsp::Convolution::NonUniform { 512 } };

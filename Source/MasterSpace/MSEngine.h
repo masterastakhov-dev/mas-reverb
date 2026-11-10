@@ -226,13 +226,16 @@ struct MaterialData { float rLow, rHigh; };   // pressure reflection factor belo
 
 inline MaterialData materialData (int m)
 {
+    // 1.2: pressure reflection factors sqrt(1 - alpha) from standard absorption tables (low: 125 Hz-1 kHz,
+    // high: 2-4 kHz). 1.1 used far lower high-band values (plaster 0.82, wood 0.62), which made every
+    // higher-order reflection several dB darker than a real room and gave the early field a low-mid weight.
     static constexpr MaterialData table[numMaterials] = {
-        { 0.40f, 0.18f },   // absorber
-        { 0.70f, 0.35f },   // curtain / textile
-        { 0.86f, 0.62f },   // wood
-        { 0.93f, 0.82f },   // plaster
-        { 0.97f, 0.92f },   // concrete / stone
-        { 0.80f, 0.95f },   // glass (panel absorbs lows, reflects highs)
+        { 0.45f, 0.20f },   // absorber (porous)
+        { 0.75f, 0.55f },   // curtain / heavy textile
+        { 0.90f, 0.95f },   // wood (floor / panelling)
+        { 0.95f, 0.98f },   // plaster
+        { 0.99f, 0.985f },  // concrete / stone
+        { 0.88f, 0.97f },   // glass (panel absorbs lows, reflects highs)
     };
     return table[std::clamp (m, 0, (int) numMaterials - 1)];
 }
@@ -242,7 +245,7 @@ static constexpr double kRefVolume    = 300.0;   // m^3, room with late scale 1.
 static constexpr float  kRefDist      = 1.5f;    // m, direct gain 1.0
 static constexpr float  kDepthRef     = 0.35f;   // Level / Width lock reference depth
 static constexpr float  kAirDbPerM    = 0.08f;   // high-band air absorption
-static constexpr float  kErCal        = 1.6f;    // early reflections calibration (+4 dB over the free-field image gains)
+static constexpr float  kErCal        = 1.146f;  // early level calibration (1.2: same loudness as 1.1 with the new materials)
 
 struct Params
 {
@@ -343,7 +346,6 @@ public:
         {
             color[c].prepare (fs);
             lowBus[c].setLowPass (1500.0, fs);
-            airLP[c].setLowPass (11087.0, fs, 0.491);
             scatterBus[c].setHighPass (1500.0, fs);
         }
         reset();
@@ -352,7 +354,7 @@ public:
     void reset()
     {
         for (auto& l : input) l.clear();
-        for (int c = 0; c < 2; ++c) { color[c].clear(); lowBus[c].clear(); airLP[c].clear(); scatterBus[c].clear(); }
+        for (int c = 0; c < 2; ++c) { color[c].clear(); lowBus[c].clear(); scatterBus[c].clear(); }
         haveSet = false; fading = false;
     }
 
@@ -360,7 +362,6 @@ public:
     void update (const Params& p)
     {
         color[0].set (p.erColor); color[1].set (p.erColor);
-        airMix = erDiffRamp (std::clamp (p.erDiffusion, 0.0f, 1.0f));
 
         Key k;
         k.v = { p.roomW, p.roomD, p.roomH, p.size, p.srcX, p.lisX, p.lisY, p.depth, p.erDensity,
@@ -412,11 +413,8 @@ public:
             // of their delay (heard as a metallic tone right on the direct sound). Diffusion is done
             // by the scattering clusters built in build().
             // scatter bus: Butterworth high-pass, power complementary to the low bus split
-            float yl = fL + lowBus[0].process (lL) + scatterBus[0].process (hL);
-            float yr = fR + lowBus[1].process (lR) + scatterBus[1].process (hR);
-            // diffuse-reflection tone: top end of the diffused early pattern as in 1.0 (2nd-order, 11 kHz)
-            yl += airMix * (airLP[0].process (yl) - yl);
-            yr += airMix * (airLP[1].process (yr) - yr);
+            const float yl = fL + lowBus[0].process (lL) + scatterBus[0].process (hL);
+            const float yr = fR + lowBus[1].process (lR) + scatterBus[1].process (hR);
             outL[i] = color[0].process (yl);
             outR[i] = color[1].process (yr);
         }
@@ -438,7 +436,7 @@ private:
         int count = 0, sideCount = 0;
         float energy = 0, energyLow = 0, energyHigh = 0, spread = 0;
     };
-    struct Cand { float delayMs = 0, gLow = 0, gHigh = 0, pan = 0; };
+    struct Cand { float delayMs = 0, gLow = 0, gHigh = 0, pan = 0, delayL = 0, delayR = 0; };
     struct Key
     {
         std::array<float, 20> v {};
@@ -516,8 +514,12 @@ private:
                     const float horiz = std::sqrt (dx * dx + dy * dy) + 1e-6f;
                     const float pan = std::clamp (dx / horiz, -1.0f, 1.0f);   // +x = right
 
+                    // arrival at two receivers (ear distance apart on the x axis): per-reflection time difference
+                    const float dL = std::sqrt ((dx + kRecvHalf) * (dx + kRecvHalf) + dy * dy + dz * dz);
+                    const float dR = std::sqrt ((dx - kRecvHalf) * (dx - kRecvHalf) + dy * dy + dz * dz);
+                    const float tL = (dL - g.direct) / 343.0f * 1000.0f, tR = (dR - g.direct) / 343.0f * 1000.0f;
                     if (numCands < (int) candBuf.size())
-                        candBuf[(size_t) numCands++] = { t, gl, gh, pan };
+                        candBuf[(size_t) numCands++] = { t, gl, gh, pan, std::max (0.0f, tL), std::max (0.0f, tR) };
                 }
 
         auto* c = candBuf.data();
@@ -541,18 +543,25 @@ private:
             // a diffusing surface: a main arrival delayed by D0 plus scattered arrivals before and after
             // it. Positions and signs are drawn per reflection and per channel, so the clusters share no
             // period and the pattern cannot ring (a recursive all-pass diffuser applies the same filter
-            // to every reflection: a fixed comb at the harmonics of its delays). Different clusters in
-            // the two channels decorrelate them, which is where most of the early width comes from.
-            // The profile (D0 = 10.1 ms left / 11.4 ms right at the default size, share of energy
-            // before / at / after D0) follows the diffuser of version 1.0.
+            // to every reflection: a fixed comb at the harmonics of its delays).
+            //
+            // Stereo (1.2): each reflection reaches the two receivers at its own geometric times, and its
+            // main arrival is moved by a small random amount, drawn separately per channel (a real room is
+            // never an exact shoebox). The interchannel coherence of the early field then follows
+            // sinc^2: positive at low frequencies, about zero above ~300 Hz, never negative.
+            // 1.1 delayed the whole right channel by 13 % of D0 (1.3 ms), which put every reflection in
+            // anti-phase around 385 Hz (coherence -0.9 at 350-500 Hz, a dip in mono).
             const float eb = scatter > 0.001f ? erShareBefore (scatter) : 0.0f;
             const float ea = scatter > 0.001f ? erShareAfter (scatter) : 0.0f;
             const float wMain = std::sqrt (std::max (0.0f, 1.0f - eb - ea));
             const float pan[2] = { pl, pr };
             for (int ch = 0; ch < 2; ++ch)
             {
-                const float d0 = erDiffDelayMs (p) * (ch == 0 ? 1.0f : 1.13f);
-                const float base = cd.delayMs + p.erPreDelayMs;
+                const float d0 = erDiffDelayMs (p);
+                std::uint32_t hj = (0x85EBCA6Bu * (std::uint32_t) (i + 7)) ^ (std::uint32_t) (cd.delayMs * 613.0f) ^ (ch ? 0xC2B2AE35u : 0x27D4EB2Fu);
+                hj ^= hj << 13; hj ^= hj >> 17; hj ^= hj << 5;
+                const float jitter = kErJitterMs * (2.0f * (float) (hj & 0xffffu) / 65535.0f - 1.0f);
+                const float base = std::max (0.0f, (ch == 0 ? cd.delayL : cd.delayR) + jitter) + p.erPreDelayMs;
                 auto toSamples = [this] (float ms) { return std::max (1, (int) std::lround (ms * 0.001 * fs)); };
 
                 // Scattering is a mid / high frequency effect: below ~1.5 kHz the wavelength is large
@@ -599,6 +608,9 @@ private:
         out.spread = midNum > 1e-12 ? (float) (sideNum / midNum) : 0.0f;
     }
 
+    static constexpr float kRecvHalf = 0.10f;     // receivers 20 cm apart (ear distance)
+    static constexpr float kErJitterMs = 1.5f;    // per-channel arrival jitter of each reflection
+
     // diffusion delay: 0 at ER DIFFUSION 0, full from 0.1 on (scaled with SIZE)
     static float erDiffRamp (float scatter) { return std::clamp (scatter / 0.1f, 0.0f, 1.0f); }
     static float erDiffDelayMs (const Params& p)
@@ -619,8 +631,7 @@ private:
     double fs = 48000.0;
     DelayLine input[2];
     Tilt color[2];
-    Biquad airLP[2], scatterBus[2];
-    float airMix = 0.0f;
+    Biquad scatterBus[2];
     Biquad lowBus[2];
     TapSet sets[2], refSet;
     mutable std::array<Cand, 1200> candBuf {};
@@ -669,7 +680,7 @@ public:
     void reset()
     {
         for (int i = 0; i < N; ++i) { lines[i].clear(); loopAP[i].clear(); loopAP2[i].clear(); shLow[i].clear(); shMid[i].clear(); shHigh[i].clear(); modZ[i] = 0; }
-        for (int c = 0; c < 2; ++c) { inTone[c].clear(); build[c].clear(); for (auto& a : inDiff[c]) a.clear(); color[c].clear(); }
+        mLP = sLP = 0; for (int c = 0; c < 2; ++c) { build[c].clear(); for (auto& a : inDiff[c]) a.clear(); color[c].clear(); }
         for (int i = 0; i < N; ++i) { modPhase[i] = (double) i / N; modTarget[i] = 0; }
     }
 
@@ -717,6 +728,7 @@ public:
         apG = kApGMax * std::clamp (p.density, 0.0f, 1.0f);
         inDiffG = 0.75f * std::clamp (p.diffusion, 0.0f, 1.0f);
         inDiffScale = (float) std::sqrt (roomScale);
+        diffuserDelayMs = (kInDiffMs[0] + kInDiffMs[1] + kInDiffMs[2] + kInDiffMs[3]) * inDiffScale;
         for (int c = 0; c < 2; ++c)
             for (int a = 0; a < 4; ++a)
                 inDiffLen[c][a] = (int) std::lround (kInDiffMs[a] * (c ? 1.07 : 1.0) * 0.001 * fs * inDiffScale);
@@ -733,13 +745,12 @@ public:
         for (int i = 0; i < N; ++i)
         {
             const double loopSec = baseMs[i] * (1.0 + kApR1 + kApR2) * scale * 0.001;   // line + in-loop all-passes
-            // decay rate per band (dB/s) + air absorption in the two upper bands (~f^2, per algorithm).
-            // Deterministic and sample-rate independent; sets the same high-frequency decay as 1.0.
-            static constexpr double airDb10k[numAlgorithms] = { 49.0, 20.0, 10.5 };   // dB/s at 10 kHz
-            static constexpr double airW[4] = { 0.0, 0.0, 0.08, 1.0 };
+            // decay rate per band (dB/s). 1.2: the DECAY EQ multipliers alone set the decay per band;
+            // 1.1 added an extra air term and an input high shelf that reproduced the interpolation
+            // losses of 1.0 (a darker tail than the HF DECAY setting said).
             double rate[4];                                                    // dB per second
             for (int b = 0; b < 4; ++b)
-                rate[b] = 60.0 / (rt * mult[b]) + airDb10k[algo] * airW[b];
+                rate[b] = 60.0 / (rt * mult[b]);
             // all-pass sections lose energy at the low-mid rate inside their own delay; the line
             // filter takes the rest, so that every band decays at its rate over the whole loop
             const double apSec1 = baseMs[i] * kApR1 * scale * 0.001, apSec2 = baseMs[i] * kApR2 * scale * 0.001;
@@ -763,7 +774,8 @@ public:
         {
             const float u = (float) k / (float) (K - 1);
             const float jit = (k == 0 || k == K - 1) ? 0.0f : (std::fmod ((float) k * 0.7548777f, 1.0f) - 0.5f) * 0.6f / (float) (K - 1);
-            tapTime[k] = (float) ((lateDelay + spread * std::clamp (u + jit, 0.0f, 1.0f)) * 0.001 * fs) + 1.0f;
+            // LATE DELAY is where the late field starts: subtract the delay of the input diffusers
+            tapTime[k] = (float) ((std::max (0.0f, lateDelay - diffuserDelayMs) + spread * std::clamp (u + jit, 0.0f, 1.0f)) * 0.001 * fs) + 1.0f;
             tapW[k] = std::exp (alpha * u);
             wsum += tapW[k] * tapW[k];
         }
@@ -789,14 +801,19 @@ public:
         // outputs
         color[0].set (p.lateColor); color[1].set (p.lateColor);
         decor = std::clamp (p.decorrelation, 0.0f, 1.0f);
+        {
+            const float rHi = 1.0f - decor, rLo = std::min (1.0f, rHi + 0.2f);
+            aHi = std::sqrt (0.5f * (1.0f + rHi)); bHi = std::sqrt (0.5f * (1.0f - rHi));
+            aLo = std::sqrt (0.5f * (1.0f + rLo)); bLo = std::sqrt (0.5f * (1.0f - rLo));
+            lpA = (float) (1.0 - std::exp (-2.0 * kPi * 140.0 / fs));
+            midNorm = 1.0f / std::sqrt (1.0f + kMidTapW * kMidTapW);
+        }
 
         // gentle level compensation so long decays are louder, but not explosive
-        static constexpr float algoTrim[numAlgorithms] = { 1.05f, 1.096f, 1.11f };
+        static constexpr float algoTrim[numAlgorithms] = { 0.876f, 0.940f, 0.942f };   // late loudness as in 1.1
         levelComp = (float) (0.60 * std::pow (std::max (rt, 0.1) / 1.5, -0.32)) * lineComp * algoTrim[algo];
 
-        // input tone: gentle high shelf that keeps the tail's top end where 1.0 had it
-        static constexpr double toneGain[numAlgorithms] = { 0.40, 0.55, 0.52 };
-        for (auto& t : inTone) t.set (6500.0, toneGain[algo], fs, true);
+
     }
 
     // inL/inR: pre-delayed input.  outL/outR: late reverb (overwrites)
@@ -813,7 +830,7 @@ public:
             curScale += sScale * (targetScale - curScale);
 
             // input diffusion (Diffusion)
-            float x[2] = { inTone[0].process (inL[s]), inTone[1].process (inR[s]) };
+            float x[2] = { inL[s], inR[s] };
             if (inDiffG > 0.001f)
             {
                 for (int c = 0; c < 2; ++c)
@@ -860,14 +877,25 @@ public:
             for (int i = 0; i < N; ++i)
                 lines[i].push (z[i] + inj[i]);
 
-            float L = 0, R = 0;
+            // two orthogonal output sums (lines read at their end and 40 % along)
+            float L0 = 0, R0 = 0;
             for (int i = 0; i < N; ++i)
             {
-                L += signL[i] * y[i];
-                R += (decor * signR[i] + (1.0f - decor) * signL[i]) * y[i];
+                const float lenS = baseMs[i] * 0.001f * (float) fs * curScale;
+                const float yo = y[i] + kMidTapW * lines[i].read ((int) (lenS * kMidTapPos));
+                L0 += signL[i] * yo;
+                R0 += signR[i] * yo;
             }
-            outL[s] = color[0].process (L * outNorm * levelComp);
-            outR[s] = color[1].process (R * outNorm * levelComp);
+            // DECORRELATION sets the interchannel correlation directly (0 % = mono, 100 % = uncorrelated),
+            // a little higher below ~150 Hz as in a real diffuse field. 1.1 mixed the outputs instead, so
+            // 40 % already meant +0.83: a late field sitting on top of a centred voice.
+            const float M = (L0 + R0) * 0.70710678f, S = (L0 - R0) * 0.70710678f;
+            mLP += lpA * (M - mLP);
+            sLP += lpA * (S - sLP);
+            const float Mo = aHi * M + (aLo - aHi) * mLP, So = bHi * S + (bLo - bHi) * sLP;
+            const float g = outNorm * midNorm * levelComp;
+            outL[s] = color[0].process ((Mo + So) * g);
+            outR[s] = color[1].process ((Mo - So) * g);
         }
     }
 
@@ -893,18 +921,23 @@ private:
     float baseMs[N] {};
     DelayLine build[2];
     Allpass inDiff[2][4];
-    static constexpr float kInDiffMs[4] = { 4.7f, 3.6f, 12.7f, 9.3f };
+    // 1.2: short input diffusers. An all-pass moves the energy centre of what passes through it by its
+    // delay; 1.1 used 4.7 + 3.6 + 12.7 + 9.3 = 30 ms, which (with the first pass through the lines)
+    // made the late field peak ~100 ms after the sound and arrive as a second wave on the next syllable.
+    static constexpr float kInDiffMs[4] = { 1.9f, 2.9f, 4.3f, 6.1f };
+    // output also tapped inside each line, 40 % along it: the late field speaks earlier and denser
+    static constexpr float kMidTapPos = 0.4f, kMidTapW = 0.8f;
     int inDiffLen[2][4] {};
     Tilt color[2];
     float tapTime[K] {}, tapW[K] {};
-    float targetScale = 1.0f, curScale = 1.0f, apG = 0.4f, inDiffG = 0.5f, inDiffScale = 1.0f;
+    float targetScale = 1.0f, curScale = 1.0f, apG = 0.4f, inDiffG = 0.5f, inDiffScale = 1.0f, diffuserDelayMs = 15.2f;
     double modPhase[N] {};
     float modRateMul[N] {}, modDepthMul[N] {}, modZ[N] {}, modTarget[N] {};
     double modRateHz = 0.6;
     float modDepthSamples = 0.0f, modRnd = 0.3f, modSmoothCoef = 0.001f, apMod = 0.2f;
     double minScale = 0.35;
+    float aHi = 0.7f, bHi = 0.7f, aLo = 0.7f, bLo = 0.7f, lpA = 0.03f, mLP = 0, sLP = 0, midNorm = 1.0f;
     float lineComp = 1.0f;
-    Shelf inTone[2];
     float decor = 0.85f, levelComp = 0.42f;
     Rng rng { 777u };
 };

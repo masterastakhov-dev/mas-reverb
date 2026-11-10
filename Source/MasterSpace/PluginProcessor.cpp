@@ -11,6 +11,8 @@ namespace
     constexpr double kModeFadeSec  = 0.03;
     constexpr double kIRSplitSec   = 0.08;    // early / late split point for impulse responses
     constexpr int    kVersionHint  = 1;       // MASTER SPACE 1.0 parameter set
+    constexpr int    kVersionHint12 = 2;      // parameters added in 1.2
+    constexpr double kEngineFadeSec = 0.03;
 
     juce::NormalisableRange<float> range (float lo, float hi, float centre = 0.0f)
     {
@@ -155,6 +157,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     // ---- impulse response
     addF (irLength, "IR Length", range (5.0f, 100.0f), 100.0f, pct);
 
+    // ---- 1.2: DSP engine version. Projects saved before 1.2 have no value and load as "1.1 Legacy".
+    p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ParamIDs::engine, kVersionHint12 }, "DSP Engine",
+                                                               juce::StringArray { "1.1 Legacy", "1.2" }, 1));
+
     return { p.begin(), p.end() };
 }
 
@@ -175,8 +181,16 @@ MasterSpaceAudioProcessor::~MasterSpaceAudioProcessor()
 
 mspace::Params MasterSpaceAudioProcessor::readParams() const
 {
-    using namespace ParamIDs;
     mspace::Params p;
+    fillParams (p);
+    return p;
+}
+
+// Fills the parameter set of either engine (1.2 or the frozen 1.1); both share these fields.
+template <class P>
+void MasterSpaceAudioProcessor::fillParams (P& p) const
+{
+    using namespace ParamIDs;
     p.algorithm    = juce::roundToInt (get (algorithm));
     p.routing      = juce::roundToInt (get (routing));
     p.depth        = get (depth) * 0.01f;
@@ -231,7 +245,6 @@ mspace::Params MasterSpaceAudioProcessor::readParams() const
     p.balance       = get (balance) * 0.01f;
     p.crossfeed     = get (crossfeed) * 0.01f;
     p.decorrelation = get (decorrelation) * 0.01f;
-    return p;
 }
 
 //==============================================================================
@@ -251,6 +264,15 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 
     engine.setParams (readParams());
     engine.prepare (sampleRate);
+    {
+        mspace11::Params lp; fillParams (lp);
+        legacyEngine.setParams (lp);
+        legacyEngine.prepare (sampleRate);
+    }
+    engineScratch.setSize (2, chunkSize);
+    engineGain = isLegacyEngine() ? 0.0f : 1.0f;
+    newRunning = engineGain > 0.0f;
+    legacyRunning = engineGain < 1.0f;
 
     convolver.prepare ({ sampleRate, (juce::uint32) chunkSize, 2 });
     for (auto& d : irPreDelay) d.allocate ((int) std::ceil (0.52 * sampleRate) + 8);
@@ -276,6 +298,7 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 void MasterSpaceAudioProcessor::reset()
 {
     engine.reset();
+    legacyEngine.reset();
     resetIRPath();
 }
 
@@ -339,6 +362,10 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
     takePendingIR();
     engine.setParams (readParams());
+    {
+        mspace11::Params lp; fillParams (lp);
+        legacyEngine.setParams (lp);
+    }
 
     if (numOut >= 2 && numIn == 1)
         buffer.copyFrom (1, 0, buffer, 0, 0, n);   // mono in -> stereo out
@@ -378,8 +405,8 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
 
     if (needAlgo)
     {
-        if (! algoRunning) { engine.reset(); algoRunning = true; }
-        engine.process (left, right, n);
+        if (! algoRunning) { engine.reset(); legacyEngine.reset(); algoRunning = true; }
+        processEngines (left, right, n);
     }
     else
     {
@@ -405,6 +432,48 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
                                      : juce::jmax (target, modeGain - step);
         left[i]  = left[i]  * (1.0f - modeGain) + irL[i] * modeGain;
         right[i] = right[i] * (1.0f - modeGain) + irR[i] * modeGain;
+    }
+}
+
+// Runs the 1.2 engine, the frozen 1.1 engine, or both while cross-fading after a switch.
+void MasterSpaceAudioProcessor::processEngines (float* left, float* right, int n)
+{
+    const float target = isLegacyEngine() ? 0.0f : 1.0f;
+    const bool needNew = target > 0.0f || engineGain > 0.0f;
+    const bool needOld = target < 1.0f || engineGain < 1.0f;
+
+    if (needNew && ! needOld)
+    {
+        if (! newRunning) { engine.reset(); newRunning = true; }
+        legacyRunning = false;
+        engine.process (left, right, n);
+        return;
+    }
+    if (needOld && ! needNew)
+    {
+        if (! legacyRunning) { legacyEngine.reset(); legacyRunning = true; }
+        newRunning = false;
+        legacyEngine.process (left, right, n);
+        return;
+    }
+
+    // both: the engine that was idle starts from silence, the other one fades out
+    if (! newRunning)    { engine.reset(); newRunning = true; }
+    if (! legacyRunning) { legacyEngine.reset(); legacyRunning = true; }
+    float* oL = engineScratch.getWritePointer (0);
+    float* oR = engineScratch.getWritePointer (1);
+    juce::FloatVectorOperations::copy (oL, left, n);
+    juce::FloatVectorOperations::copy (oR, right, n);
+    engine.process (left, right, n);
+    legacyEngine.process (oL, oR, n);
+
+    const float step = (float) (1.0 / (kEngineFadeSec * sampleRateHz));
+    for (int i = 0; i < n; ++i)
+    {
+        engineGain = target > engineGain ? juce::jmin (target, engineGain + step) : juce::jmax (target, engineGain - step);
+        const float gNew = std::sin (engineGain * 1.5707963f), gOld = std::cos (engineGain * 1.5707963f);
+        left[i]  = left[i] * gNew + oL[i] * gOld;
+        right[i] = right[i] * gNew + oR[i] * gOld;
     }
 }
 
@@ -487,7 +556,7 @@ double MasterSpaceAudioProcessor::getTailLengthSeconds() const
     if (get (ParamIDs::mode) > 0.5f)
         return juce::jmin (kMaxIRSeconds, irSeconds.load() + get (ParamIDs::preDelay) * 0.001 + 0.3);
 
-    return engine.getTailSeconds();
+    return isLegacyEngine() ? legacyEngine.getTailSeconds() : engine.getTailSeconds();
 }
 
 //==============================================================================
@@ -660,7 +729,16 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
     {
         if (xml->hasTagName (apvts.state.getType()))
         {
+            // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
+            bool hasEngine = false;
+            for (auto* e : xml->getChildIterator())
+                if (e->getStringAttribute ("id") == ParamIDs::engine) { hasEngine = true; break; }
+
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+            if (! hasEngine)
+                if (auto* prm = apvts.getParameter (ParamIDs::engine))
+                    prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));
 
             const auto path = apvts.state.getProperty ("irPath").toString();
             if (path.isNotEmpty())

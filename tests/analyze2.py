@@ -5,7 +5,7 @@ from scipy.special import erfc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 R = os.environ.get('MV2_RENDER', os.path.join(HERE, 'render2'))
-TMP = os.environ.get('MAS_TMP', '/tmp/mv2-test')
+TMP = os.environ.get('MAS_TMP', f'/tmp/mv2-test-{os.getpid()}')
 os.makedirs(TMP, exist_ok=True)
 
 def run(x, fs=48000, block=256, **kw):
