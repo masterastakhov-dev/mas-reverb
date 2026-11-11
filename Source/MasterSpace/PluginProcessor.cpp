@@ -242,6 +242,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
         bl (rgMatch, "Guard Output Match", true);
         // changes the latency: not automatable, applied with a short fade of the output
         ch (quality, "Processing Quality", { "Live", "Studio HQ" }, 0, false);
+
+        // HARMONIC COLOR: off by default; wet only (the dry / direct sound is never coloured)
+        auto signedPct = [] (float v) { return (v > 0.05f ? "+" : "") + juce::String (juce::roundToInt (v)) + " %"; };
+        bl (hcOn, "Harmonic Color On", false);
+        ch (hcChar, "Color Character", { "Soft", "Tube", "Tape" }, 0);
+        fl (hcDrive, "Color Drive",  range (0.0f, 100.0f),   30.0f,  pct);
+        fl (hcColor, "Color Tone",   range (-100.0f, 100.0f), 0.0f,  signedPct);
+        fl (hcMix,   "Color Mix",    range (0.0f, 100.0f),   100.0f, pct);
+        bl (hcComp, "Color Level Comp", true);
+        // moves where the module sits (and, in STUDIO HQ, its latency): not automatable, applied with a fade
+        ch (hcPos, "Color Position", { "Post (wet)", "Pre (reverb input)" }, 0, false);
     }
    #endif
 
@@ -394,6 +405,13 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
         p.rgMatch       = get (rgMatch) > 0.5f;
         p.rgDelta       = false;     // DELTA LISTEN is a monitoring switch of the plugin (set per block)
         p.quality       = juce::roundToInt (get (quality)) > 0 ? 1 : 0;
+        p.hcOn          = get (hcOn) > 0.5f;
+        p.hcChar        = juce::jlimit (0, 2, juce::roundToInt (get (hcChar)));
+        p.hcDrive       = get (hcDrive) * 0.01f;
+        p.hcColor       = get (hcColor) * 0.01f;
+        p.hcMix         = get (hcMix) * 0.01f;
+        p.hcLevelComp   = get (hcComp) > 0.5f;
+        p.hcPos         = juce::roundToInt (get (hcPos)) > 0 ? 1 : 0;
     }
    #endif
 }
@@ -430,7 +448,7 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
    #ifdef MAS_RI
     {
         // STUDIO HQ latency: every path (1.2, 1.1 Legacy, IR) is delayed by the same amount
-        const int hq = mspace::ri::ResonanceGuard::hqLatencyFor (sampleRate);
+        const int hq = mspace::Engine::hqLatencyFor (sampleRate);
         scScratch.setSize (2, chunkSize);
         for (auto& d : irAlign) d.allocate (hq + chunkSize + 16);
         txAlign.allocate (hq + chunkSize + 16);
@@ -503,7 +521,7 @@ void MasterSpaceAudioProcessor::resetIRPath()
 #ifdef MAS_RI
 int MasterSpaceAudioProcessor::latencyForQuality (int q) const
 {
-    return q == 1 ? mspace::ri::ResonanceGuard::hqLatencyFor (sampleRateHz) : 0;
+    return q == 1 ? mspace::Engine::hqLatencyFor (sampleRateHz) : 0;
 }
 
 bool MasterSpaceAudioProcessor::hasSidechainBus() const
@@ -548,6 +566,8 @@ void MasterSpaceAudioProcessor::publishMeters (int n)
     m.duckEarlyDb.store (engineOn ? e.duckReductionDb (true) : 0.0f, std::memory_order_relaxed);
     m.duckLateDb.store (engineOn ? e.duckReductionDb (false) : 0.0f, std::memory_order_relaxed);
     m.duckActive.store (engineOn && e.duckActive(), std::memory_order_relaxed);
+    m.hcResidueDb.store (engineOn ? e.colorMeters().meterResidue.load (std::memory_order_relaxed) : -120.0f, std::memory_order_relaxed);
+    m.hcCompDb.store (engineOn ? e.colorMeters().meterComp.load (std::memory_order_relaxed) : 0.0f, std::memory_order_relaxed);
     m.latency.store (alignL, std::memory_order_relaxed);
     m.quality.store (alignQ, std::memory_order_relaxed);
 
@@ -927,7 +947,7 @@ void AlgoPath::prepare (double fs, int maxBlock, const mspace::Params& p, const 
    #ifdef MAS_RI
     scratch.setSize (6, maxBlock);
     {
-        const int hq = mspace::ri::ResonanceGuard::hqLatencyFor (fs);
+        const int hq = mspace::Engine::hqLatencyFor (fs);
         for (auto& d : legacyAlign) d.allocate (hq + maxBlock + 16);
         gainAlign.allocate (hq + maxBlock + 16);
     }

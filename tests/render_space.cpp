@@ -33,6 +33,7 @@ static void setKV (mspace::Params& p, const std::string& k, float v)
     F(duckSens) F(duckEarly) F(duckLate) F(duckSpectral) F(scLowHz) F(scHighHz) B(scExternal)
     B(rgOn) I(rgMode) F(rgSmooth) F(rgDetail) F(rgSelect) F(rgAttackMs) F(rgReleaseMs) F(rgMaxDb) F(rgLoHz) F(rgHiHz)
     F(rgEarly) F(rgLate) I(rgTarget) B(rgDelta) B(rgMatch) I(quality)
+    B(hcOn) I(hcChar) F(hcDrive) F(hcColor) F(hcMix) B(hcLevelComp) I(hcPos)
 #endif
     if (k.size() == 4 && k.rfind ("mat", 0) == 0) { p.materials[(size_t) (k[3] - '0')] = (int) v; return; }
     std::fprintf (stderr, "unknown param %s\n", k.c_str()); std::exit (2);

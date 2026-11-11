@@ -123,6 +123,7 @@ static int snapshots (const juce::File& dir)
         // modules on and some audio through them, so the 1.4 displays show real values
         auto set = [&] (const char* id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
         set (ParamIDs::duckOn, 1.0f); set (ParamIDs::rgOn, 1.0f); set (ParamIDs::rgMax, 6.0f); set (ParamIDs::rgTarget, 0.0f);
+        set (ParamIDs::hcOn, 1.0f); set (ParamIDs::hcChar, 1.0f); set (ParamIDs::hcDrive, 55.0f);
         pump (100);
         juce::AudioBuffer<float> b (2, 48000 * 3);
         juce::Random rng (3);
@@ -161,11 +162,18 @@ static int snapshots (const juce::File& dir)
     };
     shot ("1_main");
    #ifdef MAS_RI
-    for (const char* tab : { "ADVANCED", "DUCKER", "GUARD", "PRESETS" })
+    for (const char* tab : { "ADVANCED", "DUCKER", "GUARD", "COLOR", "PRESETS" })
    #else
     for (const char* tab : { "ADVANCED", "PRESETS" })
    #endif
         if (auto* b = findButton (*ed, tab)) { b->triggerClick(); pump (200); shot (juce::String ("2_") + tab); }
+   #ifdef MAS_RI
+    if (auto* b = findButton (*ed, "COLOR"))
+    {
+        if (auto* r = p->apvts.getParameter (ParamIDs::hcChar)) r->setValueNotifyingHost (r->convertTo0to1 (2.0f));
+        b->triggerClick(); pump (200); shot ("2_COLOR_TAPE");
+    }
+   #endif
     if (auto* b = findButton (*ed, "B")) { b->triggerClick(); pump (200); }
     if (auto* b = findButton (*ed, "SAVE AS")) { b->triggerClick(); pump (200); shot ("3_save_as"); }
     ed.reset();
@@ -587,10 +595,12 @@ int main (int argc, char** argv)
             const int latHQ = q->getLatencySamples();
             q->setStateInformation (old13.getData(), (int) old13.getSize());
             pump (250);
-            check (latHQ == 5120, "STUDIO HQ reports its latency to the host: " + juce::String (latHQ) + " samples at 48 kHz (FFT 4096 + hop 1024)");
+            check (latHQ == 5159 && latHQ == mspace::Engine::hqLatencyFor (48000.0),
+                   "STUDIO HQ reports its latency to the host: " + juce::String (latHQ) + " samples at 48 kHz (guard FFT 4096 + hop 1024, colour 4x FIR 39)");
             check (getP (*q, ParamIDs::duckOn) < 0.5f && getP (*q, ParamIDs::rgOn) < 0.5f && getP (*q, ParamIDs::quality) < 0.5f
+                   && getP (*q, ParamIDs::hcOn) < 0.5f
                    && std::abs (getP (*q, ParamIDs::duckAmount) - 6.0f) < 0.01f && q->getLatencySamples() == 0,
-                   "project without 1.4 parameters (ATMOS 1.3 / 1.2): both modules OFF, defaults, LIVE, latency back to 0");
+                   "project without 1.4 parameters (ATMOS 1.3 / 1.2): all three modules OFF, defaults, LIVE, latency back to 0");
 
             // 1.4 state round trip; DELTA LISTEN is not saved
             setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::duckMode, 2); setP (*q, ParamIDs::rgOn, 1); setP (*q, ParamIDs::rgMode, 2);
@@ -641,7 +651,8 @@ int main (int argc, char** argv)
                 q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
             // every 1.4 setting away from its default, modules still OFF
             for (const char* id : ParamIDs::riParams)
-                if (juce::String (id) != ParamIDs::duckOn && juce::String (id) != ParamIDs::rgOn && juce::String (id) != ParamIDs::quality)
+                if (juce::String (id) != ParamIDs::duckOn && juce::String (id) != ParamIDs::rgOn && juce::String (id) != ParamIDs::quality
+                    && juce::String (id) != ParamIDs::hcOn)
                     if (auto* r = any->apvts.getParameter (id)) r->setValueNotifyingHost (r->getDefaultValue() < 0.5f ? 0.8f : 0.2f);
             setP (*duck, ParamIDs::duckOn, 1); setP (*duck, ParamIDs::duckAmount, 12);
             setP (*guard, ParamIDs::rgOn, 1); setP (*guard, ParamIDs::rgMode, 1); setP (*guard, ParamIDs::rgMax, 6); setP (*guard, ParamIDs::rgTarget, 0);
@@ -657,7 +668,7 @@ int main (int argc, char** argv)
             juce::AudioBuffer<float> a2 (a.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half), b2 (b.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half),
                                      c2 (c.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half), d2 (d.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half);
             run (*ref, a2, 256); run (*any, b2, 256); run (*duck, c2, 256); run (*guard, d2, 256);
-            check (maxAbsDiff (a, b) == 0.0f, "both modules OFF: output identical whatever their settings (bit-exact)");
+            check (maxAbsDiff (a, b) == 0.0f, "all modules OFF (DUCKER, GUARD, COLOR): output identical whatever their settings (bit-exact)");
             const int settle = 48000 * 2;   // release (600 ms + hold) and the guard's release
             check (duckedDiff > 1.0e-3f && diffFrom (a2, c2, settle) == 0.0f,
                    "SMART DUCKER switched off: after its release the output is bit-identical to never ducked (tail structure untouched; ducked diff "
@@ -669,7 +680,7 @@ int main (int argc, char** argv)
         // ---- STUDIO HQ: every path delayed by the reported latency, exactly
         for (double fs : { 48000.0, 96000.0 })
         {
-            const int expected = fs < 50000 ? 5120 : 10240;
+            const int expected = mspace::Engine::hqLatencyFor (fs);
             auto live = makeProcessor (fs, 256), hq = makeProcessor (fs, 256);
             for (auto* q : { live.get(), hq.get() })
             {
@@ -732,7 +743,7 @@ int main (int argc, char** argv)
         //      (the cross-fade gains on the output side are delayed with the audio, so the direct sound stays constant)
         {
             const double fs = 48000.0;
-            const int L = 5120;
+            const int L = mspace::Engine::hqLatencyFor (fs);
             auto live = makeProcessor (fs, 256), hq = makeProcessor (fs, 256);
             const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms14-test-ir2.wav");
             {
@@ -930,6 +941,196 @@ int main (int argc, char** argv)
             check (allFinite (sig) && peak (sig) < 8.0f, "random automation of every 1.4 parameter every 64 samples, preset loads, quality switches: finite (peak "
                    + juce::String (peak (sig), 2) + ")");
         }
+
+        //======================================================================
+        // ---- HARMONIC COLOR
+        auto setMany = [&] (MasterSpaceAudioProcessor& q, std::initializer_list<std::pair<const char*, float>> v) { for (auto& kv : v) setP (q, kv.first, kv.second); };
+        auto loadPreset = [] (MasterSpaceAudioProcessor& q, const char* key) { q.getPresetManager().load (q.getPresetManager().indexOf (key)); };
+        {
+            auto q = makeProcessor (48000, 256);
+            check (getP (*q, ParamIDs::hcOn) < 0.5f && getP (*q, ParamIDs::hcPos) < 0.5f && std::abs (getP (*q, ParamIDs::hcMix) - 100.0f) < 0.01f
+                   && getP (*q, ParamIDs::hcComp) > 0.5f, "HARMONIC COLOR: new instance OFF, POST (wet), MIX 100 %, LEVEL COMP on");
+            setMany (*q, { { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, 2 }, { ParamIDs::hcDrive, 70 }, { ParamIDs::hcColor, -40 }, { ParamIDs::hcMix, 60 },
+                           { ParamIDs::hcComp, 0 }, { ParamIDs::hcPos, 1 } });
+            pump (50);
+            loadPreset (*q, "factory:Halls/Concert Hall");
+            pump (50);
+            check (getP (*q, ParamIDs::hcOn) < 0.5f && getP (*q, ParamIDs::hcPos) < 0.5f, "HARMONIC COLOR: factory / older presets load with the module OFF, POST");
+            auto& pm = q->getPresetManager();
+            setMany (*q, { { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, 1 }, { ParamIDs::hcDrive, 64 }, { ParamIDs::hcColor, 25 }, { ParamIDs::hcMix, 55 },
+                           { ParamIDs::hcComp, 0 }, { ParamIDs::hcPos, 1 } });
+            const auto res = pm.saveAs ("HC Test", "Signature Collection", "", "", false);
+            const int idx = pm.indexOf (pm.getCurrentKey());
+            loadPreset (*q, "factory:Halls/Concert Hall");
+            pump (50);
+            pm.load (idx);
+            pump (50);
+            const bool ok = res.ok && idx >= 0 && getP (*q, ParamIDs::hcOn) > 0.5f && std::abs (getP (*q, ParamIDs::hcChar) - 1.0f) < 0.01f
+                            && std::abs (getP (*q, ParamIDs::hcDrive) - 64.0f) < 0.01f && std::abs (getP (*q, ParamIDs::hcColor) - 25.0f) < 0.01f
+                            && std::abs (getP (*q, ParamIDs::hcMix) - 55.0f) < 0.01f && getP (*q, ParamIDs::hcComp) < 0.5f && getP (*q, ParamIDs::hcPos) > 0.5f;
+            check (ok, "HARMONIC COLOR: a preset keeps all seven settings (ON, CHARACTER, DRIVE, COLOR, MIX, LEVEL COMP, POSITION)");
+            pm.remove (idx);
+            juce::MemoryBlock st;
+            q->getStateInformation (st);
+            auto r = makeProcessor (48000, 256);
+            r->setStateInformation (st.getData(), (int) st.getSize());
+            check (sameParams (q->captureParamMap(), r->captureParamMap()), "HARMONIC COLOR: project state round trip");
+            int automatable = 0;
+            for (const char* id : { ParamIDs::hcOn, ParamIDs::hcChar, ParamIDs::hcDrive, ParamIDs::hcColor, ParamIDs::hcMix, ParamIDs::hcComp })
+                if (auto* prm = q->apvts.getParameter (id)) automatable += prm->isAutomatable() ? 1 : 0;
+            check (automatable == 6, "HARMONIC COLOR: ON, CHARACTER, DRIVE, COLOR, MIX, LEVEL COMP are host-automatable (POSITION is a setup choice)");
+        }
+
+        // dry untouched in INSERT: 200 ms pre-delay, so the first 150 ms are the direct sound only
+        for (int pos : { 0, 1 })
+        {
+            auto off = makeProcessor (48000, 256), on = makeProcessor (48000, 256);
+            for (auto* q : { off.get(), on.get() })
+            {
+                loadPreset (*q, "factory:Vocal Spaces/ATMOS Vocal Glow");
+                setMany (*q, { { ParamIDs::routing, 0 }, { ParamIDs::mix, 50 }, { ParamIDs::preDelay, 200 }, { ParamIDs::hcPos, (float) pos },
+                               { ParamIDs::hcDrive, 100 }, { ParamIDs::hcChar, 1 } });
+            }
+            setP (*on, ParamIDs::hcOn, 1);
+            pump (50);
+            for (auto* q : { off.get(), on.get() }) { auto w = silence (48000, 0.5); run (*q, w, 256); }
+            juce::AudioBuffer<float> a (2, 48000);
+            a.clear();
+            for (int i = 0; i < 2400; ++i) for (int c = 0; c < 2; ++c) a.setSample (c, i, 0.9f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / 48000.0));
+            auto b = a;
+            run (*off, a, 256); run (*on, b, 256);
+            float dryDiff = 0, dryPeak = 0;
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < 7200; ++i) { dryDiff = juce::jmax (dryDiff, std::abs (a.getSample (c, i) - b.getSample (c, i))); dryPeak = juce::jmax (dryPeak, std::abs (b.getSample (c, i))); }
+            const float wetDiff = diffFrom (a, b, 12000);
+            // (the LIVE oversampler carries a 1e-20 anti-denormal offset: the silent wet under the direct sound is ~1e-20, not 0)
+            check (dryDiff < 1.0e-15f && dryPeak > 0.1f && wetDiff > 1.0e-3f,
+                   juce::String ("HARMONIC COLOR ") + (pos ? "PRE" : "POST") + ", INSERT, DRIVE 100 %: the direct sound is unchanged (diff "
+                   + juce::String ((double) dryDiff) + ", peak " + juce::String (dryPeak, 2) + "), only the reverb changes (wet diff " + juce::String (wetDiff, 4) + ")");
+        }
+
+        // switched off after ON (POST): after its 20 ms fade the output is bit-identical to never coloured
+        {
+            auto ref = makeProcessor (48000, 256), col = makeProcessor (48000, 256);
+            for (auto* q : { ref.get(), col.get() }) loadPreset (*q, "factory:Vocal Spaces/ATMOS Vocal Glow");
+            setMany (*col, { { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, 2 }, { ParamIDs::hcDrive, 80 } });
+            pump (50);
+            auto a = phrases (48000, 5.0), b = a;
+            const int half = 48000 * 2;
+            juce::AudioBuffer<float> a1 (a.getArrayOfWritePointers(), 2, 0, half), b1 (b.getArrayOfWritePointers(), 2, 0, half);
+            run (*ref, a1, 256); run (*col, b1, 256);
+            const float colDiff = diffFrom (a1, b1, 0);
+            setP (*col, ParamIDs::hcOn, 0);
+            pump (50);
+            juce::AudioBuffer<float> a2 (a.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half), b2 (b.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half);
+            run (*ref, a2, 256); run (*col, b2, 256);
+            check (colDiff > 1.0e-3f && diffFrom (a2, b2, 4800) == 0.0f,
+                   "HARMONIC COLOR POST switched off: after the fade the output is bit-identical to never coloured (coloured diff " + juce::String (colDiff, 4) + ")");
+        }
+
+        // LEVEL COMP: DRIVE 0 -> 100 % keeps the wet loudness; the three characters really differ
+        {
+            juce::String txt;
+            bool ok = true;
+            double lvl[3][2] = {};
+            juce::AudioBuffer<float> outs[3];
+            for (int chr = 0; chr < 3; ++chr)
+                for (int d = 0; d < 2; ++d)
+                {
+                    auto q = makeProcessor (48000, 256);
+                    loadPreset (*q, "factory:Vocal Spaces/ATMOS Vocal Glow");
+                    setMany (*q, { { ParamIDs::routing, 1 }, { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, (float) chr }, { ParamIDs::hcDrive, d ? 100.0f : 0.0f } });
+                    pump (50);
+                    auto x = phrases (48000, 6.0);
+                    run (*q, x, 256);
+                    lvl[chr][d] = rmsDb (x, 48000, x.getNumSamples());
+                    if (d) outs[chr] = x;
+                    ok = ok && allFinite (x);
+                }
+            for (int chr = 0; chr < 3; ++chr) ok = ok && std::abs (lvl[chr][1] - lvl[chr][0]) < 1.0;
+            for (int chr = 0; chr < 3; ++chr) txt << " " << (const char*[]) { "SOFT", "TUBE", "TAPE" }[chr] << " " << juce::String (lvl[chr][1] - lvl[chr][0], 2) << " dB";
+            check (ok, "HARMONIC COLOR LEVEL COMP: wet loudness at DRIVE 100 % vs 0 %:" + txt);
+            auto relDiff = [&] (int a, int b) { return rmsDb ([&] { auto d = outs[a]; d.addFrom (0, 0, outs[b], 0, 0, d.getNumSamples(), -1.0f); d.addFrom (1, 0, outs[b], 1, 0, d.getNumSamples(), -1.0f); return d; }(), 48000, outs[a].getNumSamples()) - rmsDb (outs[a], 48000, outs[a].getNumSamples()); };
+            const double st = relDiff (0, 1), sp = relDiff (0, 2), tp = relDiff (1, 2);
+            check (st > -40.0 && sp > -40.0 && tp > -40.0, "SOFT / TUBE / TAPE are different processes at DRIVE 100 % (differences "
+                   + juce::String (st, 1) + " / " + juce::String (sp, 1) + " / " + juce::String (tp, 1) + " dB re wet)");
+        }
+
+        // STUDIO HQ with the module on: same colour as LIVE (same harmonics, aligned), only the anti-alias filters differ
+        for (int pos : { 0, 1 })
+        {
+            auto live = makeProcessor (48000, 256), hq = makeProcessor (48000, 256);
+            for (auto* q : { live.get(), hq.get() })
+            {
+                loadPreset (*q, "factory:Vocal Spaces/ATMOS Vocal Glow");
+                setMany (*q, { { ParamIDs::routing, 1 }, { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, 1 }, { ParamIDs::hcDrive, 70 }, { ParamIDs::hcPos, (float) pos } });
+            }
+            setP (*hq, ParamIDs::quality, 1);
+            pump (250);
+            for (auto* q : { live.get(), hq.get() }) { auto w = silence (48000, 0.3); run (*q, w, 256); }
+            const int L = hq->getLatencySamples();
+            auto x = phrases (48000, 5.0), y = x;
+            juce::AudioBuffer<float> pad (2, x.getNumSamples() + L);
+            pad.clear();
+            for (int c = 0; c < 2; ++c) pad.copyFrom (c, 0, y, c, 0, y.getNumSamples());
+            run (*live, x, 256); run (*hq, pad, 256);
+            juce::AudioBuffer<float> hqAligned (2, x.getNumSamples());
+            for (int c = 0; c < 2; ++c) hqAligned.copyFrom (c, 0, pad, c, L, x.getNumSamples());
+            // the same colour: band energies (LIVE's IIR oversampler is an all-pass on the coloured wet, so its waveform is not HQ's)
+            auto bandDb = [] (const juce::AudioBuffer<float>& b, double lo, double hi)
+            {
+                juce::IIRFilter f[4];
+                double e = 0;
+                for (int c = 0; c < 2; ++c)
+                {
+                    f[0].setCoefficients (juce::IIRCoefficients::makeHighPass (48000.0, lo)); f[1].setCoefficients (juce::IIRCoefficients::makeHighPass (48000.0, lo));
+                    f[2].setCoefficients (juce::IIRCoefficients::makeLowPass (48000.0, hi));  f[3].setCoefficients (juce::IIRCoefficients::makeLowPass (48000.0, hi));
+                    for (auto& ff : f) ff.reset();
+                    for (int i = 0; i < b.getNumSamples(); ++i)
+                    {
+                        float v = b.getSample (c, i);
+                        for (auto& ff : f) v = ff.processSingleSampleRaw (v);
+                        if (i >= 48000) e += (double) v * v;
+                    }
+                }
+                return 10.0 * std::log10 (e + 1e-30);
+            };
+            double worst = 0;
+            juce::String bands;
+            for (auto [lo, hi] : { std::pair { 80.0, 250.0 }, { 250.0, 800.0 }, { 800.0, 2500.0 }, { 2500.0, 7000.0 }, { 7000.0, 16000.0 } })
+            {
+                const double d = bandDb (hqAligned, lo, hi) - bandDb (x, lo, hi);
+                worst = juce::jmax (worst, std::abs (d));
+                bands << " " << juce::String (d, 2);
+            }
+            // alignment: LIVE's all-pass delays the coloured wet by a few samples (~0.1 ms), HQ's is compensated exactly
+            int lag = 0; double best = -1e30;
+            for (int k = -24; k <= 24; ++k)
+            {
+                double acc = 0;
+                for (int c = 0; c < 2; ++c) for (int i = 48000; i < x.getNumSamples() - 48; ++i) acc += (double) hqAligned.getSample (c, i) * x.getSample (c, i + k);
+                if (acc > best) { best = acc; lag = k; }
+            }
+            check (L == mspace::Engine::hqLatencyFor (48000.0) && worst < 0.5 && lag >= 0 && lag <= 12,
+                   juce::String ("HARMONIC COLOR ") + (pos ? "PRE" : "POST") + " in STUDIO HQ: the LIVE colour (band differences 80 Hz..16 kHz:" + bands
+                   + " dB), aligned by the reported " + juce::String (L) + " samples (LIVE all-pass lag " + juce::String (lag) + " samples)");
+        }
+
+        // position change while audio runs, module on: faded, finite
+        {
+            auto q = makeProcessor (48000, 128);
+            loadPreset (*q, "factory:Vocal Spaces/ATMOS Vocal Glow");
+            setMany (*q, { { ParamIDs::hcOn, 1 }, { ParamIDs::hcChar, 2 }, { ParamIDs::hcDrive, 60 } });
+            pump (50);
+            auto sig = phrases (48000, 3.0);
+            juce::MidiBuffer midi;
+            for (int pos = 0, k = 0; pos < sig.getNumSamples(); pos += 128, ++k)
+            {
+                if (k % 120 == 60) setP (*q, ParamIDs::hcPos, (float) ((k / 120) % 2 == 0));
+                juce::AudioBuffer<float> view (sig.getArrayOfWritePointers(), 2, pos, juce::jmin (128, sig.getNumSamples() - pos));
+                q->processBlock (view, midi);
+            }
+            check (allFinite (sig) && peak (sig) < 4.0f, "HARMONIC COLOR POST <-> PRE while audio runs: finite (peak " + juce::String (peak (sig), 2) + ")");
+        }
     }
    #endif
 
@@ -988,14 +1189,18 @@ int main (int argc, char** argv)
         {
             pm.load (pm.indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
             auto setP = [&] (const char* id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
-            struct Cfg { const char* name; int duck, rg, q; };
+            struct Cfg { const char* name; int duck, rg, q, hc = 0; };
             for (const Cfg c : { Cfg { "ATMOS, modules off", 0, 0, 0 }, Cfg { "ATMOS + SMART DUCKER (Vocal Focus)", 1, 0, 0 },
+                                 Cfg { "ATMOS + HARMONIC COLOR SOFT LIVE", 0, 0, 0, 1 }, Cfg { "ATMOS + HARMONIC COLOR TUBE LIVE", 0, 0, 0, 2 },
+                                 Cfg { "ATMOS + HARMONIC COLOR TAPE LIVE", 0, 0, 0, 3 }, Cfg { "ATMOS + HARMONIC COLOR TAPE STUDIO HQ", 0, 0, 1, 3 },
+                                 Cfg { "ATMOS + all three modules STUDIO HQ", 1, 1, 1, 2 },
                                  Cfg { "ATMOS + SMART DUCKER (Spectral)", 2, 0, 0 }, Cfg { "ATMOS + RESONANCE GUARD LIVE", 0, 1, 0 },
                                  Cfg { "ATMOS + both LIVE", 1, 1, 0 }, Cfg { "ATMOS + RESONANCE GUARD STUDIO HQ", 0, 1, 1 },
                                  Cfg { "ATMOS + both STUDIO HQ", 1, 1, 1 } })
             {
                 setP (ParamIDs::duckOn, c.duck > 0 ? 1.0f : 0.0f); setP (ParamIDs::duckMode, c.duck == 2 ? 2.0f : 1.0f);
                 setP (ParamIDs::rgOn, (float) c.rg); setP (ParamIDs::quality, (float) c.q); setP (ParamIDs::rgTarget, 0.0f);
+                setP (ParamIDs::hcOn, c.hc > 0 ? 1.0f : 0.0f); setP (ParamIDs::hcChar, (float) juce::jmax (0, c.hc - 1)); setP (ParamIDs::hcDrive, 60.0f);
                 pump (250);
                 auto warm = pinkish (fs, 1.0);
                 run (*p, warm, 256);
@@ -1005,7 +1210,7 @@ int main (int argc, char** argv)
                 const double ms = nowMs() - t0;
                 std::printf ("  %5.0f kHz  %-40s %6.2f %% of one core\n", fs / 1000.0, c.name, 100.0 * ms / (sg.getNumSamples() / fs * 1000.0));
             }
-            setP (ParamIDs::duckOn, 0); setP (ParamIDs::rgOn, 0); setP (ParamIDs::quality, 0);
+            setP (ParamIDs::duckOn, 0); setP (ParamIDs::rgOn, 0); setP (ParamIDs::quality, 0); setP (ParamIDs::hcOn, 0);
             pump (250);
         }
        #endif

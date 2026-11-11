@@ -137,6 +137,7 @@ juce::var PresetManager::toJson (const juce::String& name, const juce::String& c
         o->setProperty ("dspVersion", juce::String (JucePlugin_VersionString) + " (engine " + engine + (atmos ? ", ATMOSPHERIC TAIL" : "")
                                           + (onOff (ParamIDs::duckOn) ? ", SMART DUCKER " + choiceText (ParamIDs::duckMode) : juce::String())
                                           + (onOff (ParamIDs::rgOn) ? ", RESONANCE GUARD " + choiceText (ParamIDs::rgMode) : juce::String())
+                                          + (onOff (ParamIDs::hcOn) ? ", HARMONIC COLOR " + choiceText (ParamIDs::hcChar) : juce::String())
                                           + ", " + choiceText (ParamIDs::quality) + ")");
        #else
         o->setProperty ("dspVersion", juce::String (JucePlugin_VersionString) + " (engine " + engine + (atmos ? ", ATMOSPHERIC TAIL prototype" : "") + ")");

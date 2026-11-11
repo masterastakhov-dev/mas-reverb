@@ -1,6 +1,6 @@
 // Random automation of every parameter on both engines (1.2 and 1.1 Legacy): no runaway allowed.
 // Built with -DMAS_ATMOS it also switches the late engine (room / Atmospheric Tail) and automates BLOOM, MOTION,
-// AIR and Character Lock. With -DMAS_ATMOS -DMAS_RI also every SMART DUCKER / RESONANCE GUARD setting and the quality.
+// AIR and Character Lock. With -DMAS_ATMOS -DMAS_RI also every SMART DUCKER / RESONANCE GUARD / HARMONIC COLOR setting and the quality.
 // usage: stress_engines [param index or -1] [seeds]
 #include "../Source/MasterSpace/MSEngine.h"
 #include "../Source/MasterSpace/legacy/MSEngine11.h"
@@ -12,7 +12,7 @@
 #include <pmmintrin.h>
 
 #if defined (MAS_RI)
-constexpr int kNumParams = 91;
+constexpr int kNumParams = 98;
 #elif defined (MAS_ATMOS)
 constexpr int kNumParams = 60;
 #else
@@ -130,6 +130,13 @@ template <class P> void randomise (P& p, std::mt19937& g, int which, std::string
             case 88: p.rgDelta = u (g) > 0.8f; name = "rgdelta"; break;
             case 89: p.rgMatch = u (g) > 0.5f; name = "rgmatch"; break;
             case 90: p.quality = u (g) > 0.9f ? 1 - p.quality : p.quality; name = "quality"; break;
+            case 91: p.hcOn = u (g) > 0.3f; name = "hcon"; break;
+            case 92: p.hcChar = (int) (u (g) * 2.999f); name = "hcchar"; break;
+            case 93: p.hcDrive = u (g); name = "hcdrive"; break;
+            case 94: p.hcColor = 2 * u (g) - 1; name = "hccolor"; break;
+            case 95: p.hcMix = u (g); name = "hcmix"; break;
+            case 96: p.hcLevelComp = u (g) > 0.3f; name = "hccomp"; break;
+            case 97: p.hcPos = u (g) > 0.9f ? 1 - p.hcPos : p.hcPos; name = "hcpos"; break;
             default: break;
         }
 #endif

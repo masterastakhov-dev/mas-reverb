@@ -127,12 +127,21 @@ namespace ParamIDs
     inline constexpr const char* rgLate      = "rglate";
     inline constexpr const char* rgMatch     = "rgmatch";
     inline constexpr const char* quality     = "quality";      // 0 LIVE (no latency), 1 STUDIO HQ (latency reported)
+    // HARMONIC COLOR (1.4)
+    inline constexpr const char* hcOn        = "hcon";
+    inline constexpr const char* hcChar      = "hcchar";       // 0 Soft, 1 Tube, 2 Tape
+    inline constexpr const char* hcDrive     = "hcdrive";
+    inline constexpr const char* hcColor     = "hccolor";
+    inline constexpr const char* hcMix       = "hcmix";
+    inline constexpr const char* hcComp      = "hccomp";
+    inline constexpr const char* hcPos       = "hcpos";        // 0 POST (wet), 1 PRE (reverb input)
 
     // every 1.4 parameter: states and presets without them load with the defaults (both modules OFF, LIVE)
     inline constexpr const char* riParams[] = { duckOn, duckMode, duckAmount, duckThresh, duckAttack, duckHold, duckRelease,
                                                 duckRatio, duckSens, duckEarly, duckLate, duckSpectral, scLowCut, scHighCut,
                                                 scSource, rgOn, rgMode, rgSmooth, rgDetail, rgSelect, rgAttack, rgRelease,
-                                                rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality };
+                                                rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality,
+                                                hcOn, hcChar, hcDrive, hcColor, hcMix, hcComp, hcPos };
    #endif
 
     inline constexpr const char* materials[6] = { matFront, matBack, matLeft, matRight, matFloor, matCeiling };
@@ -174,6 +183,7 @@ struct RIMeters
 {
     static constexpr int maxBands = 256;
     std::atomic<float> duckEarlyDb { 0.0f }, duckLateDb { 0.0f }, rgMaxCutDb { 0.0f }, rgMakeupDb { 0.0f };
+    std::atomic<float> hcResidueDb { -120.0f }, hcCompDb { 0.0f };
     std::atomic<bool> duckActive { false }, rgProcessing { false }, scExternalLive { false }, engineAvailable { true };
     std::atomic<int> numBands { 0 }, latency { 0 }, quality { 0 };
     std::atomic<float> bandHz[maxBands], levelDb[maxBands], cutDb[maxBands];

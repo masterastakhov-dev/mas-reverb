@@ -23,6 +23,7 @@
 #ifdef MAS_RI
 #include <atomic>
 #include <functional>
+#include "HarmonicColor.h"
 #endif
 
 namespace mspace
@@ -323,6 +324,12 @@ struct Params
     int   rgTarget = 1;                         // 0 Early + Late, 1 Late, 2 Early
     bool  rgDelta = false, rgMatch = true;
     int   quality = 0;                          // 0 LIVE (zero latency), 1 STUDIO HQ (latency = FFT size, reported)
+    // HARMONIC COLOR (off by default, also for old projects / presets)
+    bool  hcOn = false;
+    int   hcChar = 0;                           // 0 Soft, 1 Tube, 2 Tape
+    float hcDrive = 0.3f, hcColor = 0.0f, hcMix = 1.0f;
+    bool  hcLevelComp = true;
+    int   hcPos = 0;                            // 0 POST (on the formed wet), 1 PRE (on the signal that feeds the reverb)
 #endif
 };
 
@@ -1015,9 +1022,11 @@ public:
        #ifdef MAS_RI
         ducker.prepare (fs);
         rg.prepare (fs);
-        for (auto& d : directDelay) d.allocate (rg.latencyHQ() + 16);
-        for (auto& d : scDelay) d.allocate (rg.latencyHQ() + 16);
+        for (auto* h : { &hcEarly, &hcLate, &hcPre }) h->prepare (fs);
+        for (auto& d : directDelay) d.allocate (rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ + 16);
+        for (auto& d : scDelay) d.allocate (rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ + 16);
         curQuality = std::clamp (pending.quality, 0, 1);
+        curHcPos = std::clamp (pending.hcPos, 0, 1);
         scratch.assign (12 * kChunk, 0.0f);
        #else
         scratch.assign (8 * kChunk, 0.0f);
@@ -1039,6 +1048,7 @@ public:
        #ifdef MAS_RI
         ducker.reset();
         rg.reset();
+        for (auto* h : { &hcEarly, &hcLate, &hcPre }) h->reset();
         for (auto& d : directDelay) d.clear();
         for (auto& d : scDelay) d.clear();
        #endif
@@ -1077,8 +1087,12 @@ public:
     bool  duckActive() const { return ducker.isActive(); }
     const ri::ResonanceGuard& guard() const { return rg; }
     // processing latency (STUDIO HQ): the plugin reports it to the host
-    int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() : 0; }
-    int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() : 0; }
+    // STUDIO HQ: the guard's STFT + HARMONIC COLOR's linear-phase oversampling (always in the path in HQ,
+    // a plain delay when the module is off), so the latency does not change with the module.
+    int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
+    int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
+    static int hqLatencyFor (double sampleRate) { return ri::ResonanceGuard::hqLatencyFor (sampleRate) + hc::HarmonicColor::kLatencyHQ; }
+    const hc::HarmonicColor& colorMeters() const { return curHcPos == 1 ? hcPre : hcLate; }
     // Quality change applied at once, with no internal fade: the plugin fades its whole output around
     // the switch (all paths change latency together). Audio thread, no allocation.
     void switchQualityNow (int q)
@@ -1090,6 +1104,7 @@ public:
         qHold = 0;
         applyParams (true);
         rg.reset();
+        for (auto* h : { &hcEarly, &hcLate, &hcPre }) h->reset();
         for (auto& d : directDelay) d.clear();
         for (auto& d : scDelay) d.clear();
     }
@@ -1196,6 +1211,15 @@ private:
             rg.set (g, force);
             if (force) deltaMix = params.rgDelta ? 1.0f : 0.0f;
             updateExpectedRT();
+
+            if (force) curHcPos = std::clamp (params.hcPos, 0, 1);   // a change of position is applied after a fade
+            hc::HarmonicColor::Settings h;
+            h.character = std::clamp (params.hcChar, 0, 2); h.drive = params.hcDrive; h.color = params.hcColor;
+            h.mix = params.hcMix; h.levelComp = params.hcLevelComp; h.quality = curQuality;
+            h.on = params.hcOn && curHcPos == 0;
+            hcEarly.set (h, force); hcLate.set (h, force);
+            h.on = params.hcOn && curHcPos == 1;
+            hcPre.set (h, force);
         }
        #endif
 
@@ -1314,6 +1338,11 @@ private:
             inR[i] = curPre < 1.0f ? b : yb;
         }
 
+       #ifdef MAS_RI
+        // HARMONIC COLOR, PRE: colours the signal that feeds the reverb (the dry / direct path stays untouched).
+        // In STUDIO HQ the module (or its plain delay when off) sits in exactly one place: PRE or POST.
+        if (curHcPos == 1 && (curQuality == 1 || hcPre.isActive())) hcPre.process (inL, inR, n, 1.0f);
+       #endif
         er.process (inL, inR, erL, erR, n);
        #ifdef MAS_ATMOS
         if (curTail == 1) atmos.process (inL, inR, ltL, ltR, n);
@@ -1331,6 +1360,13 @@ private:
         const float switchStep = (float) (1.0 / (0.015 * fs));
 
        #ifdef MAS_RI
+        // HARMONIC COLOR, POST (default): on the formed wet, early and late separately, before the guard and
+        // the ducker; the drive is relative to the level each part is heard at.
+        if (curHcPos == 0)
+        {
+            if (curQuality == 1 || hcEarly.isActive()) hcEarly.process (erL, erR, n, curEr);
+            if (curQuality == 1 || hcLate.isActive()) hcLate.process (ltL, ltR, n, curLate * algoGain);
+        }
         // RESONANCE GUARD on the formed wet; its source reference is the signal that feeds the reverb.
         float* dEL = ltR + kChunk; float* dER = dEL + kChunk; float* dLL = dER + kChunk; float* dLR = dLL + kChunk;
         const bool wantDelta = params.rgDelta || deltaMix > 0.0f;
@@ -1339,7 +1375,7 @@ private:
         // SMART DUCKER on the formed wet (early and late separately). Sidechain: the plugin input as it
         // arrives (before any processing, Insert and Aux alike) or the host's sidechain bus.
         // In STUDIO HQ the wet is late by the guard's latency: the key is delayed by the same amount.
-        const int dLat = rg.latencySamples();
+        const int dLat = latencySamples();
         {
             const bool ext = params.scExternal && scL != nullptr && scR != nullptr;
             const float* kL = ext ? scL : left;
@@ -1357,7 +1393,12 @@ private:
             ducker.process (kL, kR, erL, erR, ltL, ltR, n, curEr, curLate * algoGain);
         }
         const float tDelta = params.rgDelta ? 1.0f : 0.0f;
-        const bool qSwitch = std::clamp (params.quality, 0, 1) != curQuality;
+        // quality or HARMONIC COLOR position changed: both move where the latency lives -> faded switch.
+        // A position change while the module is off and silent in LIVE moves nothing audible: taken at once.
+        if (std::clamp (params.hcPos, 0, 1) != curHcPos && curQuality == 0 && ! params.hcOn
+            && ! hcEarly.isActive() && ! hcLate.isActive() && ! hcPre.isActive())
+            curHcPos = std::clamp (params.hcPos, 0, 1);
+        const bool qSwitch = std::clamp (params.quality, 0, 1) != curQuality || std::clamp (params.hcPos, 0, 1) != curHcPos;
        #endif
 
         for (int i = 0; i < n; ++i)
@@ -1434,9 +1475,10 @@ private:
                     curQuality = std::clamp (params.quality, 0, 1);
                     applyParams (true);
                     rg.reset();
+                    for (auto* h : { &hcEarly, &hcLate, &hcPre }) h->reset();
                     for (auto& d : directDelay) d.clear();
                     for (auto& d : scDelay) d.clear();
-                    qHold = rg.latencySamples();
+                    qHold = latencySamples();
                 }
                 qGain = std::clamp (qGain, 0.0f, 1.0f);
             }
@@ -1519,6 +1561,8 @@ private:
     ri::SmartDucker ducker;
     ri::ResonanceGuard rg;
     DelayLine directDelay[2], scDelay[2];
+    hc::HarmonicColor hcEarly, hcLate, hcPre;
+    int curHcPos = 0;
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;
     int qHold = 0;

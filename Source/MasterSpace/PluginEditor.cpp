@@ -14,7 +14,8 @@ namespace
     constexpr int kAtmosPage = 8;
     constexpr int kDuckerPage = 9;
     constexpr int kGuardPage = 10;
-    constexpr int kPresetsPage = 11;
+    constexpr int kColorPage = 11;
+    constexpr int kPresetsPage = 12;
    #elif defined (MAS_ATMOS)
     constexpr int kAtmosPage = 8;
     constexpr int kPresetsPage = 9;
@@ -1070,6 +1071,104 @@ private:
     juce::TextButton delta { "DELTA" }, view { "VIEW" };
     float shownLevel[RIMeters::maxBands] {}, shownCut[RIMeters::maxBands] {};
 };
+
+// COLOR page, left block: the transfer curve of the current character at the current DRIVE (TAPE: the
+// hysteresis loop of one sine cycle), and what the module adds / how LEVEL COMP holds the level.
+class ColorView : public juce::Component, private juce::Timer
+{
+public:
+    explicit ColorView (MasterSpaceAudioProcessor& p) : processor (p) { startTimerHz (20); }
+    ~ColorView() override { stopTimer(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (8.0f, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 8.0f);
+        r.reduce (14.0f, 10.0f);
+        auto& s = processor.apvts;
+        const int chr = juce::jlimit (0, 2, juce::roundToInt (rawParam (s, ParamIDs::hcChar)));
+        const bool on = rawParam (s, ParamIDs::hcOn) > 0.5f;
+        const float drive = rawParam (s, ParamIDs::hcDrive) * 0.01f;
+        const char* names[] = { "SOFT", "TUBE", "TAPE" };
+        g.setFont (uiFont (11.5f, true).withExtraKerningFactor (0.12f));
+        g.setColour (MASColours::textDim);
+        g.drawText (juce::String ("HARMONIC COLOR  ") + names[chr] + (rawParam (s, ParamIDs::hcPos) > 0.5f ? "  \xc2\xb7  PRE" : "  \xc2\xb7  POST"),
+                    r.removeFromTop (16.0f), juce::Justification::centredLeft);
+        r.removeFromTop (10.0f);
+        auto footer = r.removeFromBottom (46.0f);
+        auto plot = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), r.getHeight()), juce::jmin (r.getWidth(), r.getHeight()));
+
+        g.setColour (juce::Colour (0xff1f2229));
+        g.fillRect (plot);
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.drawLine (plot.getX(), plot.getCentreY(), plot.getRight(), plot.getCentreY());
+        g.drawLine (plot.getCentreX(), plot.getY(), plot.getCentreX(), plot.getBottom());
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        g.drawLine (plot.getX(), plot.getBottom(), plot.getRight(), plot.getY(), 1.0f);    // straight line = clean
+
+        // the curve: input (heard level, peak 1) -> output, the same functions as the DSP
+        const float gain = std::pow (10.0f, (-12.0f + 36.0f * drive) / 20.0f);
+        auto toX = [&] (float v) { return plot.getCentreX() + v * plot.getWidth() * 0.5f; };
+        auto toY = [&] (float v) { return plot.getCentreY() - juce::jlimit (-1.2f, 1.2f, v) * plot.getHeight() * 0.5f; };
+        juce::Path curve;
+        if (chr == 2)
+        {
+            // one sine cycle (after one cycle to settle) through the hysteresis
+            float env = 0.0f, play = 0.0f;
+            const int N = 256;
+            for (int k = 0; k < 2 * N; ++k)
+            {
+                const float x = std::sin (juce::MathConstants<float>::twoPi * (float) k / N);
+                const float v = x * gain, a = std::abs (v);
+                env += (a > env ? 0.2f : 0.02f) * (a - env);
+                const float rr = 0.35f * env * std::tanh (env);
+                play = juce::jlimit (v - rr, v + rr, play);
+                const float y = hc::fastTanh (0.65f * v + 0.35f * play) / gain;
+                if (k == N) curve.startNewSubPath (toX (x), toY (y));
+                else if (k > N) curve.lineTo (toX (x), toY (y));
+            }
+        }
+        else
+        {
+            for (int k = 0; k <= 200; ++k)
+            {
+                const float x = -1.0f + 2.0f * (float) k / 200.0f, v = x * gain;
+                float y;
+                if (chr == 1)
+                {
+                    const float b = 0.45f / (1.0f + 1.5f * std::abs (v) * 0.64f), tb = hc::fastTanh (b);
+                    y = (hc::fastTanh (v + b) - tb) / (1.0f - tb * tb) / gain;
+                }
+                else y = v / std::sqrt (1.0f + v * v) / gain;
+                if (k == 0) curve.startNewSubPath (toX (x), toY (y)); else curve.lineTo (toX (x), toY (y));
+            }
+        }
+        g.setColour ((on ? MASColours::accent : MASColours::textDim).withAlpha (on ? 1.0f : 0.5f));
+        g.strokePath (curve, juce::PathStrokeType (2.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.drawRect (plot);
+
+        // footer: what is added, level compensation
+        auto& m = processor.riMeters;
+        const float res = m.hcResidueDb.load(), comp = m.hcCompDb.load();
+        g.setFont (uiFont (12.0f, true));
+        g.setColour (MASColours::text);
+        const juce::String state = ! m.engineAvailable.load() ? juce::String ("needs the 1.2 engine in ALGO mode")
+                                 : ! on ? juce::String ("OFF (bypassed, bit-exact)")
+                                 : "harmonics " + (res < -100.0f ? juce::String ("none") : juce::String (res, 1) + " dB re wet");
+        g.drawText (state, footer.removeFromTop (22.0f), juce::Justification::centredLeft);
+        g.setFont (uiFont (11.0f));
+        g.setColour (MASColours::textDim);
+        g.drawText (on && rawParam (s, ParamIDs::hcComp) > 0.5f ? "level comp " + juce::String (comp, 1) + " dB  \xc2\xb7  200-500 Hz and air held"
+                                                               : juce::String ("level comp off"),
+                    footer, juce::Justification::centredLeft);
+    }
+
+private:
+    void timerCallback() override { repaint(); }
+    MasterSpaceAudioProcessor& processor;
+};
 #endif
 
 //==============================================================================
@@ -1172,6 +1271,9 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::toggle, lockLevel, "LEVEL LOCK", true }, { K::toggle, lockTone, "TONE LOCK", true }, { K::toggle, lockDecay, "DECAY LOCK", true },
           { K::toggle, lockWidth, "WIDTH LOCK", true }, { K::choice, mode, "MODE" }, { K::choice, algorithm, "ALGORITHM", true } },
         { { K::choice, ParamIDs::engine, "DSP ENGINE" }, { K::empty }, { K::empty }, { K::empty }, { K::empty }, { K::empty } } };
+   #ifdef MAS_RI
+    advRows[2][1] = { K::choice, ParamIDs::hcPos, "COLOR POSITION", true };
+   #endif
     pages.add (new ControlPage (processor.apvts, lnf, advRows, 6));
 
    #ifdef MAS_ATMOS
@@ -1208,11 +1310,17 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::choice, rgTarget, "TARGET", true }, { K::knob, rgEarly, "EARLY AMOUNT", true }, { K::knob, rgLate, "LATE AMOUNT", true },
           { K::empty } } };
     pages.add (new ControlPage (processor.apvts, lnf, guardRows, 4, std::make_unique<GuardView> (processor, lnf), 470));
+
+    // HARMONIC COLOR: character, drive, colour, mix, level compensation (position: ADVANCED)
+    const std::vector<std::vector<ControlPage::Spec>> colorRows {
+        { { K::toggle, hcOn, "HARMONIC COLOR", true }, { K::choice, hcChar, "CHARACTER", true }, { K::toggle, hcComp, "LEVEL COMP", true } },
+        { { K::knob, hcDrive, "DRIVE", true }, { K::knob, hcColor, "COLOR", true }, { K::knob, hcMix, "MIX", true } } };
+    pages.add (new ControlPage (processor.apvts, lnf, colorRows, 3, std::make_unique<ColorView> (processor), 420));
    #endif
 
    #if defined (MAS_RI)
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS",
-                                       "DUCKER", "GUARD", "PRESETS" };
+                                       "DUCKER", "GUARD", "COLOR", "PRESETS" };
    #elif defined (MAS_ATMOS)
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS", "PRESETS" };
    #else
