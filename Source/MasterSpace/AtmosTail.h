@@ -276,6 +276,14 @@ public:
     }
 
     double extraTailSeconds() const { return bloomSeconds (1.0f) * 1.6 + kMaxSpreadSec; }
+#ifdef MAS_RI
+    // decay per band as set (RESONANCE GUARD source memory / TAIL AWARE)
+    void getBandRT (double* rt4, double& x1, double& x2, double& x3) const
+    {
+        for (int b = 0; b < 4; ++b) rt4[b] = tBandRT[b];
+        x1 = xLo; x2 = xMi; x3 = xHi;
+    }
+#endif
 
 private:
     static constexpr float kOutCal = 1.26f;   // +2 dB: at 1.8 s between Hall and Chamber at the same Late Level

@@ -20,6 +20,10 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#ifdef MAS_RI
+#include <atomic>
+#include <functional>
+#endif
 
 namespace mspace
 {
@@ -302,6 +306,23 @@ struct Params
     int   tailMode = 0;
     float bloom = 0.3f, motion = 0.5f, air = 0.5f;
     bool  charLock = true;
+#endif
+#ifdef MAS_RI
+    // REVERB INTELLIGENCE (1.4 experimental): SMART DUCKER (off by default, also for old projects / presets)
+    bool  duckOn = false;
+    int   duckMode = 1;                         // 0 Classic, 1 Vocal Focus, 2 Spectral
+    float duckAmountDb = 6.0f, duckThreshDb = -30.0f, duckAttackMs = 10.0f, duckHoldMs = 120.0f, duckReleaseMs = 600.0f;
+    float duckRatio = 4.0f, duckSens = 0.5f, duckEarly = 0.35f, duckLate = 1.0f, duckSpectral = 0.6f;
+    float scLowHz = 100.0f, scHighHz = 8000.0f;
+    bool  scExternal = false;                   // external sidechain when the host provides one, else internal
+    // RESONANCE GUARD (off by default, also for old projects / presets)
+    bool  rgOn = false;
+    int   rgMode = 0;                           // 0 Smooth, 1 Deep, 2 Tail Aware (experimental)
+    float rgSmooth = 0.5f, rgDetail = 0.5f, rgSelect = 0.5f, rgAttackMs = 40.0f, rgReleaseMs = 250.0f, rgMaxDb = 4.0f;
+    float rgLoHz = 150.0f, rgHiHz = 12000.0f, rgEarly = 0.5f, rgLate = 1.0f;
+    int   rgTarget = 1;                         // 0 Early + Late, 1 Late, 2 Early
+    bool  rgDelta = false, rgMatch = true;
+    int   quality = 0;                          // 0 LIVE (zero latency), 1 STUDIO HQ (latency = FFT size, reported)
 #endif
 };
 
@@ -972,6 +993,10 @@ private:
 //==============================================================================
 #include "AtmosTail.h"
 #endif
+#ifdef MAS_RI
+//==============================================================================
+#include "ReverbIntelligence.h"
+#endif
 
 //==============================================================================
 // Full processor: input conditioning, direct path (Insert), Spatial DNA + Late, locks, stereo, mix.
@@ -987,7 +1012,15 @@ public:
        #ifdef MAS_ATMOS
         atmos.prepare (fs);
        #endif
+       #ifdef MAS_RI
+        ducker.prepare (fs);
+        rg.prepare (fs);
+        for (auto& d : directDelay) d.allocate (rg.latencyHQ() + 16);
+        curQuality = std::clamp (pending.quality, 0, 1);
+        scratch.assign (10 * kChunk, 0.0f);
+       #else
         scratch.assign (8 * kChunk, 0.0f);
+       #endif
         params.algorithm = -1;
         applyParams (true);
         reset();
@@ -1001,6 +1034,11 @@ public:
         late.reset();
        #ifdef MAS_ATMOS
         atmos.reset();
+       #endif
+       #ifdef MAS_RI
+        ducker.reset();
+        rg.reset();
+        for (auto& d : directDelay) d.clear();
        #endif
         er.update (params);
     }
@@ -1023,6 +1061,23 @@ public:
         reset();
     }
 
+   #ifdef MAS_RI
+    // scL / scR: external sidechain (host bus), nullptr = none; used when params.scExternal is on
+    void process (float* left, float* right, int numSamples, const float* scL = nullptr, const float* scR = nullptr)
+    {
+        for (int pos = 0; pos < numSamples; pos += kChunk)
+        {
+            const int n = std::min (kChunk, numSamples - pos);
+            processChunk (left + pos, right + pos, n, scL != nullptr ? scL + pos : nullptr, scR != nullptr ? scR + pos : nullptr);
+        }
+    }
+    float duckReductionDb (bool earlyPart) const { return ducker.reductionDb (earlyPart); }
+    bool  duckActive() const { return ducker.isActive(); }
+    const ri::ResonanceGuard& guard() const { return rg; }
+    // processing latency (STUDIO HQ): the plugin reports it to the host
+    int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() : 0; }
+    int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() : 0; }
+   #else
     void process (float* left, float* right, int numSamples)
     {
         for (int pos = 0; pos < numSamples; pos += kChunk)
@@ -1031,6 +1086,7 @@ public:
             processChunk (left + pos, right + pos, n);
         }
     }
+   #endif
 
     double getTailSeconds() const
     {
@@ -1103,6 +1159,29 @@ private:
             atmos.update (params, scale, rt, force);
        #endif
         er.update (params);
+       #ifdef MAS_RI
+        {
+            ri::SmartDucker::Settings d;
+            d.on = params.duckOn; d.mode = std::clamp (params.duckMode, 0, 2);
+            d.amountDb = params.duckAmountDb; d.threshDb = params.duckThreshDb; d.attackMs = params.duckAttackMs;
+            d.holdMs = params.duckHoldMs; d.releaseMs = params.duckReleaseMs; d.ratio = params.duckRatio;
+            d.sensitivity = params.duckSens; d.early = params.duckEarly; d.late = params.duckLate; d.spectral = params.duckSpectral;
+            d.scLowHz = params.scLowHz; d.scHighHz = params.scHighHz;
+            ducker.set (d, force);
+
+            ri::ResonanceGuard::Settings g;
+            g.on = params.rgOn; g.mode = std::clamp (params.rgMode, 0, 2); g.target = std::clamp (params.rgTarget, 0, 2);
+            g.smooth = params.rgSmooth; g.detail = params.rgDetail; g.selectivity = params.rgSelect;
+            g.attackMs = params.rgAttackMs; g.releaseMs = params.rgReleaseMs; g.maxRedDb = params.rgMaxDb;
+            g.loHz = params.rgLoHz; g.hiHz = params.rgHiHz; g.earlyAmt = params.rgEarly; g.lateAmt = params.rgLate;
+            g.delta = params.rgDelta; g.outputMatch = params.rgMatch;
+            if (force) curQuality = std::clamp (params.quality, 0, 1);
+            g.quality = curQuality;                     // a change of quality is applied after a fade (processChunk)
+            rg.set (g, force);
+            if (force) deltaMix = params.rgDelta ? 1.0f : 0.0f;
+            updateExpectedRT();
+        }
+       #endif
 
         // input filters
         const double lc = std::clamp ((double) params.lowCutHz, 20.0, 2000.0);
@@ -1182,7 +1261,11 @@ private:
         }
     }
 
+   #ifdef MAS_RI
+    void processChunk (float* left, float* right, int n, const float* scL, const float* scR)
+   #else
     void processChunk (float* left, float* right, int n)
+   #endif
     {
         applyParams (false);
         switchedThisChunk = false;
@@ -1230,6 +1313,23 @@ private:
         const float tErW = params.erWidth * targetErWidthComp;
         const float tRouteDry = insert ? 1.0f : 0.0f;
         const float switchStep = (float) (1.0 / (0.015 * fs));
+
+       #ifdef MAS_RI
+        // RESONANCE GUARD on the formed wet; its source reference is the signal that feeds the reverb.
+        float* dEL = ltR + kChunk; float* dER = dEL + kChunk; float* dLL = dER + kChunk; float* dLR = dLL + kChunk;
+        const bool wantDelta = params.rgDelta || deltaMix > 0.0f;
+        rg.process (inL, inR, erL, erR, ltL, ltR, n, curEr, curLate * algoGain,
+                    wantDelta ? dEL : nullptr, wantDelta ? dER : nullptr, wantDelta ? dLL : nullptr, wantDelta ? dLR : nullptr);
+        // SMART DUCKER on the formed wet (early and late separately). Sidechain: the plugin input as it
+        // arrives (before any processing, Insert and Aux alike) or the host's sidechain bus.
+        {
+            const bool ext = params.scExternal && scL != nullptr && scR != nullptr;
+            ducker.process (ext ? scL : left, ext ? scR : right, erL, erR, ltL, ltR, n, curEr, curLate * algoGain);
+        }
+        const int dLat = rg.latencySamples();
+        const float tDelta = params.rgDelta ? 1.0f : 0.0f;
+        const bool qSwitch = std::clamp (params.quality, 0, 1) != curQuality;
+       #endif
 
         for (int i = 0; i < n; ++i)
         {
@@ -1283,9 +1383,37 @@ private:
             else if (algoGain < 1.0f && ! switchedThisChunk)
                 algoGain = std::min (1.0f, algoGain + switchStep);
 
+           #ifdef MAS_RI
+            // DELTA LISTEN: what RESONANCE GUARD removes (aligned), instead of the wet, without the direct sound
+            float xEL = erL[i], xER = erR[i], xLL = ltL[i], xLR = ltR[i];
+            if (wantDelta)
+            {
+                deltaMix += (tDelta > deltaMix ? 1.0f : -1.0f) * switchStep * 0.66f;
+                deltaMix = std::clamp (deltaMix, 0.0f, 1.0f);
+                xEL += deltaMix * (dEL[i] - xEL); xER += deltaMix * (dER[i] - xER);
+                xLL += deltaMix * (dLL[i] - xLL); xLR += deltaMix * (dLR[i] - xLR);
+            }
+            // quality switch LIVE <-> STUDIO HQ: fade out, switch (latency changes), fade in
+            if (qSwitch || qGain < 1.0f)
+            {
+                qGain += (qSwitch ? -1.0f : 1.0f) * switchStep;
+                if (qGain <= 0.0f && qSwitch)
+                {
+                    qGain = 0.0f;
+                    curQuality = std::clamp (params.quality, 0, 1);
+                    applyParams (true);
+                    rg.reset();
+                    for (auto& d : directDelay) d.clear();
+                }
+                qGain = std::clamp (qGain, 0.0f, 1.0f);
+            }
+            const float eM = 0.5f * (xEL + xER), eS = 0.5f * (xEL - xER) * curErW;
+            const float lM = 0.5f * (xLL + xLR), lS = 0.5f * (xLL - xLR) * curLateW;
+           #else
             // wet: early + late with separate widths, then global width and balance
             const float eM = 0.5f * (erL[i] + erR[i]), eS = 0.5f * (erL[i] - erR[i]) * curErW;
             const float lM = 0.5f * (ltL[i] + ltR[i]), lS = 0.5f * (ltL[i] - ltR[i]) * curLateW;
+           #endif
             const float lg = curLate * algoGain;
             const float M = eM * curEr + lM * lg;
             const float S = (eS * curEr + lS * lg) * curWidth;
@@ -1294,6 +1422,21 @@ private:
             wl *= std::sqrt (1.0f - std::max (0.0f, pb));
             wr *= std::sqrt (1.0f + std::min (0.0f, pb));
 
+           #ifdef MAS_RI
+            // direct path (Insert): distance gain + air absorption; in STUDIO HQ delayed like the wet
+            float inDl = left[i], inDr = right[i];
+            if (dLat > 0)
+            {
+                const float a0 = directDelay[0].read (dLat), b0 = directDelay[1].read (dLat);
+                directDelay[0].push (inDl); directDelay[1].push (inDr);
+                inDl = a0; inDr = b0;
+            }
+            const float dl = directAir[0].process (inDl) * curDirect;
+            const float dr = directAir[1].process (inDr) * curDirect;
+            const float wetAmt = std::sin (curMix * 1.5707963f);
+            const float dryAmt = std::cos (curMix * 1.5707963f) * curRouteDry * (1.0f - deltaMix);
+            const float g = curOut * curMakeup * qGain;
+           #else
             // direct path (Insert): distance gain + air absorption, no delay
             const float dl = directAir[0].process (left[i]) * curDirect;
             const float dr = directAir[1].process (right[i]) * curDirect;
@@ -1301,6 +1444,7 @@ private:
             const float wetAmt = std::sin (curMix * 1.5707963f);
             const float dryAmt = std::cos (curMix * 1.5707963f) * curRouteDry;
             const float g = curOut * curMakeup;
+           #endif
             float ol = (dl * dryAmt + wl * wetAmt) * g;
             float orr = (dr * dryAmt + wr * wetAmt) * g;
             if (params.lockTone || std::abs (curTone - 1.0f) > 1e-3f) { ol = toneShelf[0].process (ol); orr = toneShelf[1].process (orr); }
@@ -1319,6 +1463,31 @@ private:
     AtmosTail atmos;
     int curTail = 0, nextTail = 0;
     bool tailSwitchPending = false;
+   #endif
+   #ifdef MAS_RI
+    void updateExpectedRT()
+    {
+        double rt4[4], x1, x2, x3;
+       #ifdef MAS_ATMOS
+        if (curTail == 1) atmos.getBandRT (rt4, x1, x2, x3);
+        else
+       #endif
+        {
+            const double rt = effectiveRT (params);
+            const double m[4] = { params.lfMult, params.lmMult, params.hmMult, params.hfMult };
+            for (int b = 0; b < 4; ++b) rt4[b] = rt * std::clamp (m[b], 0.1, 4.0);
+            x1 = std::clamp ((double) params.xLow, 40.0, 1000.0);
+            x2 = std::clamp ((double) params.xMid, x1 * 1.5, 8000.0);
+            x3 = std::clamp ((double) params.xHigh, x2 * 1.5, 18000.0);
+        }
+        rg.setExpectedRT (rt4, x1, x2, x3);
+    }
+
+    ri::SmartDucker ducker;
+    ri::ResonanceGuard rg;
+    DelayLine directDelay[2];
+    int curQuality = 0;
+    float deltaMix = 0.0f, qGain = 1.0f;
    #endif
     std::vector<float> scratch;
     double curLow = 20.0, curHigh = 20000.0;
