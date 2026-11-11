@@ -1,0 +1,63 @@
+__NAME__ 1.4.0 (экспериментальная сборка) — masterastakhovsound
+"Don't add reverb. Create space."
+
+Установка
+1. Распакуй архив.
+2. Нажми правой кнопкой на «Install __NAME__.command» → «Открыть» → «Открыть».
+   Если macOS не даёт открыть: Системные настройки → Конфиденциальность
+   и безопасность → внизу «Всё равно открыть» (скрипт не подписан Apple).
+3. Перезапусти DAW. В Logic: Audio FX → Audio Units → masterastakhovsound → __NAME__.
+
+Установка вручную (Терминал)
+  cp -R "__NAME__.component" ~/Library/Audio/Plug-Ins/Components/
+  cp -R "__NAME__.vst3" ~/Library/Audio/Plug-Ins/VST3/
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"__NAME__.component" ~/Library/Audio/Plug-Ins/VST3/"__NAME__.vst3"
+
+Что это
+  MASTER SPACE ATMOS 1.3 + два новых модуля REVERB INTELLIGENCE:
+  SMART DUCKER и RESONANCE GUARD. Ставится РЯДОМ с 1.1, 1.2 и ATMOS 1.3:
+  своё имя, свой код плагина (MSp4) и своя папка пресетов — ничего не
+  заменяет. Оба модуля по умолчанию выключены: звук тогда в точности
+  (бит в бит) как у ATMOS 1.3.
+
+SMART DUCKER (вкладка DUCKER; на MAIN внизу — ON, AMOUNT и индикатор)
+  Убирает реверберацию из-под фраз и открывает хвост в паузах. Работает
+  на готовом wet-сигнале (Early и Late раздельно), сеть реверберации и её
+  обратные связи не трогает: после отпускания хвост ровно тот же.
+  MODE        CLASSIC — вся реверберация одной громкостью;
+              VOCAL FOCUS — в основном позднее поле, ER и глубина сохраняются,
+              без «качания»;
+              SPECTRAL — давит только там, где реверберация маскирует голос.
+  AMOUNT 0–18 dB, THRESHOLD, RATIO, ATTACK, HOLD, RELEASE, SENSITIVITY,
+  EARLY DUCK / LATE DUCK (глубина для ранних и поздних), SPECTRAL AMOUNT,
+  SIDECHAIN: INTERNAL (вход плагина) или EXTERNAL (сайдчейн-шина DAW;
+  в Logic — меню Side Chain в шапке плагина). Нет шины — работает INTERNAL.
+  SC LOW CUT / SC HIGH CUT — фильтр ключа.
+
+RESONANCE GUARD (вкладка GUARD)
+  Мягко убирает «звенящие» резонансы самого хвоста, не трогая музыкальные
+  гармоники источника. Анализирует реверберацию, а не сухой сигнал.
+  MODE        SMOOTH — бережно; DEEP — глубже; TAIL AWARE (эксперимент) —
+              следит за тем, как гаснет каждая полоса.
+  MAX REDUCTION 0–12 dB (обычно работает 0.5–2 dB), SMOOTH, DETAIL,
+  SELECTIVITY, ATTACK, RELEASE, LOW / HIGH (диапазон), TARGET и
+  EARLY / LATE AMOUNT, OUTPUT MATCH (компенсация громкости).
+  DELTA — слушать только то, что убирается (точная разница). Не сохраняется.
+  VIEW — дисплей вкл/выкл (на звук не влияет).
+  QUALITY     LIVE — без задержки;
+              STUDIO HQ — точнее по частоте, задержка 106.7 мс (DAW её
+              компенсирует). Переключение — с короткой паузой звука.
+
+  Модули работают с движком 1.2 в режиме ALGO (все алгоритмы и ATMOS).
+
+Пресеты: все пресеты 1.2 и ATMOS (модули в них выключены). Свои пресеты
+  сохраняются в ~/Library/Audio/Presets/masterastakhovsound/MASTER SPACE 1.4.
+
+Это прототип для прослушивания: звук модулей может меняться в следующих
+сборках.
+
+Двойной клик по ручке — значение по умолчанию. Клик по цифре — ввести вручную.
+Окно растягивается за правый нижний угол.
+
+Плагин подписан ad-hoc: для своего компьютера этого достаточно.
+LIVE: нулевая задержка. Apple Silicon + Intel, 44.1–96 кГц.

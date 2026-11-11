@@ -87,6 +87,16 @@ juce_add_binary_data(MasterSpaceAtmosPresets HEADER_NAME MasterSpacePresets.h NA
     SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
 target_link_libraries(MasterSpaceAtmos PRIVATE MasterSpaceAtmosPresets)
 
+# MASTER SPACE 1.4: ATMOS 1.3 + REVERB INTELLIGENCE (SMART DUCKER, RESONANCE GUARD; MAS_RI). Same sources,
+# its own name, code, bundle id and preset folder: installs next to 1.2 and ATMOS 1.3 without conflicts.
+mas_add_plugin(MasterSpace14 "MASTER SPACE 1.4" MSp4 com.masterastakhovsound.masterspace14 1.4.0
+               Source/MasterSpace "MASTER SPACE with SMART DUCKER and RESONANCE GUARD")
+target_sources(MasterSpace14 PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp)
+target_compile_definitions(MasterSpace14 PRIVATE MAS_ATMOS=1 MAS_RI=1)
+juce_add_binary_data(MasterSpace14Presets HEADER_NAME MasterSpacePresets.h NAMESPACE MasterSpacePresets
+    SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
+target_link_libraries(MasterSpace14 PRIVATE MasterSpace14Presets)
+
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
                Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
@@ -133,5 +143,20 @@ if(MAS_BUILD_TESTS)
         JucePlugin_Name="MASTER SPACE ATMOS" JucePlugin_VersionString="1.3.0")
     target_link_libraries(MasterSpaceAtmosTests PRIVATE
         MasterSpaceAtmosPresets MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # the same tests on MASTER SPACE 1.4 (plus the 1.4 checks: modules off = ATMOS, latency, sidechain, migration)
+    juce_add_console_app(MasterSpace14Tests PRODUCT_NAME "MasterSpace14Tests")
+    target_sources(MasterSpace14Tests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp)
+    target_compile_definitions(MasterSpace14Tests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 MAS_ATMOS=1 MAS_RI=1
+        JucePlugin_Name="MASTER SPACE 1.4" JucePlugin_VersionString="1.4.0")
+    target_link_libraries(MasterSpace14Tests PRIVATE
+        MasterSpace14Presets MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

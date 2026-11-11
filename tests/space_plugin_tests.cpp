@@ -118,6 +118,25 @@ static int snapshots (const juce::File& dir)
     p->prepareToPlay (48000, 512);
     auto& pm = p->getPresetManager();
     pm.load (pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room 1.2 Open"));
+   #ifdef MAS_RI
+    {
+        // modules on and some audio through them, so the 1.4 displays show real values
+        auto set = [&] (const char* id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        set (ParamIDs::duckOn, 1.0f); set (ParamIDs::rgOn, 1.0f); set (ParamIDs::rgMax, 6.0f); set (ParamIDs::rgTarget, 0.0f);
+        pump (100);
+        juce::AudioBuffer<float> b (2, 48000 * 3);
+        juce::Random rng (3);
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            const double t = i / 48000.0;
+            const bool phrase = std::fmod (t, 1.2) < 0.8;
+            const float v = phrase ? (float) (0.25 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t)
+                                              + 0.12 * std::sin (2.0 * juce::MathConstants<double>::pi * 1310.0 * t) + 0.03 * (rng.nextFloat() - 0.5f)) : 0.0f;
+            b.setSample (0, i, v); b.setSample (1, i, v);
+        }
+        run (*p, b, 512);
+    }
+   #endif
     std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
     ed->setSize (1000, 680);
     pump (200);
@@ -141,7 +160,11 @@ static int snapshots (const juce::File& dir)
         std::printf ("  wrote %s.png\n", name.toRawUTF8());
     };
     shot ("1_main");
+   #ifdef MAS_RI
+    for (const char* tab : { "ADVANCED", "DUCKER", "GUARD", "PRESETS" })
+   #else
     for (const char* tab : { "ADVANCED", "PRESETS" })
+   #endif
         if (auto* b = findButton (*ed, tab)) { b->triggerClick(); pump (200); shot (juce::String ("2_") + tab); }
     if (auto* b = findButton (*ed, "B")) { b->triggerClick(); pump (200); }
     if (auto* b = findButton (*ed, "SAVE AS")) { b->triggerClick(); pump (200); shot ("3_save_as"); }
@@ -495,6 +518,421 @@ int main (int argc, char** argv)
         check (sameParams (beforeJunk, q->captureParamMap()), "unreadable project state is ignored (current settings kept)");
     }
 
+   #ifdef MAS_RI
+    //==========================================================================
+    section ("1.4 SMART DUCKER / RESONANCE GUARD in the plugin");
+    {
+        auto setP = [] (MasterSpaceAudioProcessor& q, const char* id, float plain)
+        {
+            if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain));
+        };
+        auto getP = [] (MasterSpaceAudioProcessor& q, const char* id) { return q.apvts.getRawParameterValue (id)->load(); };
+        auto argmaxAbs = [] (const juce::AudioBuffer<float>& b, int ch)
+        {
+            int k = 0; float m = 0;
+            for (int i = 0; i < b.getNumSamples(); ++i) if (std::abs (b.getSample (ch, i)) > m) { m = std::abs (b.getSample (ch, i)); k = i; }
+            return k;
+        };
+        auto rmsDb = [] (const juce::AudioBuffer<float>& b, int from, int to)
+        {
+            double e = 0; int n = 0;
+            for (int c = 0; c < 2; ++c) for (int i = juce::jmax (0, from); i < juce::jmin (to, b.getNumSamples()); ++i) { e += b.getSample (c, i) * b.getSample (c, i); ++n; }
+            return 10.0 * std::log10 (e / juce::jmax (1, n) + 1e-30);
+        };
+        auto diffFrom = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int from, int shiftB = 0)
+        {
+            float m = 0;
+            for (int c = 0; c < 2; ++c)
+                for (int i = from; i < a.getNumSamples() && i + shiftB < b.getNumSamples(); ++i)
+                    m = juce::jmax (m, std::abs (a.getSample (c, i) - b.getSample (c, i + shiftB)));
+            return m;
+        };
+        // vocal-like phrases: tones with harmonics in 0.8 s phrases, 0.6 s gaps
+        auto phrases = [] (double fs, double secs)
+        {
+            juce::AudioBuffer<float> b (2, (int) (fs * secs));
+            juce::Random rng (11);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const double t = i / fs, ph = std::fmod (t, 1.4);
+                const double env = ph < 0.8 ? std::sin (juce::MathConstants<double>::pi * juce::jmin (1.0, ph / 0.02)) * 0.5 + 0.5 : 0.0;
+                const double f0 = 196.0 * (1.0 + 0.12 * std::floor (t / 1.4));
+                double v = 0;
+                for (int h = 1; h <= 6; ++h) v += std::sin (2.0 * juce::MathConstants<double>::pi * f0 * h * t) / h;
+                const float x = (float) (env * 0.18 * v + (ph < 0.8 ? 0.01 * (rng.nextFloat() - 0.5f) : 0.0));
+                b.setSample (0, i, x); b.setSample (1, i, x);
+            }
+            return b;
+        };
+
+        // ---- defaults, old projects
+        {
+            auto q = makeProcessor (48000, 256);
+            check (getP (*q, ParamIDs::duckOn) < 0.5f && getP (*q, ParamIDs::rgOn) < 0.5f && getP (*q, ParamIDs::quality) < 0.5f
+                   && q->getLatencySamples() == 0, "new instance: SMART DUCKER off, RESONANCE GUARD off, LIVE, no latency");
+
+            // an ATMOS 1.3 project (no 1.4 parameters) loaded into an instance that had both modules on and STUDIO HQ
+            juce::MemoryBlock st;
+            q->getStateInformation (st);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (st.getData(), (int) st.getSize());
+            juce::Array<juce::XmlElement*> drop;
+            for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+                for (const char* id : ParamIDs::riParams) if (e->getStringAttribute ("id") == id) drop.add (e);
+            for (auto* e : drop) xml->removeChildElement (e, true);
+            xml->removeChildElement (xml->getChildByName ("ABCompare"), true);
+            juce::MemoryBlock old13;
+            juce::AudioProcessor::copyXmlToBinary (*xml, old13);
+            setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::rgOn, 1); setP (*q, ParamIDs::quality, 1); setP (*q, ParamIDs::duckAmount, 15);
+            pump (250);
+            const int latHQ = q->getLatencySamples();
+            q->setStateInformation (old13.getData(), (int) old13.getSize());
+            pump (250);
+            check (latHQ == 5120, "STUDIO HQ reports its latency to the host: " + juce::String (latHQ) + " samples at 48 kHz (FFT 4096 + hop 1024)");
+            check (getP (*q, ParamIDs::duckOn) < 0.5f && getP (*q, ParamIDs::rgOn) < 0.5f && getP (*q, ParamIDs::quality) < 0.5f
+                   && std::abs (getP (*q, ParamIDs::duckAmount) - 6.0f) < 0.01f && q->getLatencySamples() == 0,
+                   "project without 1.4 parameters (ATMOS 1.3 / 1.2): both modules OFF, defaults, LIVE, latency back to 0");
+
+            // 1.4 state round trip; DELTA LISTEN is not saved
+            setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::duckMode, 2); setP (*q, ParamIDs::rgOn, 1); setP (*q, ParamIDs::rgMode, 2);
+            setP (*q, ParamIDs::rgMax, 2.5f); setP (*q, ParamIDs::scSource, 1);
+            q->setDeltaListen (true);
+            juce::MemoryBlock st14;
+            q->getStateInformation (st14);
+            auto r = makeProcessor (48000, 256);
+            r->setStateInformation (st14.getData(), (int) st14.getSize());
+            juce::String diff;
+            check (sameParams (q->captureParamMap(), r->captureParamMap(), &diff) && ! r->getDeltaListen(),
+                   "1.4 project round trip keeps every 1.4 parameter; DELTA LISTEN is a monitor switch, not saved " + diff);
+            q->setDeltaListen (false);
+        }
+
+        // ---- presets
+        {
+            auto q = makeProcessor (48000, 256);
+            auto& pm = q->getPresetManager();
+            setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::rgOn, 1);
+            pump (50);
+            pm.load (pm.indexOf ("factory:Halls/Concert Hall"));
+            pump (50);
+            check (getP (*q, ParamIDs::duckOn) < 0.5f && getP (*q, ParamIDs::rgOn) < 0.5f, "factory / older presets load with both modules OFF");
+            setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::duckAmount, 9.5f); setP (*q, ParamIDs::rgOn, 1); setP (*q, ParamIDs::rgMode, 1);
+            const auto res = pm.saveAs ("RI Test", "Signature Collection", "", "", false);
+            const int idx = pm.indexOf (pm.getCurrentKey());
+            bool ok = res.ok && idx >= 0;
+            if (ok)
+            {
+                const auto& v = pm.getPresets()[(size_t) idx].values;
+                ok = v.at (ParamIDs::duckOn) > 0.5f && std::abs (v.at (ParamIDs::duckAmount) - 9.5f) < 0.01f && v.at (ParamIDs::rgOn) > 0.5f
+                     && std::abs (v.at (ParamIDs::rgMode) - 1.0f) < 0.01f;
+            }
+            pm.load (pm.indexOf ("factory:Halls/Concert Hall"));
+            pump (50);
+            pm.load (idx);
+            pump (50);
+            ok = ok && getP (*q, ParamIDs::duckOn) > 0.5f && std::abs (getP (*q, ParamIDs::duckAmount) - 9.5f) < 0.01f;
+            check (ok, "a preset saved with SMART DUCKER / RESONANCE GUARD restores them");
+            pm.remove (idx);
+        }
+
+        // ---- OFF is transparent; OFF after ON returns bit-exactly to the untouched output (the FDN is never touched)
+        {
+            auto ref = makeProcessor (48000, 256), any = makeProcessor (48000, 256), duck = makeProcessor (48000, 256), guard = makeProcessor (48000, 256);
+            for (auto* q : { ref.get(), any.get(), duck.get(), guard.get() })
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
+            // every 1.4 setting away from its default, modules still OFF
+            for (const char* id : ParamIDs::riParams)
+                if (juce::String (id) != ParamIDs::duckOn && juce::String (id) != ParamIDs::rgOn && juce::String (id) != ParamIDs::quality)
+                    if (auto* r = any->apvts.getParameter (id)) r->setValueNotifyingHost (r->getDefaultValue() < 0.5f ? 0.8f : 0.2f);
+            setP (*duck, ParamIDs::duckOn, 1); setP (*duck, ParamIDs::duckAmount, 12);
+            setP (*guard, ParamIDs::rgOn, 1); setP (*guard, ParamIDs::rgMode, 1); setP (*guard, ParamIDs::rgMax, 6); setP (*guard, ParamIDs::rgTarget, 0);
+            pump (50);
+            auto a = phrases (48000, 9.0), b = a, c = a, d = a;
+            const int half = 48000 * 3;
+            juce::AudioBuffer<float> a1 (a.getArrayOfWritePointers(), 2, 0, half), b1 (b.getArrayOfWritePointers(), 2, 0, half),
+                                     c1 (c.getArrayOfWritePointers(), 2, 0, half), d1 (d.getArrayOfWritePointers(), 2, 0, half);
+            run (*ref, a1, 256); run (*any, b1, 256); run (*duck, c1, 256); run (*guard, d1, 256);
+            const float duckedDiff = diffFrom (a1, c1, 0), guardDiff = diffFrom (a1, d1, 0);
+            setP (*duck, ParamIDs::duckOn, 0); setP (*guard, ParamIDs::rgOn, 0);
+            pump (50);
+            juce::AudioBuffer<float> a2 (a.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half), b2 (b.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half),
+                                     c2 (c.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half), d2 (d.getArrayOfWritePointers(), 2, half, a.getNumSamples() - half);
+            run (*ref, a2, 256); run (*any, b2, 256); run (*duck, c2, 256); run (*guard, d2, 256);
+            check (maxAbsDiff (a, b) == 0.0f, "both modules OFF: output identical whatever their settings (bit-exact)");
+            const int settle = 48000 * 2;   // release (600 ms + hold) and the guard's release
+            check (duckedDiff > 1.0e-3f && diffFrom (a2, c2, settle) == 0.0f,
+                   "SMART DUCKER switched off: after its release the output is bit-identical to never ducked (tail structure untouched; ducked diff "
+                   + juce::String (duckedDiff, 4) + ")");
+            check (diffFrom (a2, d2, settle) < 1.0e-6f, "RESONANCE GUARD switched off: after its release the output equals the unguarded one (max diff "
+                   + juce::String (diffFrom (a2, d2, settle), 8) + ", guarded diff " + juce::String (guardDiff, 4) + ")");
+        }
+
+        // ---- STUDIO HQ: every path delayed by the reported latency, exactly
+        for (double fs : { 48000.0, 96000.0 })
+        {
+            const int expected = fs < 50000 ? 5120 : 10240;
+            auto live = makeProcessor (fs, 256), hq = makeProcessor (fs, 256);
+            for (auto* q : { live.get(), hq.get() })
+            {
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Studio Rooms/Studio A Natural"));
+                pump (50);
+            }
+            setP (*hq, ParamIDs::quality, 1);
+            pump (250);
+            for (auto* q : { live.get(), hq.get() }) { auto warm = silence (fs, 0.1); run (*q, warm, 256); }   // HQ: switched at a faded point
+            check (hq->getLatencySamples() == expected, juce::String (fs / 1000.0, 0) + " kHz: STUDIO HQ latency " + juce::String (hq->getLatencySamples()) + " samples ("
+                   + juce::String (1000.0 * expected / fs, 1) + " ms) reported");
+            for (int variant = 0; variant < 3; ++variant)   // 0: 1.2 Insert direct only, 1: 1.2 Aux wet, 2: 1.1 Legacy engine
+            {
+                for (auto* q : { live.get(), hq.get() })
+                {
+                    setP (*q, ParamIDs::routing, variant == 1 ? 1.0f : 0.0f);
+                    setP (*q, ParamIDs::mix, variant == 0 ? 0.0f : 40.0f);
+                    setP (*q, ParamIDs::engine, variant == 2 ? 0.0f : 1.0f);
+                    pump (50);
+                    auto w = silence (fs, 1.5); run (*q, w, 256);     // parameter smoothing settled
+                }
+                const auto x = impulseAfterReset (*live, fs, 256, 1.0), y = impulseAfterReset (*hq, fs, 256, 1.0);
+                const float d = diffFrom (x, y, 0, expected);
+                const char* names[] = { "Insert direct sound", "Aux wet (RESONANCE GUARD off)", "1.1 Legacy engine" };
+                check (d < 1.0e-6f && argmaxAbs (y, 0) == argmaxAbs (x, 0) + expected,
+                       juce::String (fs / 1000.0, 0) + " kHz STUDIO HQ = LIVE delayed by exactly the reported latency: " + names[variant]
+                       + " (max diff " + juce::String (d, 8) + ")");
+            }
+            // IR mode too
+            {
+                const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms14-test-ir.wav");
+                {
+                    juce::AudioBuffer<float> ir (2, (int) (0.4 * fs));
+                    juce::Random rng (5);
+                    for (int i = 0; i < ir.getNumSamples(); ++i)
+                        for (int c = 0; c < 2; ++c) ir.setSample (c, i, (rng.nextFloat() - 0.5f) * std::exp (-6.0f * (float) i / ir.getNumSamples()));
+                    irFile.deleteFile();
+                    std::unique_ptr<juce::OutputStream> os (irFile.createOutputStream());
+                    std::unique_ptr<juce::AudioFormatWriter> wr (juce::WavAudioFormat().createWriterFor (os.get(), fs, 2, 24, {}, 0));
+                    if (wr != nullptr) { os.release(); wr->writeFromAudioSampleBuffer (ir, 0, ir.getNumSamples()); }
+                }
+                for (auto* q : { live.get(), hq.get() })
+                {
+                    setP (*q, ParamIDs::engine, 1.0f); setP (*q, ParamIDs::routing, 0.0f); setP (*q, ParamIDs::mix, 40.0f);
+                    q->loadImpulseResponse (irFile);
+                    setP (*q, ParamIDs::mode, 1.0f);
+                    pump (300);
+                    auto w = silence (fs, 0.5); run (*q, w, 256);
+                    pump (100);
+                    w = silence (fs, 0.5); run (*q, w, 256);
+                }
+                const auto x = impulseAfterReset (*live, fs, 256, 1.0), y = impulseAfterReset (*hq, fs, 256, 1.0);
+                const float d = diffFrom (x, y, 0, expected);
+                check (d < 1.0e-5f && peak (x) > 0.01f, juce::String (fs / 1000.0, 0) + " kHz STUDIO HQ = LIVE delayed: IR mode (max diff " + juce::String (d, 8) + ")");
+                irFile.deleteFile();
+            }
+        }
+
+        // ---- STUDIO HQ through a preset transition, a 1.2 -> 1.1 switch and ALGO -> IR -> ALGO: still exactly LIVE delayed
+        //      (the cross-fade gains on the output side are delayed with the audio, so the direct sound stays constant)
+        {
+            const double fs = 48000.0;
+            const int L = 5120;
+            auto live = makeProcessor (fs, 256), hq = makeProcessor (fs, 256);
+            const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms14-test-ir2.wav");
+            {
+                juce::AudioBuffer<float> ir (2, (int) (0.3 * fs));
+                juce::Random rng (6);
+                for (int i = 0; i < ir.getNumSamples(); ++i)
+                    for (int c = 0; c < 2; ++c) ir.setSample (c, i, (rng.nextFloat() - 0.5f) * std::exp (-8.0f * (float) i / ir.getNumSamples()));
+                irFile.deleteFile();
+                std::unique_ptr<juce::OutputStream> os (irFile.createOutputStream());
+                std::unique_ptr<juce::AudioFormatWriter> wr (juce::WavAudioFormat().createWriterFor (os.get(), fs, 2, 24, {}, 0));
+                if (wr != nullptr) { os.release(); wr->writeFromAudioSampleBuffer (ir, 0, ir.getNumSamples()); }
+            }
+            for (auto* q : { live.get(), hq.get() })
+            {
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Studio Rooms/Studio A Natural"));
+                setP (*q, ParamIDs::mix, 30);
+                q->loadImpulseResponse (irFile);
+            }
+            setP (*hq, ParamIDs::quality, 1);
+            pump (300);
+            for (auto* q : { live.get(), hq.get() }) { auto w = silence (fs, 2.0); run (*q, w, 256); }
+            pump (100);
+            juce::AudioBuffer<float> x (2, (int) (fs * 6.0));
+            juce::Random rng (8);
+            for (int i = 0; i < x.getNumSamples(); ++i)
+            {
+                const float v = 0.25f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 330.0 * i / fs) + 0.02f * (rng.nextFloat() - 0.5f);
+                x.setSample (0, i, v); x.setSample (1, i, v);
+            }
+            auto y = x;
+            juce::MidiBuffer midi;
+            for (int pos = 0; pos < x.getNumSamples(); pos += 256)
+            {
+                const int len = juce::jmin (256, x.getNumSamples() - pos);
+                if (pos == 256 * 188)  for (auto* q : { live.get(), hq.get() }) { auto m = q->captureParamMap(); m[ParamIDs::decay] = 2.4f; q->applyParamMap (m); }
+                if (pos == 256 * 375)  for (auto* q : { live.get(), hq.get() }) setP (*q, ParamIDs::engine, 0.0f);
+                if (pos == 256 * 563)  for (auto* q : { live.get(), hq.get() }) setP (*q, ParamIDs::mode, 1.0f);
+                if (pos == 256 * 750)  for (auto* q : { live.get(), hq.get() }) setP (*q, ParamIDs::mode, 0.0f);
+                juce::AudioBuffer<float> a (x.getArrayOfWritePointers(), 2, pos, len), b (y.getArrayOfWritePointers(), 2, pos, len);
+                live->processBlock (a, midi);
+                hq->processBlock (b, midi);
+            }
+            // same sound, only later: envelope in 10 ms windows and click measure (2nd difference) of HQ vs LIVE.
+            // (Not sample-exact here: a path that fades out runs L samples longer in HQ, so its modulation phase
+            //  differs when it is restarted later.)
+            double envDiff = 0;
+            for (int w = (int) (0.6 * fs); w + L + 480 < y.getNumSamples(); w += 480)
+            {
+                double ex = 0, ey = 0;
+                for (int c = 0; c < 2; ++c) for (int i = w; i < w + 480; ++i) { ex += x.getSample (c, i) * x.getSample (c, i); ey += y.getSample (c, i + L) * y.getSample (c, i + L); }
+                const double dd = std::abs (10.0 * std::log10 ((ey + 1e-12) / (ex + 1e-12)));
+                if (std::getenv ("MS_DEBUG_ENV") && dd > 0.1) std::printf ("    env diff at %.3f s: %.3f dB\n", w / fs, dd);
+                envDiff = juce::jmax (envDiff, dd);
+            }
+            auto d2 = [] (const juce::AudioBuffer<float>& b, int from)
+            {
+                float w = 0;
+                for (int c = 0; c < 2; ++c) for (int i = from + 2; i < b.getNumSamples(); ++i)
+                    w = juce::jmax (w, std::abs (b.getSample (c, i) - 2.0f * b.getSample (c, i - 1) + b.getSample (c, i - 2)));
+                return w;
+            };
+            const float clickHQ = d2 (y, (int) (0.6 * fs) + L), clickLive = d2 (x, (int) (0.6 * fs));
+            check (envDiff < 0.5 && clickHQ < clickLive * 1.25f + 1.0e-3f,
+                   "STUDIO HQ through a preset transition, 1.2 -> 1.1, ALGO -> IR -> ALGO: same envelope as LIVE, delayed (max "
+                   + juce::String (envDiff, 3) + " dB), no click (2nd-difference peak " + juce::String (clickHQ, 4) + " vs " + juce::String (clickLive, 4) + ")");
+            irFile.deleteFile();
+        }
+
+        // ---- LIVE <-> STUDIO HQ while audio runs: faded, no click, no NaN (compared with the same run without switches)
+        {
+            auto q = makeProcessor (48000, 128), ref = makeProcessor (48000, 128);
+            for (auto* x : { q.get(), ref.get() })
+            {
+                x->getPresetManager().load (x->getPresetManager().indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
+                setP (*x, ParamIDs::rgOn, 1); setP (*x, ParamIDs::duckOn, 1);
+            }
+            pump (50);
+            auto sig = phrases (48000, 4.0), refSig = sig;
+            juce::MidiBuffer midi;
+            int switches = 0;
+            for (int pos = 0; pos < sig.getNumSamples(); pos += 128)
+            {
+                if (pos % (48000 / 2) == 0 && pos > 0) { setP (*q, ParamIDs::quality, (float) (++switches % 2)); }
+                const int len = juce::jmin (128, sig.getNumSamples() - pos);
+                juce::AudioBuffer<float> view (sig.getArrayOfWritePointers(), 2, pos, len), rv (refSig.getArrayOfWritePointers(), 2, pos, len);
+                q->processBlock (view, midi);
+                ref->processBlock (rv, midi);
+            }
+            auto d2 = [] (const juce::AudioBuffer<float>& b)
+            {
+                float w = 0;
+                for (int c = 0; c < 2; ++c) for (int i = 2; i < b.getNumSamples(); ++i)
+                    w = juce::jmax (w, std::abs (b.getSample (c, i) - 2.0f * b.getSample (c, i - 1) + b.getSample (c, i - 2)));
+                return w;
+            };
+            const float worst = d2 (sig), base = d2 (refSig);
+            check (allFinite (sig) && worst < base * 1.25f + 1.0e-3f, juce::String (switches) + " quality switches while audio runs: finite, faded (2nd-difference peak "
+                   + juce::String (worst, 4) + " vs " + juce::String (base, 4) + " without switching)");
+        }
+
+        // ---- DELTA LISTEN is the exact difference: processed + delta = unprocessed (OUTPUT MATCH off)
+        for (int quality : { 0, 1 })
+        {
+            auto off = makeProcessor (48000, 256), on = makeProcessor (48000, 256), del = makeProcessor (48000, 256);
+            for (auto* q : { off.get(), on.get(), del.get() })
+            {
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+                setP (*q, ParamIDs::routing, 1); setP (*q, ParamIDs::quality, (float) quality); setP (*q, ParamIDs::rgMatch, 0);
+                setP (*q, ParamIDs::rgMode, 1); setP (*q, ParamIDs::rgMax, 6); setP (*q, ParamIDs::rgTarget, 0); setP (*q, ParamIDs::rgSelect, 0);
+            }
+            setP (*on, ParamIDs::rgOn, 1); setP (*del, ParamIDs::rgOn, 1); del->setDeltaListen (true);
+            pump (250);
+            auto x = phrases (48000, 6.0), y = x, z = x;
+            run (*off, x, 256); run (*on, y, 256); run (*del, z, 256);
+            float m = 0, dl = 0;
+            for (int c = 0; c < 2; ++c)
+                for (int i = 48000; i < x.getNumSamples(); ++i)
+                {
+                    m = juce::jmax (m, std::abs (y.getSample (c, i) + z.getSample (c, i) - x.getSample (c, i)));
+                    dl = juce::jmax (dl, std::abs (z.getSample (c, i)));
+                }
+            check (m < 2.0e-5f, juce::String (quality ? "STUDIO HQ" : "LIVE") + ": DELTA LISTEN is the exact, aligned difference (|processed + delta - unprocessed| <= "
+                   + juce::String (m, 7) + ", delta peak " + juce::String (dl, 4) + ")");
+        }
+
+        // ---- external sidechain: the host bus keys the ducker; without a bus the internal key is used
+        for (bool monoMain : { false, true })
+        {
+            auto q = std::make_unique<MasterSpaceAudioProcessor>();
+            auto layout = q->getBusesLayout();
+            if (monoMain) layout.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
+            layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
+            const bool accepted = q->setBusesLayout (layout);
+            q->setRateAndBufferSizeDetails (48000, 256);
+            q->prepareToPlay (48000, 256);
+            q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            setP (*q, ParamIDs::routing, 1); setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::duckMode, 0); setP (*q, ParamIDs::duckAmount, 12);
+            setP (*q, ParamIDs::duckRelease, 150); setP (*q, ParamIDs::duckHold, 20); setP (*q, ParamIDs::scSource, 1);
+            pump (50);
+            const int chans = juce::jmax (q->getTotalNumInputChannels(), q->getTotalNumOutputChannels());
+            const int first = q->getChannelIndexInProcessBlockBuffer (true, 1, 0);
+            juce::AudioBuffer<float> buf (chans, 48000 * 4);
+            buf.clear();
+            juce::Random rng (9);
+            for (int i = 0; i < buf.getNumSamples(); ++i)
+            {
+                const float main = 0.1f * (rng.nextFloat() - 0.5f);                                   // steady material
+                const float key = std::fmod (i / 48000.0, 1.0) < 0.5 ? 0.3f * (rng.nextFloat() - 0.5f) : 0.0f;   // key on / off
+                buf.setSample (0, i, main);
+                if (! monoMain) buf.setSample (1, i, main);
+                buf.setSample (first, i, key); buf.setSample (first + 1, i, key);
+            }
+            juce::MidiBuffer midi;
+            for (int pos = 0; pos < buf.getNumSamples(); pos += 256)
+            {
+                juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), chans, pos, juce::jmin (256, buf.getNumSamples() - pos));
+                q->processBlock (view, midi);
+            }
+            // wet level while the key plays vs while it is silent (last 2 s)
+            double keyOn = 0, keyOff = 0;
+            for (int s0 = 2 * 48000; s0 < 4 * 48000; s0 += 48000)
+            {
+                keyOn  += rmsDb (buf, s0 + 12000, s0 + 23000) * 0.5;
+                keyOff += rmsDb (buf, s0 + 36000, s0 + 47000) * 0.5;
+            }
+            check (accepted && q->riMeters.scExternalLive.load() && keyOff - keyOn > 4.0,
+                   juce::String (monoMain ? "mono" : "stereo") + " input + stereo sidechain bus: EXTERNAL key ducks the wet by "
+                   + juce::String (keyOff - keyOn, 1) + " dB while the key plays, opens in its pauses");
+        }
+        {
+            auto q = makeProcessor (48000, 256);     // no sidechain bus enabled by the host
+            setP (*q, ParamIDs::duckOn, 1); setP (*q, ParamIDs::scSource, 1);
+            pump (50);
+            auto sig = phrases (48000, 1.0);
+            run (*q, sig, 256);
+            check (! q->riMeters.scExternalLive.load() && allFinite (sig), "EXTERNAL chosen without a host sidechain bus: falls back to the internal key");
+        }
+
+        // ---- every 1.4 parameter automated at random (plus quality), on the main and the transition paths
+        {
+            auto q = makeProcessor (48000, 64);
+            juce::Random rng (77);
+            auto sig = phrases (48000, quick ? 3.0 : 6.0);
+            juce::MidiBuffer midi;
+            int k = 0;
+            for (int pos = 0; pos < sig.getNumSamples(); pos += 64, ++k)
+            {
+                const char* id = ParamIDs::riParams[rng.nextInt ((int) std::size (ParamIDs::riParams))];
+                if (juce::String (id) != ParamIDs::quality || k % 200 == 0)
+                    if (auto* r = q->apvts.getParameter (id)) r->setValueNotifyingHost (rng.nextFloat());
+                if (k % 900 == 0) q->getPresetManager().load (q->getPresetManager().indexOf (k % 1800 ? "factory:Halls/Concert Hall" : "factory:Vocal Spaces/ATMOS Vocal Glow"));
+                juce::AudioBuffer<float> view (sig.getArrayOfWritePointers(), 2, pos, juce::jmin (64, sig.getNumSamples() - pos));
+                q->processBlock (view, midi);
+            }
+            check (allFinite (sig) && peak (sig) < 8.0f, "random automation of every 1.4 parameter every 64 samples, preset loads, quality switches: finite (peak "
+                   + juce::String (peak (sig), 2) + ")");
+        }
+    }
+   #endif
+
     //==========================================================================
     section ("Instances, automation, stability");
     {
@@ -546,6 +984,31 @@ int main (int argc, char** argv)
             std::printf ("  %5.0f kHz  %-40s %6.2f %% of one core (%.0fx real time)\n", fs / 1000.0,
                          juce::String (key).fromFirstOccurrenceOf ("/", false, false).toRawUTF8(), 100.0 * ms / (secs * 1000.0), secs * 1000.0 / ms);
         }
+       #ifdef MAS_RI
+        {
+            pm.load (pm.indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
+            auto setP = [&] (const char* id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+            struct Cfg { const char* name; int duck, rg, q; };
+            for (const Cfg c : { Cfg { "ATMOS, modules off", 0, 0, 0 }, Cfg { "ATMOS + SMART DUCKER (Vocal Focus)", 1, 0, 0 },
+                                 Cfg { "ATMOS + SMART DUCKER (Spectral)", 2, 0, 0 }, Cfg { "ATMOS + RESONANCE GUARD LIVE", 0, 1, 0 },
+                                 Cfg { "ATMOS + both LIVE", 1, 1, 0 }, Cfg { "ATMOS + RESONANCE GUARD STUDIO HQ", 0, 1, 1 },
+                                 Cfg { "ATMOS + both STUDIO HQ", 1, 1, 1 } })
+            {
+                setP (ParamIDs::duckOn, c.duck > 0 ? 1.0f : 0.0f); setP (ParamIDs::duckMode, c.duck == 2 ? 2.0f : 1.0f);
+                setP (ParamIDs::rgOn, (float) c.rg); setP (ParamIDs::quality, (float) c.q); setP (ParamIDs::rgTarget, 0.0f);
+                pump (250);
+                auto warm = pinkish (fs, 1.0);
+                run (*p, warm, 256);
+                auto sg = pinkish (fs, quick ? 2.0 : 5.0);
+                const double t0 = nowMs();
+                run (*p, sg, 256);
+                const double ms = nowMs() - t0;
+                std::printf ("  %5.0f kHz  %-40s %6.2f %% of one core\n", fs / 1000.0, c.name, 100.0 * ms / (sg.getNumSamples() / fs * 1000.0));
+            }
+            setP (ParamIDs::duckOn, 0); setP (ParamIDs::rgOn, 0); setP (ParamIDs::quality, 0);
+            pump (250);
+        }
+       #endif
         // during a transition both paths run
         auto sig = pinkish (fs, 2.0);
         const double t0 = nowMs();

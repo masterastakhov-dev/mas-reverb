@@ -460,6 +460,8 @@ public:
 
     int latencySamples() const { return s.quality == 1 ? N + H : 0; }
     int latencyHQ() const { return N + H; }
+    // STUDIO HQ latency for a sample rate (FFT size N + hop N/4), known before prepare()
+    static int hqLatencyFor (double sampleRate) { const int n = sampleRate <= 50000.0 ? 4096 : sampleRate <= 100000.0 ? 8192 : 16384; return n + n / 4; }
     int fftSize() const { return N; }
 
     // dry: the signal that feeds the reverb (source reference). Wet parts processed in place.

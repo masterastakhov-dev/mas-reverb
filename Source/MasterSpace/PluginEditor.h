@@ -80,6 +80,9 @@ public:
     void paint (juce::Graphics&) override;
     void setIRMode (bool irMode);
     juce::Component* getLeftBlock() { return leftBlock.get(); }
+   #ifdef MAS_RI
+    void setBottomBlock (std::unique_ptr<juce::Component> block, int height);
+   #endif
 
 private:
     struct Cell
@@ -101,6 +104,10 @@ private:
     int numRows = 0, numCols = 6;
     std::unique_ptr<juce::Component> leftBlock;
     int leftWidth = 0;
+   #ifdef MAS_RI
+    std::unique_ptr<juce::Component> bottomBlock;
+    int bottomHeight = 0;
+   #endif
 };
 
 class PresetBar;

@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #ifdef MAS_ATMOS
+   #if defined (MAS_RI)
+    const char* product = "MASTER SPACE 1.4";      // 1.4 build: its own library, 1.2 / ATMOS presets untouched
+   #elif defined (MAS_ATMOS)
     const char* product = "MASTER SPACE ATMOS";    // experimental build: its own library, 1.2 presets untouched
    #else
     const char* product = "MASTER SPACE";
@@ -129,7 +131,16 @@ juce::var PresetManager::toJson (const juce::String& name, const juce::String& c
             return {};
         };
         const bool atmos = choiceText (ParamIDs::tail) == "Atmospheric Tail" && engine == "1.2";
+       #ifdef MAS_RI
+        auto onOff = [&] (const char* id) { for (const auto& pi : params) if (pi.id == id) { const auto it = values.find (pi.id);
+                                                return (it != values.end() ? it->second : pi.def) > 0.5f; } return false; };
+        o->setProperty ("dspVersion", juce::String (JucePlugin_VersionString) + " (engine " + engine + (atmos ? ", ATMOSPHERIC TAIL" : "")
+                                          + (onOff (ParamIDs::duckOn) ? ", SMART DUCKER " + choiceText (ParamIDs::duckMode) : juce::String())
+                                          + (onOff (ParamIDs::rgOn) ? ", RESONANCE GUARD " + choiceText (ParamIDs::rgMode) : juce::String())
+                                          + ", " + choiceText (ParamIDs::quality) + ")");
+       #else
         o->setProperty ("dspVersion", juce::String (JucePlugin_VersionString) + " (engine " + engine + (atmos ? ", ATMOSPHERIC TAIL prototype" : "") + ")");
+       #endif
         o->setProperty ("algorithm", atmos ? juce::String ("Atmospheric Tail") : choiceText (ParamIDs::algorithm));
     }
    #endif
@@ -200,7 +211,11 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
             {
                #ifdef MAS_ATMOS
                 // parameters of the Atmospheric Tail: older presets simply do not use it
-                const bool addedLater = pi.id == ParamIDs::bloom || pi.id == ParamIDs::motion || pi.id == ParamIDs::air || pi.id == ParamIDs::charLock;
+                bool addedLater = pi.id == ParamIDs::bloom || pi.id == ParamIDs::motion || pi.id == ParamIDs::air || pi.id == ParamIDs::charLock;
+               #ifdef MAS_RI
+                // SMART DUCKER / RESONANCE GUARD: older presets load with both modules off
+                for (const char* id : ParamIDs::riParams) addedLater = addedLater || pi.id == id;
+               #endif
                #else
                 const bool addedLater = false;
                #endif

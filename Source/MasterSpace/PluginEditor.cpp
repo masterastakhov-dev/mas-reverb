@@ -10,7 +10,12 @@ namespace
     constexpr int kTabsY    = 146;
     constexpr int kTabsH    = 30;
     constexpr int kPageY    = 184;
-   #ifdef MAS_ATMOS
+   #if defined (MAS_RI)
+    constexpr int kAtmosPage = 8;
+    constexpr int kDuckerPage = 9;
+    constexpr int kGuardPage = 10;
+    constexpr int kPresetsPage = 11;
+   #elif defined (MAS_ATMOS)
     constexpr int kAtmosPage = 8;
     constexpr int kPresetsPage = 9;
    #else
@@ -579,9 +584,23 @@ void ControlPage::paint (juce::Graphics& g)
     g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
 }
 
+#ifdef MAS_RI
+void ControlPage::setBottomBlock (std::unique_ptr<juce::Component> block, int height)
+{
+    bottomBlock = std::move (block);
+    bottomHeight = height;
+    if (bottomBlock != nullptr) addAndMakeVisible (*bottomBlock);
+    resized();
+}
+#endif
+
 void ControlPage::resized()
 {
     auto area = getLocalBounds().reduced (10, 8);
+   #ifdef MAS_RI
+    if (bottomBlock != nullptr)
+        bottomBlock->setBounds (area.removeFromBottom (bottomHeight));
+   #endif
     if (leftBlock != nullptr)
         leftBlock->setBounds (area.removeFromLeft (leftWidth));
 
@@ -636,6 +655,423 @@ void ControlPage::setIRMode (bool ir)
         d->setIRMode (ir);
 }
 
+
+#ifdef MAS_RI
+//==============================================================================
+// 1.4 displays. They only read the values the audio thread publishes (RIMeters); nothing here touches the DSP.
+namespace
+{
+    float rawParam (juce::AudioProcessorValueTreeState& s, const char* id) { return s.getRawParameterValue (id)->load(); }
+
+    void drawLed (juce::Graphics& g, juce::Rectangle<float> r, float amount, juce::Colour c)
+    {
+        amount = juce::jlimit (0.0f, 1.0f, amount);
+        g.setColour (juce::Colours::black.withAlpha (0.5f));
+        g.fillEllipse (r);
+        if (amount > 0.01f)
+        {
+            g.setColour (c.withAlpha (0.25f * amount));
+            g.fillEllipse (r.expanded (3.0f));
+            g.setColour (c.withAlpha (0.35f + 0.65f * amount));
+            g.fillEllipse (r.reduced (1.0f));
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        g.drawEllipse (r, 1.0f);
+    }
+
+    juce::String qualityText (int q, int latency, double fs)
+    {
+        if (q == 0) return "LIVE  0 ms";
+        return "STUDIO HQ  " + juce::String (1000.0 * latency / juce::jmax (1.0, fs), 1) + " ms";
+    }
+}
+
+// MAIN page, bottom strip: SMART DUCKER on / amount / activity, RESONANCE GUARD on / activity, quality.
+class RIStrip : public juce::Component, private juce::Timer
+{
+public:
+    RIStrip (MasterSpaceAudioProcessor& p, MASLookAndFeel& l) : processor (p), lnf (l)
+    {
+        for (auto* b : { &duckOn, &guardOn })
+        {
+            b->getProperties().set ("onoff", true);
+            b->setClickingTogglesState (true);
+            b->setLookAndFeel (&lnf);
+            addAndMakeVisible (b);
+        }
+        duckAtt  = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, ParamIDs::duckOn, duckOn);
+        guardAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, ParamIDs::rgOn, guardOn);
+
+        amount.setLookAndFeel (&lnf);
+        amount.setSliderStyle (juce::Slider::LinearBar);
+        amount.setColour (juce::Slider::trackColourId, MASColours::accent.withAlpha (0.55f));
+        amount.setColour (juce::Slider::backgroundColourId, MASColours::track);
+        amount.setColour (juce::Slider::textBoxTextColourId, MASColours::text);
+        amount.setMouseDragSensitivity (220);
+        addAndMakeVisible (amount);
+        amountAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (p.apvts, ParamIDs::duckAmount, amount);
+        setDefaultOnDoubleClick (amount, p.apvts, ParamIDs::duckAmount);
+        startTimerHz (30);
+    }
+    ~RIStrip() override
+    {
+        stopTimer();
+        duckOn.setLookAndFeel (nullptr); guardOn.setLookAndFeel (nullptr); amount.setLookAndFeel (nullptr);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour (juce::Colours::black.withAlpha (0.22f));
+        g.fillRoundedRectangle (r, 8.0f);
+        g.setFont (uiFont (11.0f, true).withExtraKerningFactor (0.12f));
+        g.setColour (MASColours::textDim);
+        g.drawText ("SMART DUCKER", duckTitle, juce::Justification::centredLeft);
+        g.drawText ("RESONANCE GUARD", guardTitle, juce::Justification::centredLeft);
+        g.drawText ("AMOUNT", amountTitle, juce::Justification::centredRight);
+        g.setColour (MASColours::track);
+        g.fillRect (amount.getBounds().toFloat());
+
+        auto& m = processor.riMeters;
+        const bool avail = m.engineAvailable.load();
+        const float gr = juce::jmax (m.duckEarlyDb.load(), m.duckLateDb.load());
+        const float cut = m.rgMaxCutDb.load();
+        drawLed (g, duckLed, avail && duckOn.getToggleState() ? gr / 6.0f : 0.0f, MASColours::accent2);
+        drawLed (g, guardLed, avail && guardOn.getToggleState() ? cut / 3.0f : 0.0f, MASColours::accent);
+        g.setFont (uiFont (12.0f, true));
+        g.setColour (MASColours::text);
+        g.drawText (avail ? (duckOn.getToggleState() ? (gr < 0.05f ? juce::String ("0.0 dB") : "-" + juce::String (gr, 1) + " dB") : juce::String ("OFF")) : juce::String ("n/a"),
+                    duckValue, juce::Justification::centredLeft);
+        g.drawText (avail ? (guardOn.getToggleState() ? (cut < 0.05f ? juce::String ("0.0 dB") : "-" + juce::String (cut, 1) + " dB") : juce::String ("OFF")) : juce::String ("n/a"),
+                    guardValue, juce::Justification::centredLeft);
+        g.setColour (m.quality.load() == 1 ? MASColours::accent2 : MASColours::textDim);
+        g.setFont (uiFont (11.5f, true).withExtraKerningFactor (0.08f));
+        g.drawText (qualityText (m.quality.load(), m.latency.load(), processor.getSampleRate()), qualityArea, juce::Justification::centredRight);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12, 0);
+        const int h = getHeight();
+        auto take = [&r] (int w) { auto a = r.removeFromLeft (w); return a; };
+        duckTitle = take (98).toFloat();
+        duckOn.setBounds (take (56).withSizeKeepingCentre (56, 26)); take (14);
+        amountTitle = take (62).toFloat(); take (8);
+        amount.setBounds (take (130).withSizeKeepingCentre (130, 24)); take (12);
+        duckLed = take (14).toFloat().withSizeKeepingCentre (12, 12); take (6);
+        duckValue = take (70).toFloat();
+        take (18);
+        guardTitle = take (136).toFloat();
+        guardOn.setBounds (take (56).withSizeKeepingCentre (56, 26)); take (12);
+        guardLed = take (14).toFloat().withSizeKeepingCentre (12, 12); take (6);
+        guardValue = take (70).toFloat();
+        qualityArea = r.toFloat();
+        juce::ignoreUnused (h);
+    }
+
+private:
+    void timerCallback() override
+    {
+        const bool avail = processor.riMeters.engineAvailable.load();
+        duckOn.setEnabled (avail); guardOn.setEnabled (avail); amount.setEnabled (avail);
+        repaint();
+    }
+
+    MasterSpaceAudioProcessor& processor;
+    MASLookAndFeel& lnf;
+    juce::TextButton duckOn { "DUCK" }, guardOn { "GUARD" };
+    juce::Slider amount;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> duckAtt, guardAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> amountAtt;
+    juce::Rectangle<float> duckTitle, guardTitle, amountTitle, duckLed, guardLed, duckValue, guardValue, qualityArea;
+};
+
+// DUCKER page, left block: gain reduction over time (early / late), current reduction, sidechain status.
+class DuckMeterView : public juce::Component, private juce::Timer
+{
+public:
+    explicit DuckMeterView (MasterSpaceAudioProcessor& p) : processor (p)
+    {
+        std::fill (std::begin (histE), std::end (histE), 0.0f);
+        std::fill (std::begin (histL), std::end (histL), 0.0f);
+        startTimerHz (30);
+    }
+    ~DuckMeterView() override { stopTimer(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (8.0f, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 8.0f);
+        r.reduce (12.0f, 10.0f);
+
+        g.setFont (uiFont (11.5f, true).withExtraKerningFactor (0.12f));
+        g.setColour (MASColours::textDim);
+        g.drawText ("GAIN REDUCTION", r.removeFromTop (16.0f), juce::Justification::centredLeft);
+        r.removeFromTop (6.0f);
+
+        auto& m = processor.riMeters;
+        const float scale = juce::jmax (6.0f, rawParam (processor.apvts, ParamIDs::duckAmount) + 1.0f);
+        auto bars = r.removeFromRight (56.0f);
+        auto status = r.removeFromBottom (58.0f);
+        auto graph = r.reduced (0.0f, 2.0f);
+
+        // grid: 0 dB at the top, down to the amount (+1 dB)
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        for (float db = 0.0f; db <= scale; db += scale > 12.0f ? 6.0f : 3.0f)
+        {
+            const float y = graph.getY() + graph.getHeight() * db / scale;
+            g.drawHorizontalLine (juce::roundToInt (y), graph.getX(), graph.getRight());
+            g.setColour (MASColours::textDim.withAlpha (0.7f));
+            g.setFont (uiFont (9.5f));
+            g.drawText (juce::String (-db, 0), juce::Rectangle<float> (graph.getX(), y - 6.0f, 24.0f, 12.0f), juce::Justification::centredLeft);
+            g.setColour (juce::Colours::white.withAlpha (0.05f));
+        }
+
+        auto curve = [&] (const float* h, bool fill)
+        {
+            juce::Path p;
+            const float dx = graph.getWidth() / (float) (kHist - 1);
+            for (int i = 0; i < kHist; ++i)
+            {
+                const float v = h[(head + i) % kHist];
+                const float x = graph.getX() + dx * (float) i;
+                const float y = graph.getY() + graph.getHeight() * juce::jlimit (0.0f, 1.0f, v / scale);
+                if (i == 0) p.startNewSubPath (x, fill ? graph.getY() : y);
+                if (fill || i > 0) p.lineTo (x, y);
+            }
+            if (fill) { p.lineTo (graph.getRight(), graph.getY()); p.closeSubPath(); }
+            return p;
+        };
+        g.setColour (MASColours::accent.withAlpha (0.35f));
+        g.fillPath (curve (histL, true));
+        g.setColour (MASColours::accent);
+        g.strokePath (curve (histL, false), juce::PathStrokeType (1.6f));
+        g.setColour (MASColours::blue.brighter (0.3f));
+        g.strokePath (curve (histE, false), juce::PathStrokeType (1.4f));
+
+        // bars: early / late
+        const float e = m.duckEarlyDb.load(), l = m.duckLateDb.load();
+        auto bar = [&] (juce::Rectangle<float> a, float v, juce::Colour c, const char* name)
+        {
+            auto label = a.removeFromBottom (16.0f);
+            g.setColour (MASColours::track);
+            g.fillRoundedRectangle (a, 3.0f);
+            g.setColour (c);
+            g.fillRoundedRectangle (a.withHeight (a.getHeight() * juce::jlimit (0.0f, 1.0f, v / scale)), 3.0f);
+            g.setColour (MASColours::textDim);
+            g.setFont (uiFont (10.0f, true));
+            g.drawText (name, label, juce::Justification::centred);
+        };
+        auto b1 = bars.removeFromLeft (24.0f), b2 = (bars.removeFromLeft (8.0f), bars.removeFromLeft (24.0f));
+        bar (b1.withTrimmedLeft (4.0f), e, MASColours::blue, "E");
+        bar (b2, l, MASColours::accent, "L");
+
+        // status
+        const bool on = rawParam (processor.apvts, ParamIDs::duckOn) > 0.5f;
+        const bool extWanted = rawParam (processor.apvts, ParamIDs::scSource) > 0.5f;
+        const bool extLive = m.scExternalLive.load();
+        g.setFont (uiFont (12.0f, true));
+        g.setColour (MASColours::text);
+        g.drawText (on ? "EARLY -" + juce::String (e, 1) + " dB    LATE -" + juce::String (l, 1) + " dB" : juce::String ("SMART DUCKER OFF"),
+                    status.removeFromTop (20.0f), juce::Justification::centredLeft);
+        g.setFont (uiFont (11.0f));
+        g.setColour (extWanted && ! extLive ? MASColours::accent2 : MASColours::textDim);
+        const juce::String sc = ! extWanted ? "Sidechain: INTERNAL (plugin input)"
+                              : extLive ? "Sidechain: EXTERNAL (host sidechain bus)"
+                                        : "Sidechain: EXTERNAL chosen, no bus from the host - INTERNAL used";
+        g.drawText (sc, status.removeFromTop (18.0f), juce::Justification::centredLeft);
+        g.setColour (MASColours::textDim);
+        g.drawText (m.duckActive.load() ? "ducking" : "open", status.removeFromTop (18.0f), juce::Justification::centredLeft);
+
+        if (! m.engineAvailable.load())
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+            g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (8.0f, 6.0f), 8.0f);
+            g.setColour (MASColours::textDim);
+            g.setFont (uiFont (13.0f, true));
+            g.drawFittedText ("SMART DUCKER works with the 1.2 engine in ALGO mode", getLocalBounds().reduced (30), juce::Justification::centred, 3);
+        }
+    }
+
+private:
+    void timerCallback() override
+    {
+        auto& m = processor.riMeters;
+        histE[head] = m.duckEarlyDb.load();
+        histL[head] = m.duckLateDb.load();
+        head = (head + 1) % kHist;
+        repaint();
+    }
+
+    static constexpr int kHist = 180;      // 6 s at 30 Hz
+    MasterSpaceAudioProcessor& processor;
+    float histE[kHist], histL[kHist];
+    int head = 0;
+};
+
+// GUARD page, left block: wet spectrum, regions being reduced and by how much, processing range, DELTA / VIEW.
+class GuardView : public juce::Component, private juce::Timer
+{
+public:
+    GuardView (MasterSpaceAudioProcessor& p, MASLookAndFeel& l) : processor (p), lnf (l)
+    {
+        delta.setClickingTogglesState (true);
+        delta.setToggleState (p.getDeltaListen(), juce::dontSendNotification);
+        delta.onClick = [this] { processor.setDeltaListen (delta.getToggleState()); };
+        delta.setTooltip ("DELTA LISTEN: hear only what RESONANCE GUARD removes (exact, aligned difference). Not saved.");
+        view.setClickingTogglesState (true);
+        view.setToggleState (p.getVisualisation(), juce::dontSendNotification);
+        view.onClick = [this] { processor.setVisualisation (view.getToggleState()); repaint(); };
+        view.setTooltip ("Spectrum display on / off (the display never affects the sound)");
+        for (auto* b : { &delta, &view }) { b->setLookAndFeel (&lnf); addAndMakeVisible (b); }
+        startTimerHz (30);
+    }
+    ~GuardView() override { stopTimer(); delta.setLookAndFeel (nullptr); view.setLookAndFeel (nullptr); }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (20, 16);
+        auto top = r.removeFromTop (26);
+        view.setBounds (top.removeFromRight (64));
+        top.removeFromRight (8);
+        delta.setBounds (top.removeFromRight (74));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (8.0f, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 8.0f);
+        r.reduce (12.0f, 10.0f);
+
+        auto& m = processor.riMeters;
+        auto& s = processor.apvts;
+        const int mode = juce::roundToInt (rawParam (s, ParamIDs::rgMode));
+        const bool on = rawParam (s, ParamIDs::rgOn) > 0.5f;
+        g.setFont (uiFont (11.5f, true).withExtraKerningFactor (0.12f));
+        g.setColour (MASColours::textDim);
+        const char* modes[] = { "SMOOTH", "DEEP", "TAIL AWARE (EXPERIMENTAL)" };
+        g.drawText (juce::String ("RESONANCE GUARD  ") + modes[juce::jlimit (0, 2, mode)], r.removeFromTop (16.0f), juce::Justification::centredLeft);
+        r.removeFromTop (18.0f);
+
+        auto footer = r.removeFromBottom (40.0f);
+        auto plot = r;
+        auto grStrip = plot.removeFromBottom (plot.getHeight() * 0.28f);
+        plot.removeFromBottom (6.0f);
+
+        constexpr float fLo = 20.0f, fHi = 20000.0f, dbTop = 0.0f, dbBot = -84.0f;
+        auto xOf = [&] (float hz) { return plot.getX() + plot.getWidth() * std::log (hz / fLo) / std::log (fHi / fLo); };
+        auto yOf = [&] (float db) { return plot.getY() + plot.getHeight() * (dbTop - juce::jlimit (dbBot, dbTop, db)) / (dbTop - dbBot); };
+
+        // range shading (outside LOW..HIGH is not processed)
+        const float lo = rawParam (s, ParamIDs::rgLow), hi = rawParam (s, ParamIDs::rgHigh);
+        g.setColour (juce::Colour (0xff1f2229));
+        g.fillRect (plot);
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.fillRect (plot.withRight (xOf (lo)));
+        g.fillRect (plot.withLeft (xOf (hi)));
+        g.setColour (juce::Colours::white.withAlpha (0.045f));
+        for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
+        {
+            g.drawVerticalLine (juce::roundToInt (xOf (f)), plot.getY(), grStrip.getBottom());
+        }
+        g.setFont (uiFont (9.5f));
+        for (float f : { 100.0f, 1000.0f, 10000.0f })
+        {
+            g.setColour (MASColours::textDim.withAlpha (0.7f));
+            g.drawText (f >= 1000.0f ? juce::String ((int) (f / 1000.0f)) + "k" : juce::String ((int) f), juce::Rectangle<float> (xOf (f) + 3.0f, plot.getBottom() - 13.0f, 30.0f, 12.0f), juce::Justification::centredLeft);
+        }
+
+        const int nb = m.numBands.load();
+        if (! processor.getVisualisation())
+        {
+            g.setColour (MASColours::textDim);
+            g.setFont (uiFont (13.0f, true));
+            g.drawText ("DISPLAY OFF", plot, juce::Justification::centred);
+        }
+        else if (nb > 1)
+        {
+            // wet spectrum (smoothed per band for the display), and the part removed
+            float peakDb = -200.0f;
+            for (int b = 0; b < nb; ++b) peakDb = juce::jmax (peakDb, shownLevel[b]);
+            const float norm = peakDb > -150.0f ? -6.0f - peakDb : 0.0f;    // the display follows the level (relative view)
+            juce::Path before, after, removed;
+            for (int b = 0; b < nb; ++b)
+            {
+                const float x = xOf (m.bandHz[b].load());
+                const float y0 = yOf (shownLevel[b] + norm), y1 = yOf (shownLevel[b] + norm - shownCut[b]);
+                if (b == 0) { before.startNewSubPath (x, y0); after.startNewSubPath (x, y1); }
+                else { before.lineTo (x, y0); after.lineTo (x, y1); }
+            }
+            removed = before;
+            for (int b = nb - 1; b >= 0; --b) removed.lineTo (xOf (m.bandHz[b].load()), yOf (shownLevel[b] + norm - shownCut[b]));
+            removed.closeSubPath();
+            g.setColour (MASColours::accent.withAlpha (0.55f));
+            g.fillPath (removed);
+            g.setColour (MASColours::text.withAlpha (0.55f));
+            g.strokePath (before, juce::PathStrokeType (1.2f));
+            g.setColour (MASColours::accent2);
+            g.strokePath (after, juce::PathStrokeType (1.4f));
+
+            // reduction per band (GR), scaled to MAX REDUCTION
+            const float maxDb = juce::jmax (1.0f, rawParam (s, ParamIDs::rgMax));
+            g.setColour (juce::Colours::black.withAlpha (0.25f));
+            g.fillRect (grStrip);
+            for (int b = 0; b < nb; ++b)
+            {
+                const float c = shownCut[b];
+                if (c < 0.02f) continue;
+                const float x0 = xOf (m.bandHz[juce::jmax (0, b - 1)].load()), x1 = xOf (m.bandHz[juce::jmin (nb - 1, b + 1)].load());
+                const float w = juce::jmax (1.5f, (x1 - x0) * 0.5f);
+                const float h = grStrip.getHeight() * juce::jlimit (0.0f, 1.0f, c / maxDb);
+                g.setColour (c > 6.0f ? MASColours::accent2 : MASColours::accent);
+                g.fillRect (xOf (m.bandHz[b].load()) - w * 0.5f, grStrip.getY(), w, h);
+            }
+            g.setColour (MASColours::textDim.withAlpha (0.8f));
+            g.setFont (uiFont (9.5f));
+            g.drawText ("GR  0 .. -" + juce::String (maxDb, 1) + " dB", grStrip.reduced (4.0f, 2.0f), juce::Justification::bottomLeft);
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        g.drawRect (plot.getUnion (grStrip));
+
+        // footer: state, reduction, quality / latency
+        g.setFont (uiFont (12.0f, true));
+        g.setColour (MASColours::text);
+        const float maxCut = m.rgMaxCutDb.load();
+        const juce::String state = ! m.engineAvailable.load() ? juce::String ("needs the 1.2 engine in ALGO mode")
+                                 : ! on ? juce::String ("OFF (bypassed, bit-exact)")
+                                 : m.rgProcessing.load() ? "reducing  max -" + juce::String (maxCut, 1) + " dB" : juce::String ("listening (nothing to reduce)");
+        g.drawText (state, footer.removeFromTop (20.0f), juce::Justification::centredLeft);
+        g.setFont (uiFont (11.0f));
+        g.setColour (MASColours::textDim);
+        juce::String info = qualityText (m.quality.load(), m.latency.load(), processor.getSampleRate());
+        if (on && rawParam (s, ParamIDs::rgMatch) > 0.5f) info << "    output match +" << juce::String (m.rgMakeupDb.load(), 1) << " dB";
+        if (delta.getToggleState()) info << "    DELTA LISTEN";
+        g.drawText (info, footer, juce::Justification::centredLeft);
+    }
+
+private:
+    void timerCallback() override
+    {
+        auto& m = processor.riMeters;
+        const int nb = m.numBands.load();
+        for (int b = 0; b < nb && b < RIMeters::maxBands; ++b)
+        {
+            shownLevel[b] += 0.35f * (m.levelDb[b].load() - shownLevel[b]);
+            shownCut[b] += 0.5f * (m.cutDb[b].load() - shownCut[b]);
+        }
+        if (delta.getToggleState() != processor.getDeltaListen()) delta.setToggleState (processor.getDeltaListen(), juce::dontSendNotification);
+        repaint();
+    }
+
+    MasterSpaceAudioProcessor& processor;
+    MASLookAndFeel& lnf;
+    juce::TextButton delta { "DELTA" }, view { "VIEW" };
+    float shownLevel[RIMeters::maxBands] {}, shownCut[RIMeters::maxBands] {};
+};
+#endif
+
 //==============================================================================
 MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     : processor (p), lnf (lf)
@@ -685,6 +1121,9 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::knob, diffusion, "DIFFUSION", true }, { K::knob, density, "DENSITY", true }, { K::knob, shape, "SHAPE", true },
           { K::knob, spread, "SPREAD", true }, { K::knob, width, "WIDTH" }, { K::knob, output, "OUTPUT" } } };
     pages.add (new ControlPage (processor.apvts, lnf, mainRows, 6, std::make_unique<DepthBlock> (processor.apvts, lnf), 236));
+   #ifdef MAS_RI
+    pages.getLast()->setBottomBlock (std::make_unique<RIStrip> (processor, lnf), 44);
+   #endif
 
     std::vector<std::vector<ControlPage::Spec>> spaceRows {
         { { K::knob, roomW, "ROOM W", true }, { K::knob, roomD, "ROOM L", true }, { K::knob, roomH, "ROOM H", true } },
@@ -747,7 +1186,34 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     pages.add (new ControlPage (processor.apvts, lnf, atmosRows, 6));
    #endif
 
-   #ifdef MAS_ATMOS
+   #ifdef MAS_RI
+    // SMART DUCKER: level detector and timing, early / late depth, spectral amount, sidechain
+    const std::vector<std::vector<ControlPage::Spec>> duckRows {
+        { { K::toggle, duckOn, "SMART DUCKER", true }, { K::choice, duckMode, "MODE", true }, { K::knob, duckAmount, "DUCK AMOUNT", true },
+          { K::knob, duckThresh, "THRESHOLD", true }, { K::knob, duckRatio, "RATIO", true } },
+        { { K::knob, duckAttack, "ATTACK", true }, { K::knob, duckHold, "HOLD", true }, { K::knob, duckRelease, "RELEASE", true },
+          { K::knob, duckSens, "SENSITIVITY", true }, { K::knob, duckSpectral, "SPECTRAL AMOUNT", true } },
+        { { K::knob, duckEarly, "EARLY DUCK", true }, { K::knob, duckLate, "LATE DUCK", true }, { K::choice, scSource, "SIDECHAIN", true },
+          { K::knob, scLowCut, "SC LOW CUT", true }, { K::knob, scHighCut, "SC HIGH CUT", true } } };
+    pages.add (new ControlPage (processor.apvts, lnf, duckRows, 5, std::make_unique<DuckMeterView> (processor), 330));
+
+    // RESONANCE GUARD: detection, ballistics, range, early / late targets, quality
+    const std::vector<std::vector<ControlPage::Spec>> guardRows {
+        { { K::toggle, rgOn, "RESONANCE GUARD", true }, { K::choice, rgMode, "MODE", true }, { K::choice, quality, "QUALITY", true },
+          { K::knob, rgMax, "MAX REDUCTION", true } },
+        { { K::knob, rgSmooth, "SMOOTH", true }, { K::knob, rgDetail, "DETAIL", true }, { K::knob, rgSelect, "SELECTIVITY", true },
+          { K::toggle, rgMatch, "OUTPUT MATCH", true } },
+        { { K::knob, rgAttack, "ATTACK", true }, { K::knob, rgRelease, "RELEASE", true }, { K::knob, rgLow, "LOW", true },
+          { K::knob, rgHigh, "HIGH", true } },
+        { { K::choice, rgTarget, "TARGET", true }, { K::knob, rgEarly, "EARLY AMOUNT", true }, { K::knob, rgLate, "LATE AMOUNT", true },
+          { K::empty } } };
+    pages.add (new ControlPage (processor.apvts, lnf, guardRows, 4, std::make_unique<GuardView> (processor, lnf), 470));
+   #endif
+
+   #if defined (MAS_RI)
+    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS",
+                                       "DUCKER", "GUARD", "PRESETS" };
+   #elif defined (MAS_ATMOS)
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS", "PRESETS" };
    #else
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "PRESETS" };

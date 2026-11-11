@@ -2,7 +2,7 @@ name: Build macOS (AU + VST3)
 
 on:
   push:
-    branches: [ main, dev-1.2, feature/atmospheric-tail ]
+    branches: [ main, dev-1.2, feature/atmospheric-tail, feature/reverb-intelligence ]
   workflow_dispatch:
 
 jobs:
@@ -28,6 +28,13 @@ jobs:
           ./stress -1 40
           g++ -O2 -std=c++17 -DMAS_ATMOS -o stress_atmos tests/stress_engines.cpp
           ./stress_atmos -1 40
+      - name: MASTER SPACE 1.4 (modules off = ATMOS 1.3 bit for bit; random automation incl. SMART DUCKER / RESONANCE GUARD)
+        run: |
+          g++ -O2 -std=c++17 -DMAS_ATMOS -o tests/render_atmos tests/render_space.cpp
+          g++ -O2 -std=c++17 -DMAS_ATMOS -DMAS_RI -o tests/render_14 tests/render_space.cpp
+          python3 tests/ri_identity.py tests/render_atmos tests/render_14
+          g++ -O2 -std=c++17 -DMAS_ATMOS -DMAS_RI -o stress_14 tests/stress_engines.cpp
+          ./stress_14 -1 40
 
   plugin-test:
     runs-on: ubuntu-latest
@@ -42,15 +49,18 @@ jobs:
       - name: Build headless processor tests
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
-          cmake --build build --target MasterSpaceTests MasterSpaceAtmosTests
+          cmake --build build --target MasterSpaceTests MasterSpaceAtmosTests MasterSpace14Tests
       - name: Presets, A/B, state restore (48/96 kHz), transitions, migration, automation, CPU
         run: |
           ./build/MasterSpaceTests_artefacts/Release/MasterSpaceTests | tee plugin-tests.log
           ./build/MasterSpaceAtmosTests_artefacts/Release/MasterSpaceAtmosTests | tee -a plugin-tests.log
+          ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests | tee plugin-tests-14.log
       - uses: actions/upload-artifact@v4
         with:
           name: MASTER-SPACE-plugin-tests
-          path: plugin-tests.log
+          path: |
+            plugin-tests.log
+            plugin-tests-14.log
 
   build:
     name: build (${{ matrix.name }})
@@ -72,6 +82,10 @@ jobs:
             name: MASTER SPACE ATMOS
             code: MSpA
             slug: MASTER-SPACE-ATMOS-1.3.0-experimental
+          - target: MasterSpace14
+            name: MASTER SPACE 1.4
+            code: MSp4
+            slug: MASTER-SPACE-1.4.0-experimental
     env:
       TARGET: ${{ matrix.target }}
       NAME: ${{ matrix.name }}
@@ -107,7 +121,7 @@ jobs:
           grep -q "AU VALIDATION SUCCEEDED" auval.log
 
       - name: pluginval (state save / restore, automation, 44.1 / 48 / 96 kHz)
-        if: matrix.target == 'MasterSpace' || matrix.target == 'MasterSpaceAtmos'
+        if: matrix.target == 'MasterSpace' || matrix.target == 'MasterSpaceAtmos' || matrix.target == 'MasterSpace14'
         run: |
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
           unzip -q pluginval.zip

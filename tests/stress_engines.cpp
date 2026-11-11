@@ -1,6 +1,6 @@
 // Random automation of every parameter on both engines (1.2 and 1.1 Legacy): no runaway allowed.
 // Built with -DMAS_ATMOS it also switches the late engine (room / Atmospheric Tail) and automates BLOOM, MOTION,
-// AIR and Character Lock.
+// AIR and Character Lock. With -DMAS_ATMOS -DMAS_RI also every SMART DUCKER / RESONANCE GUARD setting and the quality.
 // usage: stress_engines [param index or -1] [seeds]
 #include "../Source/MasterSpace/MSEngine.h"
 #include "../Source/MasterSpace/legacy/MSEngine11.h"
@@ -11,7 +11,9 @@
 #include <xmmintrin.h>
 #include <pmmintrin.h>
 
-#ifdef MAS_ATMOS
+#if defined (MAS_RI)
+constexpr int kNumParams = 91;
+#elif defined (MAS_ATMOS)
 constexpr int kNumParams = 60;
 #else
 constexpr int kNumParams = 55;
@@ -89,6 +91,45 @@ template <class P> void randomise (P& p, std::mt19937& g, int which, std::string
             case 57: p.motion = u (g); name = "motion"; break;
             case 58: p.air = u (g); name = "air"; break;
             case 59: p.charLock = u (g) > 0.3f; name = "charlock"; break;
+            default: break;
+        }
+#endif
+#ifdef MAS_RI
+    // SMART DUCKER / RESONANCE GUARD (1.4), including the quality (latency) switch and DELTA LISTEN
+    if constexpr (std::is_same_v<P, mspace::Params>)
+        switch (which)
+        {
+            case 60: p.duckOn = u (g) > 0.3f; name = "duckon"; break;
+            case 61: p.duckMode = (int) (u (g) * 2.999f); name = "duckmode"; break;
+            case 62: p.duckAmountDb = 18 * u (g); name = "duckamount"; break;
+            case 63: p.duckThreshDb = -60 * u (g); name = "duckthresh"; break;
+            case 64: p.duckAttackMs = lg (1, 100); name = "duckattack"; break;
+            case 65: p.duckHoldMs = 500 * u (g); name = "duckhold"; break;
+            case 66: p.duckReleaseMs = lg (50, 3000); name = "duckrelease"; break;
+            case 67: p.duckRatio = 1 + 9 * u (g); name = "duckratio"; break;
+            case 68: p.duckSens = u (g); name = "ducksens"; break;
+            case 69: p.duckEarly = u (g); name = "duckearly"; break;
+            case 70: p.duckLate = u (g); name = "ducklate"; break;
+            case 71: p.duckSpectral = u (g); name = "duckspectral"; break;
+            case 72: p.scLowHz = lg (20, 1000); name = "sclow"; break;
+            case 73: p.scHighHz = lg (1000, 20000); name = "schigh"; break;
+            case 74: p.scExternal = u (g) > 0.5f; name = "scext"; break;
+            case 75: p.rgOn = u (g) > 0.3f; name = "rgon"; break;
+            case 76: p.rgMode = (int) (u (g) * 2.999f); name = "rgmode"; break;
+            case 77: p.rgSmooth = u (g); name = "rgsmooth"; break;
+            case 78: p.rgDetail = u (g); name = "rgdetail"; break;
+            case 79: p.rgSelect = u (g); name = "rgselect"; break;
+            case 80: p.rgAttackMs = lg (5, 500); name = "rgattack"; break;
+            case 81: p.rgReleaseMs = lg (20, 3000); name = "rgrelease"; break;
+            case 82: p.rgMaxDb = 12 * u (g); name = "rgmax"; break;
+            case 83: p.rgLoHz = lg (20, 2000); name = "rglow"; break;
+            case 84: p.rgHiHz = lg (2000, 20000); name = "rghigh"; break;
+            case 85: p.rgEarly = u (g); name = "rgearly"; break;
+            case 86: p.rgLate = u (g); name = "rglate"; break;
+            case 87: p.rgTarget = (int) (u (g) * 2.999f); name = "rgtarget"; break;
+            case 88: p.rgDelta = u (g) > 0.8f; name = "rgdelta"; break;
+            case 89: p.rgMatch = u (g) > 0.5f; name = "rgmatch"; break;
+            case 90: p.quality = u (g) > 0.9f ? 1 - p.quality : p.quality; name = "quality"; break;
             default: break;
         }
 #endif

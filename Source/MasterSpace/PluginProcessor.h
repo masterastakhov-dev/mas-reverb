@@ -94,6 +94,46 @@ namespace ParamIDs
     inline constexpr const char* air         = "air";
     inline constexpr const char* charLock    = "charlock";
    #endif
+   #ifdef MAS_RI
+    // SMART DUCKER (1.4)
+    inline constexpr const char* duckOn      = "duckon";
+    inline constexpr const char* duckMode    = "duckmode";     // 0 Classic, 1 Vocal Focus, 2 Spectral
+    inline constexpr const char* duckAmount  = "duckamount";
+    inline constexpr const char* duckThresh  = "duckthresh";
+    inline constexpr const char* duckAttack  = "duckattack";
+    inline constexpr const char* duckHold    = "duckhold";
+    inline constexpr const char* duckRelease = "duckrelease";
+    inline constexpr const char* duckRatio   = "duckratio";
+    inline constexpr const char* duckSens    = "ducksens";
+    inline constexpr const char* duckEarly   = "duckearly";
+    inline constexpr const char* duckLate    = "ducklate";
+    inline constexpr const char* duckSpectral = "duckspectral";
+    inline constexpr const char* scLowCut    = "sclowcut";
+    inline constexpr const char* scHighCut   = "schighcut";
+    inline constexpr const char* scSource    = "scsource";     // 0 internal, 1 external (host sidechain bus)
+    // RESONANCE GUARD (1.4)
+    inline constexpr const char* rgOn        = "rgon";
+    inline constexpr const char* rgMode      = "rgmode";       // 0 Smooth, 1 Deep, 2 Tail Aware
+    inline constexpr const char* rgSmooth    = "rgsmooth";
+    inline constexpr const char* rgDetail    = "rgdetail";
+    inline constexpr const char* rgSelect    = "rgselect";
+    inline constexpr const char* rgAttack    = "rgattack";
+    inline constexpr const char* rgRelease   = "rgrelease";
+    inline constexpr const char* rgMax       = "rgmax";
+    inline constexpr const char* rgLow       = "rglow";
+    inline constexpr const char* rgHigh      = "rghigh";
+    inline constexpr const char* rgTarget    = "rgtarget";     // 0 Early + Late, 1 Late, 2 Early
+    inline constexpr const char* rgEarly     = "rgearly";
+    inline constexpr const char* rgLate      = "rglate";
+    inline constexpr const char* rgMatch     = "rgmatch";
+    inline constexpr const char* quality     = "quality";      // 0 LIVE (no latency), 1 STUDIO HQ (latency reported)
+
+    // every 1.4 parameter: states and presets without them load with the defaults (both modules OFF, LIVE)
+    inline constexpr const char* riParams[] = { duckOn, duckMode, duckAmount, duckThresh, duckAttack, duckHold, duckRelease,
+                                                duckRatio, duckSens, duckEarly, duckLate, duckSpectral, scLowCut, scHighCut,
+                                                scSource, rgOn, rgMode, rgSmooth, rgDetail, rgSelect, rgAttack, rgRelease,
+                                                rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality };
+   #endif
 
     inline constexpr const char* materials[6] = { matFront, matBack, matLeft, matRight, matFloor, matCeiling };
 }
@@ -114,9 +154,33 @@ struct AlgoPath
     void reset() { engine.reset(); legacy.reset(); }
     // clears all audio state and jumps (no smoothing) to the given parameters; audio-thread safe, no allocation
     void snap (const mspace::Params&, const mspace11::Params&, bool legacyActive);
+   #ifdef MAS_RI
+    // scL / scR: host sidechain (nullptr = none). With a latency (STUDIO HQ) the 1.1 engine's output is
+    // delayed like the 1.2 engine's, and the cross-fade gains on the output side follow with the same delay.
+    void process (float* left, float* right, int n, bool legacyTarget, double fs, const float* scL, const float* scR);
+    void setAlignment (int latency);
+    int alignLatency = 0;
+    mspace::DelayLine legacyAlign[2], gainAlign;
+    float engineGainOut = 1.0f;
+   #else
     void process (float* left, float* right, int n, bool legacyTarget, double fs);
+   #endif
     double getTailSeconds (bool legacyActive) const;
 };
+
+#ifdef MAS_RI
+// Values the audio thread publishes for the 1.4 displays (lock-free, read by the editor).
+struct RIMeters
+{
+    static constexpr int maxBands = 256;
+    std::atomic<float> duckEarlyDb { 0.0f }, duckLateDb { 0.0f }, rgMaxCutDb { 0.0f }, rgMakeupDb { 0.0f };
+    std::atomic<bool> duckActive { false }, rgProcessing { false }, scExternalLive { false }, engineAvailable { true };
+    std::atomic<int> numBands { 0 }, latency { 0 }, quality { 0 };
+    std::atomic<float> bandHz[maxBands], levelDb[maxBands], cutDb[maxBands];
+    std::atomic<juce::uint32> generation { 0 };
+    RIMeters() { for (int b = 0; b < maxBands; ++b) { bandHz[b] = 1000.0f; levelDb[b] = -120.0f; cutDb[b] = 0.0f; } }
+};
+#endif
 
 //==============================================================================
 class MasterSpaceAudioProcessor : public juce::AudioProcessor,
@@ -198,6 +262,17 @@ public:
     // loudness (LUFS-like, K-weighted) of a state for pink noise, rendered offline (any thread but audio)
     static double measureLoudness (const ParamMap&, double sampleRate);
 
+   #ifdef MAS_RI
+    // ---- 1.4: SMART DUCKER / RESONANCE GUARD
+    RIMeters riMeters;
+    void setDeltaListen (bool on) { deltaListen.store (on); }    // monitoring only: not saved, not in presets
+    bool getDeltaListen() const { return deltaListen.load(); }
+    void setVisualisation (bool on) { vizOn.store (on); }        // displays only: never changes the audio
+    bool getVisualisation() const { return vizOn.load(); }
+    bool hasSidechainBus() const;
+    int latencyForQuality (int q) const;
+   #endif
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -220,9 +295,24 @@ private:
     juce::String irShapeSignature() const;
     void sendShapedIRToAudioThread();
     void takePendingIR() noexcept;
+   #ifndef MAS_RI
     void processStereo (float* left, float* right, int numSamples);
+   #endif
     void processIRPath (int numSamples);
+   #ifdef MAS_RI
+    void processAlgo (float* left, float* right, int numSamples, const float* scL, const float* scR);
+    void processStereo (float* left, float* right, int numSamples, const float* scL, const float* scR);
+    void publishMeters (int numSamples);
+    void setAlignment (int latency);
+    std::atomic<bool> deltaListen { false }, vizOn { true };
+    juce::AudioBuffer<float> scScratch;
+    int alignQ = 0, alignL = 0, reportedLatency = -1, meterCountdown = 0, qHold = 0;
+    bool qSwitchPending = false, modeRingSteady = false;
+    float qFade = 1.0f, modeGainOut = 0.0f;
+    mspace::DelayLine irAlign[2], txAlign, modeAlign;
+   #else
     void processAlgo (float* left, float* right, int numSamples);
+   #endif
     void resetIRPath();
 
     // ---- algorithmic path: two complete paths for click-free state transitions (preset load, A/B)

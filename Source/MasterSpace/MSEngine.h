@@ -1016,8 +1016,9 @@ public:
         ducker.prepare (fs);
         rg.prepare (fs);
         for (auto& d : directDelay) d.allocate (rg.latencyHQ() + 16);
+        for (auto& d : scDelay) d.allocate (rg.latencyHQ() + 16);
         curQuality = std::clamp (pending.quality, 0, 1);
-        scratch.assign (10 * kChunk, 0.0f);
+        scratch.assign (12 * kChunk, 0.0f);
        #else
         scratch.assign (8 * kChunk, 0.0f);
        #endif
@@ -1039,6 +1040,7 @@ public:
         ducker.reset();
         rg.reset();
         for (auto& d : directDelay) d.clear();
+        for (auto& d : scDelay) d.clear();
        #endif
         er.update (params);
     }
@@ -1077,6 +1079,19 @@ public:
     // processing latency (STUDIO HQ): the plugin reports it to the host
     int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() : 0; }
     int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() : 0; }
+    // Quality change applied at once, with no internal fade: the plugin fades its whole output around
+    // the switch (all paths change latency together). Audio thread, no allocation.
+    void switchQualityNow (int q)
+    {
+        q = std::clamp (q, 0, 1);
+        pending.quality = params.quality = q;
+        curQuality = q;
+        qGain = 1.0f;
+        applyParams (true);
+        rg.reset();
+        for (auto& d : directDelay) d.clear();
+        for (auto& d : scDelay) d.clear();
+    }
    #else
     void process (float* left, float* right, int numSamples)
     {
@@ -1322,11 +1337,24 @@ private:
                     wantDelta ? dEL : nullptr, wantDelta ? dER : nullptr, wantDelta ? dLL : nullptr, wantDelta ? dLR : nullptr);
         // SMART DUCKER on the formed wet (early and late separately). Sidechain: the plugin input as it
         // arrives (before any processing, Insert and Aux alike) or the host's sidechain bus.
+        // In STUDIO HQ the wet is late by the guard's latency: the key is delayed by the same amount.
+        const int dLat = rg.latencySamples();
         {
             const bool ext = params.scExternal && scL != nullptr && scR != nullptr;
-            ducker.process (ext ? scL : left, ext ? scR : right, erL, erR, ltL, ltR, n, curEr, curLate * algoGain);
+            const float* kL = ext ? scL : left;
+            const float* kR = ext ? scR : right;
+            if (dLat > 0)
+            {
+                float* skL = dLR + kChunk; float* skR = skL + kChunk;
+                for (int i = 0; i < n; ++i)
+                {
+                    skL[i] = scDelay[0].read (dLat); skR[i] = scDelay[1].read (dLat);
+                    scDelay[0].push (kL[i]); scDelay[1].push (kR[i]);
+                }
+                kL = skL; kR = skR;
+            }
+            ducker.process (kL, kR, erL, erR, ltL, ltR, n, curEr, curLate * algoGain);
         }
-        const int dLat = rg.latencySamples();
         const float tDelta = params.rgDelta ? 1.0f : 0.0f;
         const bool qSwitch = std::clamp (params.quality, 0, 1) != curQuality;
        #endif
@@ -1404,6 +1432,7 @@ private:
                     applyParams (true);
                     rg.reset();
                     for (auto& d : directDelay) d.clear();
+                    for (auto& d : scDelay) d.clear();
                 }
                 qGain = std::clamp (qGain, 0.0f, 1.0f);
             }
@@ -1485,7 +1514,7 @@ private:
 
     ri::SmartDucker ducker;
     ri::ResonanceGuard rg;
-    DelayLine directDelay[2];
+    DelayLine directDelay[2], scDelay[2];
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;
    #endif

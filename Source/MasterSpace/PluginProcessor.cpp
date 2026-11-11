@@ -186,13 +186,76 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     }
    #endif
 
+   #ifdef MAS_RI
+    // ---- 1.4 SMART DUCKER + RESONANCE GUARD. Both OFF by default; states / presets without them load OFF.
+    {
+        constexpr int kHintRI = 4;
+        auto fl = [&p] (const char* id, const char* name, juce::NormalisableRange<float> r, float def,
+                        std::function<juce::String (float)> fmt, std::function<float (const juce::String&)> parse = nullptr)
+        {
+            auto attr = Attr().withStringFromValueFunction ([fmt] (float v, int) { return fmt (v); });
+            if (parse) attr = attr.withValueFromStringFunction ([parse] (const juce::String& s) { return parse (s); });
+            p.push_back (std::make_unique<APF> (juce::ParameterID { id, kHintRI }, name, r, def, attr));
+        };
+        auto ch = [&p] (const char* id, const char* name, juce::StringArray items, int def, bool automatable = true)
+        {
+            p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id, kHintRI }, name, items, def,
+                                                                       juce::AudioParameterChoiceAttributes().withAutomatable (automatable)));
+        };
+        auto bl = [&p] (const char* id, const char* name, bool def)
+        {
+            p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, kHintRI }, name, def));
+        };
+        auto dbAbs = [] (float v) { return juce::String (v, 1) + " dB"; };
+        auto dbFs  = [] (float v) { return juce::String (v, 1) + " dBFS"; };
+        auto ratio = [] (float v) { return juce::String (v, v < 10.0f ? 1 : 0) + ":1"; };
+
+        bl (duckOn, "Ducker On", false);
+        ch (duckMode, "Ducker Mode", { "Classic", "Vocal Focus", "Spectral" }, 1);
+        fl (duckAmount,   "Duck Amount",    range (0.0f, 18.0f),             6.0f,   dbAbs);
+        fl (duckThresh,   "Duck Threshold", range (-60.0f, 0.0f),            -30.0f, dbFs);
+        fl (duckAttack,   "Duck Attack",    range (1.0f, 100.0f, 15.0f),     10.0f,  fmtMs);
+        fl (duckHold,     "Duck Hold",      range (0.0f, 500.0f, 120.0f),    120.0f, fmtMs);
+        fl (duckRelease,  "Duck Release",   range (50.0f, 3000.0f, 600.0f),  600.0f, fmtMs);
+        fl (duckRatio,    "Duck Ratio",     range (1.0f, 10.0f, 3.0f),       4.0f,   ratio);
+        fl (duckSens,     "Duck Sensitivity", range (0.0f, 100.0f),          50.0f,  pct);
+        fl (duckEarly,    "Early Duck",     range (0.0f, 100.0f),            35.0f,  pct);
+        fl (duckLate,     "Late Duck",      range (0.0f, 100.0f),            100.0f, pct);
+        fl (duckSpectral, "Spectral Amount", range (0.0f, 100.0f),           60.0f,  pct);
+        fl (scLowCut,     "Sidechain Low Cut",  range (20.0f, 1000.0f, 150.0f),   100.0f,  fmtHz, parseHz);
+        fl (scHighCut,    "Sidechain High Cut", range (1000.0f, 20000.0f, 6000.0f), 8000.0f, fmtHz, parseHz);
+        ch (scSource, "Sidechain", { "Internal", "External" }, 0);
+
+        bl (rgOn, "Resonance Guard On", false);
+        ch (rgMode, "Guard Mode", { "Smooth", "Deep", "Tail Aware" }, 0);
+        fl (rgSmooth,  "Guard Smooth",      range (0.0f, 100.0f),            50.0f,  pct);
+        fl (rgDetail,  "Guard Detail",      range (0.0f, 100.0f),            50.0f,  pct);
+        fl (rgSelect,  "Guard Selectivity", range (0.0f, 100.0f),            50.0f,  pct);
+        fl (rgAttack,  "Guard Attack",      range (5.0f, 500.0f, 40.0f),     40.0f,  fmtMs);
+        fl (rgRelease, "Guard Release",     range (20.0f, 3000.0f, 250.0f),  250.0f, fmtMs);
+        fl (rgMax,     "Max Reduction",     range (0.0f, 12.0f, 4.0f),       3.0f,   dbAbs);
+        fl (rgLow,     "Guard Low",         range (20.0f, 2000.0f, 200.0f),  150.0f, fmtHz, parseHz);
+        fl (rgHigh,    "Guard High",        range (2000.0f, 20000.0f, 8000.0f), 12000.0f, fmtHz, parseHz);
+        ch (rgTarget, "Guard Target", { "Early + Late", "Late", "Early" }, 1);
+        fl (rgEarly,   "Guard Early Amount", range (0.0f, 100.0f),           50.0f,  pct);
+        fl (rgLate,    "Guard Late Amount",  range (0.0f, 100.0f),           100.0f, pct);
+        bl (rgMatch, "Guard Output Match", true);
+        // changes the latency: not automatable, applied with a short fade of the output
+        ch (quality, "Processing Quality", { "Live", "Studio HQ" }, 0, false);
+    }
+   #endif
+
     return { p.begin(), p.end() };
 }
 
 MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+                         #ifdef MAS_RI
+                          .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)   // SMART DUCKER key (optional)
+                         #endif
+                          ),
       apvts (*this, nullptr, "MasterSpaceState", createLayout())
 {
     lastIRFolder = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
@@ -297,6 +360,42 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
         p.charLock = get (charLock) > 0.5f;
     }
    #endif
+   #ifdef MAS_RI
+    if constexpr (std::is_same_v<P, mspace::Params>)
+    {
+        p.duckOn        = get (duckOn) > 0.5f;
+        p.duckMode      = juce::jlimit (0, 2, juce::roundToInt (get (duckMode)));
+        p.duckAmountDb  = get (duckAmount);
+        p.duckThreshDb  = get (duckThresh);
+        p.duckAttackMs  = get (duckAttack);
+        p.duckHoldMs    = get (duckHold);
+        p.duckReleaseMs = get (duckRelease);
+        p.duckRatio     = get (duckRatio);
+        p.duckSens      = get (duckSens) * 0.01f;
+        p.duckEarly     = get (duckEarly) * 0.01f;
+        p.duckLate      = get (duckLate) * 0.01f;
+        p.duckSpectral  = get (duckSpectral) * 0.01f;
+        p.scLowHz       = get (scLowCut);
+        p.scHighHz      = get (scHighCut);
+        p.scExternal    = get (scSource) > 0.5f;
+        p.rgOn          = get (rgOn) > 0.5f;
+        p.rgMode        = juce::jlimit (0, 2, juce::roundToInt (get (rgMode)));
+        p.rgSmooth      = get (rgSmooth) * 0.01f;
+        p.rgDetail      = get (rgDetail) * 0.01f;
+        p.rgSelect      = get (rgSelect) * 0.01f;
+        p.rgAttackMs    = get (rgAttack);
+        p.rgReleaseMs   = get (rgRelease);
+        p.rgMaxDb       = get (rgMax);
+        p.rgLoHz        = get (rgLow);
+        p.rgHiHz        = get (rgHigh);
+        p.rgTarget      = juce::jlimit (0, 2, juce::roundToInt (get (rgTarget)));
+        p.rgEarly       = get (rgEarly) * 0.01f;
+        p.rgLate        = get (rgLate) * 0.01f;
+        p.rgMatch       = get (rgMatch) > 0.5f;
+        p.rgDelta       = false;     // DELTA LISTEN is a monitoring switch of the plugin (set per block)
+        p.quality       = juce::roundToInt (get (quality)) > 0 ? 1 : 0;
+    }
+   #endif
 }
 
 //==============================================================================
@@ -328,6 +427,28 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
         transitionSeen = transitionRequest.load();
     }
 
+   #ifdef MAS_RI
+    {
+        // STUDIO HQ latency: every path (1.2, 1.1 Legacy, IR) is delayed by the same amount
+        const int hq = mspace::ri::ResonanceGuard::hqLatencyFor (sampleRate);
+        scScratch.setSize (2, chunkSize);
+        for (auto& d : irAlign) d.allocate (hq + chunkSize + 16);
+        txAlign.allocate (hq + chunkSize + 16);
+        modeAlign.allocate (hq + chunkSize + 16);
+        alignQ = curP.quality;
+        qSwitchPending = false;
+        qFade = 1.0f;
+        qHold = 0;
+        for (auto& path : paths) path.engine.switchQualityNow (alignQ);
+        setAlignment (latencyForQuality (alignQ));
+        reportedLatency = alignL;
+        setLatencySamples (alignL);
+        riMeters.latency = alignL;
+        riMeters.quality = alignQ;
+        meterCountdown = 0;
+    }
+   #endif
+
     convolver.prepare ({ sampleRate, (juce::uint32) chunkSize, 2 });
     for (auto& d : irPreDelay) d.allocate ((int) std::ceil (0.52 * sampleRate) + 8);
     irDry.setSize (2, chunkSize);
@@ -344,6 +465,10 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     irCurOut   = mspace::dbToGain (get (ParamIDs::output));
 
     modeGain = get (ParamIDs::mode) > 0.5f ? 1.0f : 0.0f;
+   #ifdef MAS_RI
+    modeGainOut = modeGain;
+    modeRingSteady = false;
+   #endif
     algoRunning = modeGain < 1.0f;
     irRunning = modeGain > 0.0f;
     resetIRPath();
@@ -352,6 +477,9 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 void MasterSpaceAudioProcessor::reset()
 {
     for (auto& path : paths) path.reset();
+   #ifdef MAS_RI
+    setAlignment (alignL);    // clears the alignment delays
+   #endif
     if (txState == Tx::fading) activePath = 1 - activePath;
     txState = Tx::idle;
     txGain = 1.0f;
@@ -366,14 +494,102 @@ void MasterSpaceAudioProcessor::resetIRPath()
         irPreDelay[c].clear();
         irLowCut[c].clear();
         irHighCut[c].clear();
+       #ifdef MAS_RI
+        irAlign[c].clear();
+       #endif
     }
 }
+
+#ifdef MAS_RI
+int MasterSpaceAudioProcessor::latencyForQuality (int q) const
+{
+    return q == 1 ? mspace::ri::ResonanceGuard::hqLatencyFor (sampleRateHz) : 0;
+}
+
+bool MasterSpaceAudioProcessor::hasSidechainBus() const
+{
+    if (getBusCount (true) < 2) return false;
+    const auto* bus = getBus (true, 1);
+    return bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() > 0;
+}
+
+// Audio thread (or prepare). Sets the delay that keeps the 1.1 engine, the IR path and the cross-fade
+// gains aligned with the 1.2 engine, whose STUDIO HQ latency is internal. Clears the delays.
+void MasterSpaceAudioProcessor::setAlignment (int latency)
+{
+    alignL = juce::jmax (0, latency);
+    for (auto& path : paths) path.setAlignment (alignL);
+    for (auto& d : irAlign) d.clear();
+    txAlign.clear();
+    modeGainOut = modeGain;
+    modeRingSteady = false;
+}
+
+void AlgoPath::setAlignment (int latency)
+{
+    alignLatency = latency;
+    for (auto& d : legacyAlign) d.clear();
+    // gains already on the output side of a running cross-fade are lost: restart from the steady state
+    for (int i = 0; i <= latency + 1 && i < gainAlign.capacity(); ++i) gainAlign.push (engineGain);
+    engineGainOut = engineGain;
+}
+
+// Values for the displays, about 30 times per second (cheap, lock-free; skipped when the displays are off)
+void MasterSpaceAudioProcessor::publishMeters (int n)
+{
+    meterCountdown -= n;
+    if (meterCountdown > 0) return;
+    meterCountdown = (int) (sampleRateHz / 30.0);
+
+    auto& m = riMeters;
+    const auto& e = paths[activePath].engine;
+    const bool engineOn = algoRunning && ! curLegacy && get (ParamIDs::mode) < 0.5f;
+    m.engineAvailable.store (! curLegacy && get (ParamIDs::mode) < 0.5f, std::memory_order_relaxed);
+    m.duckEarlyDb.store (engineOn ? e.duckReductionDb (true) : 0.0f, std::memory_order_relaxed);
+    m.duckLateDb.store (engineOn ? e.duckReductionDb (false) : 0.0f, std::memory_order_relaxed);
+    m.duckActive.store (engineOn && e.duckActive(), std::memory_order_relaxed);
+    m.latency.store (alignL, std::memory_order_relaxed);
+    m.quality.store (alignQ, std::memory_order_relaxed);
+
+    if (! vizOn.load (std::memory_order_relaxed))
+        return;
+    const auto& g = e.guard();
+    const int nb = juce::jmin (RIMeters::maxBands, g.numBands());
+    for (int b = 0; b < nb; ++b)
+    {
+        m.bandHz[b].store ((float) g.bandHz (b), std::memory_order_relaxed);
+        m.levelDb[b].store (engineOn ? g.vizLevelDb (b) : -120.0f, std::memory_order_relaxed);
+        m.cutDb[b].store (engineOn ? g.vizCutDb (b) : 0.0f, std::memory_order_relaxed);
+    }
+    m.numBands.store (nb, std::memory_order_relaxed);
+    m.rgMaxCutDb.store (engineOn ? g.maxCutDb() : 0.0f, std::memory_order_relaxed);
+    m.rgMakeupDb.store (engineOn ? g.makeupDb() : 0.0f, std::memory_order_relaxed);
+    m.rgProcessing.store (engineOn && g.isProcessing(), std::memory_order_relaxed);
+    m.generation.fetch_add (1, std::memory_order_release);
+}
+#endif
 
 bool MasterSpaceAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto in  = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
 
+   #ifdef MAS_RI
+    bool mainOk = false;
+    if (out == juce::AudioChannelSet::stereo())
+        mainOk = in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono();
+    else if (out == juce::AudioChannelSet::mono())
+        mainOk = in == juce::AudioChannelSet::mono();
+    if (! mainOk) return false;
+
+    // optional sidechain (SMART DUCKER key): off, mono or stereo
+    if (layouts.inputBuses.size() > 1)
+    {
+        const auto sc = layouts.getChannelSet (true, 1);
+        return sc.isDisabled() || sc == juce::AudioChannelSet::mono() || sc == juce::AudioChannelSet::stereo();
+    }
+    return true;
+   #else
     if (out == juce::AudioChannelSet::stereo())
         return in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono();
 
@@ -381,6 +597,7 @@ bool MasterSpaceAudioProcessor::isBusesLayoutSupported (const BusesLayout& layou
         return in == juce::AudioChannelSet::mono();
 
     return false;
+   #endif
 }
 
 //==============================================================================
@@ -411,7 +628,11 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 {
     juce::ScopedNoDenormals noDenormals;
 
+   #ifdef MAS_RI
+    const int numIn  = getMainBusNumInputChannels();    // the sidechain bus is not part of the main input
+   #else
     const int numIn  = getTotalNumInputChannels();
+   #endif
     const int numOut = getTotalNumOutputChannels();
     const int n = buffer.getNumSamples();
     if (n == 0) return;
@@ -421,7 +642,16 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     // Parameters of this block. They are read BEFORE the transition counters: the message thread
     // raises the request counter before it writes a new state, so a block that sees any new value
     // also sees the request and keeps the running path on the previous block's (old) state.
+   #ifdef MAS_RI
+    mspace::Params p = readParams();
+    // quality (latency) changes are applied by this processor at a faded point of the output, for every path
+    const int qWanted = p.quality;
+    qSwitchPending = qWanted != alignQ;
+    p.quality = alignQ;
+    p.rgDelta = deltaListen.load (std::memory_order_relaxed);
+   #else
     const mspace::Params p = readParams();
+   #endif
     mspace11::Params lp; fillParams (lp);
     const bool legacyNow = isLegacyEngine();
     const auto req = transitionRequest.load();
@@ -449,6 +679,9 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
             paths[1 - activePath].snap (p, lp, legacyNow);
             txGain = 0.0f;
             txState = Tx::fading;
+           #ifdef MAS_RI
+            for (int i = 0; i <= alignL + 1; ++i) txAlign.push (0.0f);   // output-side gains start from 0 as well
+           #endif
         }
     }
 
@@ -462,6 +695,69 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     }
     curP = p; curLP = lp; curLegacy = legacyNow; haveCur = true;
 
+   #ifdef MAS_RI
+    // external sidechain (SMART DUCKER key): only when chosen and the host provides the bus; otherwise internal
+    const float* scSrc[2] = { nullptr, nullptr };
+    if (p.scExternal && hasSidechainBus())
+    {
+        const int scCh = getBus (true, 1)->getNumberOfChannels();
+        const int first = getChannelIndexInProcessBlockBuffer (true, 1, 0);
+        if (first >= 0 && first + scCh <= buffer.getNumChannels())
+        {
+            scSrc[0] = buffer.getReadPointer (first);
+            scSrc[1] = scCh > 1 ? buffer.getReadPointer (first + 1) : scSrc[0];
+        }
+    }
+    riMeters.scExternalLive.store (scSrc[0] != nullptr, std::memory_order_relaxed);
+
+    const float qStep = (float) (1.0 / (0.012 * sampleRateHz));
+    for (int pos = 0; pos < n; pos += chunkSize)
+    {
+        const int len = juce::jmin (chunkSize, n - pos);
+        float* l = buffer.getWritePointer (0, pos);
+
+        // copy the key first: with a mono main input, output channel 1 shares memory with the sidechain
+        const float* scL = nullptr;
+        const float* scR = nullptr;
+        if (scSrc[0] != nullptr)
+        {
+            scScratch.copyFrom (0, 0, scSrc[0] + pos, len);
+            scScratch.copyFrom (1, 0, scSrc[1] + pos, len);
+            scL = scScratch.getReadPointer (0);
+            scR = scScratch.getReadPointer (1);
+        }
+        if (numOut >= 2 && numIn == 1)
+            buffer.copyFrom (1, pos, buffer, 0, pos, len);   // mono in -> stereo out
+
+        float* r = numOut >= 2 ? buffer.getWritePointer (1, pos) : monoScratch.getWritePointer (0);
+        if (numOut < 2) juce::FloatVectorOperations::copy (r, l, len);
+        processStereo (l, r, len, scL, scR);
+
+        // LIVE <-> STUDIO HQ: fade out, switch all paths (latency changes together), fade in
+        // (after a switch to STUDIO HQ the output stays muted until the delayed signal arrives)
+        if (qSwitchPending || qFade < 1.0f || qHold > 0)
+        {
+            for (int i = 0; i < len; ++i)
+            {
+                if (qSwitchPending)  qFade = juce::jmax (0.0f, qFade - qStep);
+                else if (qHold > 0) { --qHold; qFade = 0.0f; }
+                else                 qFade = juce::jmin (1.0f, qFade + qStep);
+                l[i] *= qFade;
+                r[i] *= qFade;
+            }
+            if (qSwitchPending && qFade <= 0.0f)
+            {
+                alignQ = qWanted;
+                for (auto& path : paths) path.engine.switchQualityNow (alignQ);
+                curP.quality = frozenP.quality = alignQ;
+                setAlignment (latencyForQuality (alignQ));
+                qHold = alignL;
+                qSwitchPending = false;
+            }
+        }
+    }
+    publishMeters (n);
+   #else
     if (numOut >= 2 && numIn == 1)
         buffer.copyFrom (1, 0, buffer, 0, 0, n);   // mono in -> stereo out
 
@@ -481,6 +777,7 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
             processStereo (l, r, len);
         }
     }
+   #endif
 
     for (int ch = juce::jmax (2, numIn); ch < numOut; ++ch)
         buffer.clear (ch, 0, n);
@@ -502,6 +799,73 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     }
 }
 
+#ifdef MAS_RI
+// As below, with the host sidechain; with a latency (STUDIO HQ) the ALGO / IR cross-fade on the output uses the
+// mode gain delayed by that latency, and each path keeps running until its delayed gain has reached 0.
+void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n, const float* scL, const float* scR)
+{
+    const float target = get (ParamIDs::mode) > 0.5f ? 1.0f : 0.0f;
+    const bool needIR   = target > 0.0f || modeGain > 0.0f || modeGainOut > 0.0f;
+    const bool needAlgo = target < 1.0f || modeGain < 1.0f || modeGainOut < 1.0f;
+
+    if (needIR)
+    {
+        irDry.copyFrom (0, 0, left, n);
+        irDry.copyFrom (1, 0, right, n);
+    }
+
+    if (needAlgo)
+    {
+        if (! algoRunning)
+        {
+            if (txState == Tx::fading) activePath = 1 - activePath;
+            txState = Tx::idle;
+            paths[activePath].snap (curP, curLP, curLegacy);
+            algoRunning = true;
+        }
+        processAlgo (left, right, n, scL, scR);
+    }
+    else
+    {
+        algoRunning = false;
+    }
+
+    if (! needIR)
+    {
+        irRunning = false;
+        if (! modeRingSteady) { for (int i = 0; i <= alignL + 1; ++i) modeAlign.push (modeGain); modeRingSteady = true; }
+        return;
+    }
+
+    if (! irRunning) { resetIRPath(); irRunning = true; }
+    processIRPath (n);
+    if (alignL > 0)   // STUDIO HQ: the IR path is delayed like the algorithmic paths
+        for (int c = 0; c < 2; ++c)
+        {
+            float* d = irDry.getWritePointer (c);
+            auto& dl = irAlign[c];
+            for (int i = 0; i < n; ++i) { const float y = dl.read (alignL); dl.push (d[i]); d[i] = y; }
+        }
+
+    const float step = (float) (1.0 / (kModeFadeSec * sampleRateHz));
+    const float* irL = irDry.getReadPointer (0);
+    const float* irR = irDry.getReadPointer (1);
+
+    if (! needAlgo && ! modeRingSteady) { for (int i = 0; i <= alignL + 1; ++i) modeAlign.push (modeGain); modeRingSteady = true; }
+    const bool fading = needAlgo;
+    if (fading) modeRingSteady = false;
+    for (int i = 0; i < n; ++i)
+    {
+        modeGain = target > modeGain ? juce::jmin (target, modeGain + step)
+                                     : juce::jmax (target, modeGain - step);
+        float gOut = modeGain;
+        if (alignL > 0 && fading) { gOut = modeAlign.read (alignL); modeAlign.push (modeGain); }
+        modeGainOut = gOut;
+        left[i]  = left[i]  * (1.0f - gOut) + irL[i] * gOut;
+        right[i] = right[i] * (1.0f - gOut) + irR[i] * gOut;
+    }
+}
+#else
 void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
 {
     const float target = get (ParamIDs::mode) > 0.5f ? 1.0f : 0.0f;
@@ -551,6 +915,7 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n)
         right[i] = right[i] * (1.0f - modeGain) + irR[i] * modeGain;
     }
 }
+#endif
 
 //==============================================================================
 void AlgoPath::prepare (double fs, int maxBlock, const mspace::Params& p, const mspace11::Params& lp, bool legacyActive)
@@ -559,10 +924,22 @@ void AlgoPath::prepare (double fs, int maxBlock, const mspace::Params& p, const 
     engine.prepare (fs);
     legacy.setParams (lp);
     legacy.prepare (fs);
+   #ifdef MAS_RI
+    scratch.setSize (6, maxBlock);
+    {
+        const int hq = mspace::ri::ResonanceGuard::hqLatencyFor (fs);
+        for (auto& d : legacyAlign) d.allocate (hq + maxBlock + 16);
+        gainAlign.allocate (hq + maxBlock + 16);
+    }
+   #else
     scratch.setSize (5, maxBlock);
+   #endif
     engineGain = legacyActive ? 0.0f : 1.0f;
     newRunning = ! legacyActive;
     legacyRunning = legacyActive;
+   #ifdef MAS_RI
+    setAlignment (alignLatency);
+   #endif
 }
 
 void AlgoPath::snap (const mspace::Params& p, const mspace11::Params& lp, bool legacyActive)
@@ -572,6 +949,9 @@ void AlgoPath::snap (const mspace::Params& p, const mspace11::Params& lp, bool l
     engineGain = legacyActive ? 0.0f : 1.0f;
     newRunning = ! legacyActive;
     legacyRunning = legacyActive;
+   #ifdef MAS_RI
+    setAlignment (alignLatency);
+   #endif
 }
 
 double AlgoPath::getTailSeconds (bool legacyActive) const
@@ -579,6 +959,80 @@ double AlgoPath::getTailSeconds (bool legacyActive) const
     return legacyActive ? legacy.getTailSeconds() : engine.getTailSeconds();
 }
 
+#ifdef MAS_RI
+// As below, with the host sidechain and the STUDIO HQ alignment: the 1.2 engine delays its output by its own
+// latency, so the 1.1 engine's output is delayed by the same amount, and the output-side cross-fade gains are
+// the input-side gains delayed too (the direct sound in Insert then stays at constant level during the fade).
+void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, double fs, const float* scL, const float* scR)
+{
+    const int L = alignLatency;
+    auto alignLegacy = [this, L] (float* l, float* r, int len)
+    {
+        if (L <= 0) return;
+        for (int i = 0; i < len; ++i)
+        {
+            const float yl = legacyAlign[0].read (L), yr = legacyAlign[1].read (L);
+            legacyAlign[0].push (l[i]); legacyAlign[1].push (r[i]);
+            l[i] = yl; r[i] = yr;
+        }
+    };
+
+    const float target = legacyTarget ? 0.0f : 1.0f;
+    const bool needNew = target > 0.0f || engineGain > 0.0f || engineGainOut > 0.0f;
+    const bool needOld = target < 1.0f || engineGain < 1.0f || engineGainOut < 1.0f;
+
+    if (needNew && ! needOld)
+    {
+        if (! newRunning) { engine.reset(); newRunning = true; }
+        legacyRunning = false;
+        engine.process (left, right, n, scL, scR);
+        return;
+    }
+    if (needOld && ! needNew)
+    {
+        if (! legacyRunning) { legacy.reset(); for (auto& d : legacyAlign) d.clear(); legacyRunning = true; }
+        newRunning = false;
+        legacy.process (left, right, n);
+        alignLegacy (left, right, n);
+        return;
+    }
+
+    if (! newRunning)    { engine.reset(); newRunning = true; }
+    if (! legacyRunning) { legacy.reset(); for (auto& d : legacyAlign) d.clear(); legacyRunning = true; }
+
+    float* gains = scratch.getWritePointer (0);
+    float* oL = scratch.getWritePointer (1);
+    float* oR = scratch.getWritePointer (2);
+    float* nL = scratch.getWritePointer (3);
+    float* nR = scratch.getWritePointer (4);
+    float* gOut = scratch.getWritePointer (5);
+    const float step = (float) (1.0 / (kEngineFadeSec * fs));
+    for (int i = 0; i < n; ++i)
+    {
+        engineGain = target > engineGain ? juce::jmin (target, engineGain + step) : juce::jmax (target, engineGain - step);
+        gains[i] = engineGain;
+        if (L > 0) { gOut[i] = gainAlign.read (L); gainAlign.push (engineGain); }
+        else gOut[i] = engineGain;
+    }
+    engineGainOut = gOut[n - 1];
+    const bool newComesIn = target > 0.5f;
+    for (int i = 0; i < n; ++i)
+    {
+        const float gNew = gains[i], gOld = 1.0f - gains[i];
+        nL[i] = left[i] * (newComesIn ? gNew : 1.0f);  nR[i] = right[i] * (newComesIn ? gNew : 1.0f);
+        oL[i] = left[i] * (newComesIn ? 1.0f : gOld);  oR[i] = right[i] * (newComesIn ? 1.0f : gOld);
+    }
+    engine.process (nL, nR, n, scL, scR);
+    legacy.process (oL, oR, n);
+    alignLegacy (oL, oR, n);
+    for (int i = 0; i < n; ++i)
+    {
+        const float gNew = gOut[i], gOld = 1.0f - gOut[i];
+        left[i]  = nL[i] * (newComesIn ? 1.0f : gNew) + oL[i] * (newComesIn ? gOld : 1.0f);
+        right[i] = nR[i] * (newComesIn ? 1.0f : gNew) + oR[i] * (newComesIn ? gOld : 1.0f);
+    }
+}
+#else
 // Runs the 1.2 engine, the frozen 1.1 engine, or both while cross-fading after a switch.
 // The engine that comes in starts from silence and gets a faded-in INPUT (its reflections then build
 // up smoothly, no onset clicks on sustained notes); the engine that goes out gets a faded-out OUTPUT.
@@ -635,7 +1089,47 @@ void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, dou
         right[i] = nR[i] * (newComesIn ? 1.0f : gNew) + oR[i] * (newComesIn ? gOld : 1.0f);
     }
 }
+#endif
 
+#ifdef MAS_RI
+// As below; with a latency (STUDIO HQ) the outgoing path's output fades with the delayed gain, and the
+// transition ends when that delayed gain has reached 1.
+void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, const float* scL, const float* scR)
+{
+    if (txState != Tx::fading)
+    {
+        paths[activePath].process (left, right, n, txState == Tx::holding ? frozenLegacy : curLegacy, sampleRateHz, scL, scR);
+        return;
+    }
+
+    float* oL = txScratch.getWritePointer (0);
+    float* oR = txScratch.getWritePointer (1);
+    float* g  = txScratch.getWritePointer (2);
+    const float step = (float) (1.0 / (kStateFadeSec * sampleRateHz));
+    for (int i = 0; i < n; ++i)
+    {
+        txGain = juce::jmin (1.0f, txGain + step);
+        if (alignL > 0) { g[i] = txAlign.read (alignL); txAlign.push (txGain); }
+        else g[i] = txGain;
+        oL[i] = left[i];
+        oR[i] = right[i];
+        left[i]  *= txGain;
+        right[i] *= txGain;
+    }
+    paths[activePath].process (oL, oR, n, frozenLegacy, sampleRateHz, scL, scR);      // outgoing
+    paths[1 - activePath].process (left, right, n, curLegacy, sampleRateHz, scL, scR);   // incoming (faded-in input)
+    for (int i = 0; i < n; ++i)
+    {
+        left[i]  += oL[i] * (1.0f - g[i]);
+        right[i] += oR[i] * (1.0f - g[i]);
+    }
+    if (txGain >= 1.0f && g[n - 1] >= 1.0f)
+    {
+        activePath = 1 - activePath;
+        txState = Tx::idle;
+    }
+}
+#else
 // Algorithmic path with state transitions. While fading, the old path (old state) keeps running and its
 // output fades out; the new path (clean engine, new state) gets the same input with a fade-in, so its
 // reflections and tail build up smoothly from the moment of the switch. The two linear ramps add up to
@@ -674,6 +1168,7 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n)
         txState = Tx::idle;
     }
 }
+#endif
 
 // Reads the dry signal from irDry and writes the mixed IR-mode output back into irDry.
 void MasterSpaceAudioProcessor::processIRPath (int n)
@@ -882,6 +1377,18 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
 
 void MasterSpaceAudioProcessor::timerCallback()
 {
+   #ifdef MAS_RI
+    // STUDIO HQ latency: reported from the message thread when the quality changes
+    {
+        const int lat = latencyForQuality (juce::roundToInt (get (ParamIDs::quality)) > 0 ? 1 : 0);
+        if (lat != reportedLatency)
+        {
+            reportedLatency = lat;
+            setLatencySamples (lat);
+        }
+    }
+   #endif
+
     {
         std::unique_ptr<PendingIR> toFree;
         {
@@ -1175,7 +1682,11 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
             buf.setSample (0, i, (float) (pink * 0.5));
             buf.setSample (1, i, (float) (pink * 0.5));
         }
+       #ifdef MAS_RI
+        path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs, nullptr, nullptr);
+       #else
         path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs);
+       #endif
         for (int i = 0; i < n; ++i)
         {
             double l = buf.getSample (0, i), r = buf.getSample (1, i);
@@ -1261,11 +1772,17 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
 
     // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
     bool hasEngine = false, hasTail = false;
+   #ifdef MAS_RI
+    juce::StringArray presentIDs;
+   #endif
     for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
     {
         if (e->getStringAttribute ("id") == ParamIDs::engine) hasEngine = true;
        #ifdef MAS_ATMOS
         if (e->getStringAttribute ("id") == ParamIDs::tail) hasTail = true;
+       #endif
+       #ifdef MAS_RI
+        presentIDs.add (e->getStringAttribute ("id"));
        #endif
     }
     juce::ignoreUnused (hasTail);
@@ -1282,6 +1799,13 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
     if (! hasTail)
         if (auto* prm = apvts.getParameter (ParamIDs::tail))
             prm->setValueNotifyingHost (prm->convertTo0to1 (0.0f));
+   #endif
+   #ifdef MAS_RI
+    // states written before 1.4: SMART DUCKER and RESONANCE GUARD off, every new parameter at its default
+    for (const char* id : ParamIDs::riParams)
+        if (! presentIDs.contains (id))
+            if (auto* prm = apvts.getParameter (id))
+                prm->setValueNotifyingHost (prm->getDefaultValue());
    #endif
     endStateTransition();
 
