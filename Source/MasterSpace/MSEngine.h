@@ -1087,6 +1087,7 @@ public:
         pending.quality = params.quality = q;
         curQuality = q;
         qGain = 1.0f;
+        qHold = 0;
         applyParams (true);
         rg.reset();
         for (auto& d : directDelay) d.clear();
@@ -1422,9 +1423,11 @@ private:
                 xLL += deltaMix * (dLL[i] - xLL); xLR += deltaMix * (dLR[i] - xLR);
             }
             // quality switch LIVE <-> STUDIO HQ: fade out, switch (latency changes), fade in
-            if (qSwitch || qGain < 1.0f)
+            // (after a switch to STUDIO HQ the output stays muted until the delayed signal arrives)
+            if (qSwitch || qGain < 1.0f || qHold > 0)
             {
-                qGain += (qSwitch ? -1.0f : 1.0f) * switchStep;
+                if (! qSwitch && qHold > 0) { --qHold; qGain = 0.0f; }
+                else qGain += (qSwitch ? -1.0f : 1.0f) * switchStep;
                 if (qGain <= 0.0f && qSwitch)
                 {
                     qGain = 0.0f;
@@ -1433,6 +1436,7 @@ private:
                     rg.reset();
                     for (auto& d : directDelay) d.clear();
                     for (auto& d : scDelay) d.clear();
+                    qHold = rg.latencySamples();
                 }
                 qGain = std::clamp (qGain, 0.0f, 1.0f);
             }
@@ -1517,6 +1521,7 @@ private:
     DelayLine directDelay[2], scDelay[2];
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;
+    int qHold = 0;
    #endif
     std::vector<float> scratch;
     double curLow = 20.0, curHigh = 20000.0;

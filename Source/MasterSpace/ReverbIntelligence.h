@@ -148,7 +148,7 @@ public:
         aRel2 = coef (0.59 * std::clamp ((double) s.releaseMs, 50.0, 3000.0));     // two stages (S-shaped), 90 % at RELEASE
         holdTicks = (int) (std::clamp ((double) s.holdMs, 0.0, 500.0) * 0.001 * ctl);
         aRms = (float) (1.0 - std::exp (-1.0 / (0.005 * fs)));
-        aPeak = (float) (1.0 - std::exp (-1.0 / (0.12 * fs)));                     // phrase envelope decay
+        aPeak = (float) (1.0 - std::exp (-1.0 / (0.015 * fs)));                    // fast fall: HOLD bridges the gaps, timing stays as set
         aBand = (float) (1.0 - std::exp (-1.0 / (0.02 * fs)));
         haveSettings = true;
     }
@@ -255,11 +255,16 @@ private:
                 const float mask = wE[k] / (wE[k] + 0.25f * dE[k] + 1e-20f);
                 w[k] = pres * (0.3f + 0.7f * mask);
             }
-            for (int k = 0; k < NB; ++k)        // 1-2-1 smoothing over frequency, then slow over time
+            // 1-2-1 smoothing over frequency; the most masked region gets the full depth (normalised), then slow over time
+            float sm[NB], smMax = 0.0f;
+            for (int k = 0; k < NB; ++k)
             {
-                const float sm = 0.25f * w[std::max (0, k - 1)] + 0.5f * w[k] + 0.25f * w[std::min (NB - 1, k + 1)];
-                wSm[k] += 0.08f * (sm - wSm[k]);
+                sm[k] = 0.25f * w[std::max (0, k - 1)] + 0.5f * w[k] + 0.25f * w[std::min (NB - 1, k + 1)];
+                smMax = std::max (smMax, sm[k]);
             }
+            const float norm = smMax > 0.05f ? 1.0f / smMax : 0.0f;
+            for (int k = 0; k < NB; ++k)
+                wSm[k] += 0.08f * (sm[k] * norm - wSm[k]);
         }
     }
 

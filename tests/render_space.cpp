@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <algorithm>
 #if defined(__x86_64__)
 #include <xmmintrin.h>
 #include <pmmintrin.h>
@@ -88,6 +89,10 @@ int main (int argc, char** argv)
         for (size_t i = 0; i < frames && 2 * i + 1 < sd.size(); ++i) { SL[i] = sd[2 * i]; SR[i] = sd[2 * i + 1]; }
     }
 
+#ifdef MAS_RI
+    std::vector<float> blockUs;
+    blockUs.reserve (frames / (size_t) block + 1);
+#endif
     auto t0 = std::chrono::high_resolution_clock::now();
     for (size_t pos = 0; pos < frames; pos += (size_t) block)
     {
@@ -96,7 +101,9 @@ int main (int argc, char** argv)
         if (changed) eng.setParams (p);
         const int n = (int) std::min ((size_t) block, frames - pos);
 #ifdef MAS_RI
+        const auto tb0 = std::chrono::high_resolution_clock::now();
         eng.process (L.data() + pos, R.data() + pos, n, SL.empty() ? nullptr : SL.data() + pos, SR.empty() ? nullptr : SR.data() + pos);
+        blockUs.push_back ((float) std::chrono::duration<double, std::micro> (std::chrono::high_resolution_clock::now() - tb0).count());
         if (! meterFile.empty()) { meter.push_back (eng.duckReductionDb (true)); meter.push_back (eng.duckReductionDb (false)); meter.push_back (eng.guard().maxCutDb()); }
         if (! cutFile.empty()) for (int b = 0; b < eng.guard().numBands(); ++b) cuts.push_back (eng.guard().vizCutDb (b));
 #else
@@ -107,6 +114,15 @@ int main (int argc, char** argv)
     std::fprintf (stderr, "rt %.1fx\n", (frames / fs) / std::chrono::duration<double> (t1 - t0).count());
 #ifdef MAS_RI
     std::fprintf (stderr, "latency %d\n", eng.latencySamples());
+    {
+        // per-block cost against the block's real-time budget (spikes)
+        std::vector<float> b = blockUs;
+        std::sort (b.begin(), b.end());
+        const double budget = 1.0e6 * block / fs;
+        if (! b.empty())
+            std::fprintf (stderr, "block p99.9 %.1f %% worst %.1f %% of the block budget\n",
+                          100.0 * b[(size_t) (0.999 * (double) (b.size() - 1))] / budget, 100.0 * b.back() / budget);
+    }
 #endif
 
     for (size_t i = 0; i < frames; ++i) { data[2 * i] = L[i]; data[2 * i + 1] = R[i]; }
