@@ -413,6 +413,7 @@ public:
         for (int b = 0; b < MAXB; ++b)
         {
             Wt[b] = M[b] = 1e-20f; X[b] = 0.0f; slope[b] = 0.0f; xPrev[b] = 0.0f; cut[b] = 0.0f; xb[b] = 0.0f;
+            xFast[b] = xSlow[b] = 0.0f; effBins[b] = 1.0f;
             for (int p = 0; p < 2; ++p) { g[p][b] = 1.0f; gInc[p][b] = 0.0f; rampEnd[p][b] = 1.0f; }
             for (auto& ch : bp) ch[b].clear();
             wasActive[b] = false;
@@ -500,7 +501,7 @@ public:
                 const float yLL = dly[2] + xm * (hqOut[2] - dly[2]), yLR = dly[3] + xm * (hqOut[3] - dly[3]);
                 if (dEL != nullptr) { dEL[i] = dly[0] - yEL; dER[i] = dly[1] - yER; dLL[i] = dly[2] - yLL; dLR[i] = dly[3] - yLR; }
                 erL[i] = yEL * mkE; erR[i] = yER * mkE; ltL[i] = yLL * mkL; ltR[i] = yLR * mkL;
-                hqMix = std::clamp (hqMix + (hqTarget > hqMix ? hqStep : -hqStep), 0.0f, 1.0f);
+                hqMix = hqTarget > hqMix ? std::min (hqTarget, hqMix + hqStep) : std::max (hqTarget, hqMix - hqStep);
             }
             else
             {
@@ -681,6 +682,7 @@ private:
             }
             if (sn < 1e-6f) { const int k = std::clamp ((int) std::lround (fc[b] * N / fs), 1, N / 2); sw = pw[(size_t) k]; sd = pd[(size_t) k]; sn = 1.0f; }
             sw /= sn; sd /= sn;
+            effBins[b] = std::max (1.0f, sn);
             Wt[b] += aW * (sw - Wt[b]);
             M[b] = M[b] * decayR[b] + sd;
             wTot += Wt[b]; dTot += sd;
@@ -713,23 +715,27 @@ private:
         const float hopSec = (float) H / (float) fs;
         const float lo = (float) std::log2 (std::max (20.0f, s.loHz)), hi = (float) std::log2 (std::max (s.loHz * 1.5f, s.hiHz));
         float tgt[MAXB];
+        const float aF = 1.0f - std::exp (-hopSec / 0.25f), aS = 1.0f - std::exp (-hopSec / 1.0f);
         for (int b = 0; b < nb; ++b)
         {
-            const float ap = (s.mode == TailAware && ! freeDecay) ? 0.25f * aPers : aPers;
+            // SMOOTH / DEEP judge the field while the source plays (in the free decay the reference has
+            // nothing left to say, the excess is frozen); TAIL AWARE judges mainly the free decay
+            const float ap = s.mode == TailAware ? (freeDecay ? aPers : 0.25f * aPers) : (freeDecay ? 0.0f : aPers);
             if (! silent) X[b] += ap * (xb[b] - X[b]);
             float grow = 0.0f;
             if (s.mode == TailAware && freeDecay && ! silent)
             {
-                slope[b] += 0.1f * ((xb[b] - xPrev[b]) / hopSec - slope[b]);
+                // growth of the excess during the free decay: two averages 0.25 s / 1 s apart, their
+                // difference / 0.75 s is the slope of a steady ramp, without the frame-to-frame noise
+                xFast[b] += aF * (xb[b] - xFast[b]); xSlow[b] += aS * (xb[b] - xSlow[b]);
+                slope[b] = (xFast[b] - xSlow[b]) / 0.75f;
                 grow = std::max (0.0f, slope[b] - 1.5f) * 0.5f;          // dB/s above tolerance x 0.5 s
             }
-            else slope[b] *= 0.9f;
-            xPrev[b] = xb[b];
+            else { xFast[b] = xSlow[b] = X[b]; slope[b] = 0.0f; }
+            // few FFT bins in a band (low frequencies) = noisier estimate: ask for more there
+            const float Tb = T + 4.0f / std::sqrt (effBins[b]) - 1.3f;
             const float inRange = std::clamp (std::min (lfc[b] - lo, hi - lfc[b]) * 3.0f + 1.0f, 0.0f, 1.0f);   // 1/3-octave taper
-            tgt[b] = s.on ? std::clamp (km * (X[b] + grow - T), 0.0f, s.maxRedDb) * inRange : 0.0f;
-           #ifdef RG_DEBUG
-            if (std::abs (fc[b] - RG_DEBUG) < fc[b] * 0.03) std::fprintf (stderr, "dbg f %.0f free %d xb %.2f X %.2f slope %.2f grow %.2f tgt %.2f rb %.2f\n", fc[b], (int) freeDecay, xb[b], X[b], slope[b], grow, tgt[b], rb[b]);
-           #endif
+            tgt[b] = s.on ? std::clamp (km * (X[b] + grow - Tb), 0.0f, s.maxRedDb) * inRange : 0.0f;
         }
         // spread over neighbours (SMOOTH), at most K cutting bands in LIVE
         const float nu = 0.3f + 0.6f * std::clamp (s.smooth, 0.0f, 1.0f);
@@ -834,6 +840,7 @@ private:
     int kLo[MAXB] {}, kHi[MAXB] {}, activeList[MAXB] {};
     bool wasActive[MAXB] {};
     float Wt[MAXB] {}, M[MAXB] {}, X[MAXB] {}, slope[MAXB] {}, xPrev[MAXB] {}, cut[MAXB] {}, decayR[MAXB] {}, rb[MAXB] {}, xb[MAXB] {};
+    float xFast[MAXB] {}, xSlow[MAXB] {}, effBins[MAXB] {};
     float g[2][MAXB] {}, gInc[2][MAXB] {}, rampEnd[2][MAXB] {};
     BandPass bp[4][MAXB];
     float aAtt = 0.1f, aRel = 0.05f, aPers = 0.05f, aW = 0.3f;

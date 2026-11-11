@@ -1388,8 +1388,8 @@ private:
             float xEL = erL[i], xER = erR[i], xLL = ltL[i], xLR = ltR[i];
             if (wantDelta)
             {
-                deltaMix += (tDelta > deltaMix ? 1.0f : -1.0f) * switchStep * 0.66f;
-                deltaMix = std::clamp (deltaMix, 0.0f, 1.0f);
+                deltaMix = tDelta > deltaMix ? std::min (tDelta, deltaMix + switchStep * 0.66f)
+                                             : std::max (tDelta, deltaMix - switchStep * 0.66f);
                 xEL += deltaMix * (dEL[i] - xEL); xER += deltaMix * (dER[i] - xER);
                 xLL += deltaMix * (dLL[i] - xLL); xLR += deltaMix * (dLR[i] - xLR);
             }
