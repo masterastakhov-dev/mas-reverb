@@ -595,8 +595,8 @@ int main (int argc, char** argv)
             const int latHQ = q->getLatencySamples();
             q->setStateInformation (old13.getData(), (int) old13.getSize());
             pump (250);
-            check (latHQ == 5159 && latHQ == mspace::Engine::hqLatencyFor (48000.0),
-                   "STUDIO HQ reports its latency to the host: " + juce::String (latHQ) + " samples at 48 kHz (guard FFT 4096 + hop 1024, colour 4x FIR 39)");
+            check (latHQ == 5191 && latHQ == mspace::Engine::hqLatencyFor (48000.0),
+                   "STUDIO HQ reports its latency to the host: " + juce::String (latHQ) + " samples at 48 kHz (guard FFT 4096 + hop 1024, colour 4x FIR 71)");
             check (getP (*q, ParamIDs::duckOn) < 0.5f && getP (*q, ParamIDs::rgOn) < 0.5f && getP (*q, ParamIDs::quality) < 0.5f
                    && getP (*q, ParamIDs::hcOn) < 0.5f
                    && std::abs (getP (*q, ParamIDs::duckAmount) - 6.0f) < 0.01f && q->getLatencySamples() == 0,

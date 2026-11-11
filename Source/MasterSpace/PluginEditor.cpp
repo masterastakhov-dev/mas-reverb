@@ -1114,17 +1114,18 @@ public:
         juce::Path curve;
         if (chr == 2)
         {
-            // one sine cycle (after one cycle to settle) through the hysteresis
-            float env = 0.0f, play = 0.0f;
+            // one sine cycle (after one cycle to settle) through the hysteresis, as in the DSP (a full-scale low note)
+            float play = 0.0f;
             const int N = 256;
+            const float rr = 0.35f * gain * hc::fastTanh (gain);
             for (int k = 0; k < 2 * N; ++k)
             {
                 const float x = std::sin (juce::MathConstants<float>::twoPi * (float) k / N);
-                const float v = x * gain, a = std::abs (v);
-                env += (a > env ? 0.2f : 0.02f) * (a - env);
-                const float rr = 0.35f * env * std::tanh (env);
+                const float v = x * gain;
                 play = juce::jlimit (v - rr, v + rr, play);
-                const float y = hc::fastTanh (0.65f * v + 0.35f * play) / gain;
+                const float e = (play - v) / rr, e2 = e * e;
+                const float dev = rr * e * (15.0f - 10.0f * e2 + 3.0f * e2 * e2) * 0.125f;
+                const float y = hc::fastTanh (v + 0.35f * dev) / gain;
                 if (k == N) curve.startNewSubPath (toX (x), toY (y));
                 else if (k > N) curve.lineTo (toX (x), toY (y));
             }

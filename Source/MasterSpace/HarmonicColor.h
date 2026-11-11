@@ -6,7 +6,7 @@
 //
 //   s  -> u = s * gIn -> colour tilt -> CHARACTER -> inverse tilt -> / gIn = sat
 //   h  = sat - s                     (only what the nonlinearity adds or takes: harmonics, compression)
-//   h  -> 30 Hz high-pass            (no rumble from intermodulation)
+//   h  -> 180 Hz high-pass, 4th order (the low end stays linear: no intermodulation rumble, no added weight)
 //   o  = s + MIX * h
 //
 // so the linear part of the wet passes untouched and, at low levels (the end of a tail), the module is
@@ -21,15 +21,16 @@
 //
 // LIVE: 4x oversampling, two polyphase IIR allpass half-bands (elliptic; 8 coefficients ~99 dB, then
 //       6 coefficients ~104 dB): no reported latency (the wet gets ~5 samples of phase delay below 10 kHz).
-// HQ:   4x oversampling, linear-phase FIR half-bands (63 + 31 taps): latency kLatencyHQ samples,
+// HQ:   4x oversampling, linear-phase FIR half-bands (127 + 31 taps): latency kLatencyHQ samples,
 //       reported; when off, a plain delay of the same length (exact).
 //
 // Characters (different nonlinear systems, not presets of one curve):
 //   SOFT  symmetric algebraic sigmoid: odd harmonics falling fast, clean even when pushed.
 //   TUBE  biased triode-like curve, the bias shifts with the signal (grid-current style): even
 //         harmonics at moderate levels, more odd as it is driven harder; harmonics slightly darkened.
-//   TAPE  record pre-emphasis -> hysteresis (play operator whose width follows the level) -> tanh ->
-//         playback de-emphasis: odd harmonics with a level-dependent phase lag, highs saturate first.
+//   TAPE  record pre-emphasis -> hysteresis on the band below 3 kHz (play operator whose width follows the
+//         level, read through a smooth step) -> tanh -> playback de-emphasis: odd harmonics with a
+//         level-dependent phase lag, highs saturate first.
 // COLOR tilts what drives the nonlinearity (-: lows drive harder, warmer harmonics; +: highs, brighter);
 // the inverse tilt after it leaves the linear balance as it was.
 
@@ -144,6 +145,20 @@ struct FirHalfband2x
     }
 };
 
+// The residue's high-pass runs at 4x the rate: its poles sit within 1e-2 of z = 1, where float
+// coefficients and state would turn the DC of the even harmonics into low-frequency noise. Double here.
+struct BiquadD
+{
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+    float run (float xf) { const double x = xf, y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return (float) y; }
+    void reset() { z1 = z2 = 0; }
+    void highPass (double f, double fs, double q)
+    {
+        const double w = 2 * kPi * f / fs, c = std::cos (w), al = std::sin (w) / (2 * q), a0 = 1 + al;
+        b0 = (1 + c) / 2 / a0; b1 = -(1 + c) / a0; b2 = b0; a1 = -2 * c / a0; a2 = (1 - al) / a0;
+    }
+};
+
 struct Biquad
 {
     float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
@@ -215,7 +230,7 @@ class HarmonicColor
 {
 public:
     enum Character { Soft = 0, Tube = 1, Tape = 2 };
-    static constexpr int kLatencyHQ = 39;     // base-rate samples: 31 (63-tap stage) + 8 (31-tap stage + 2 high-rate samples)
+    static constexpr int kLatencyHQ = 71;     // base-rate samples: 63 (127-tap stage) + 8 (31-tap stage + 2 high-rate samples)
     static constexpr int kMaxBlock = 64;
 
     struct Settings
@@ -232,7 +247,7 @@ public:
     void prepare (double sampleRate)
     {
         fs = sampleRate;
-        static constexpr float t1[32] = { -2.401525401004e-05f, 1.090362377047e-04f, -2.935601002340e-04f, 6.381064172421e-04f, -1.222076083254e-03f, 2.145908711671e-03f, -3.534414533626e-03f, 5.543647380318e-03f, -8.376210977950e-03f, 1.231558384146e-02f, -1.780470137815e-02f, 2.563768696164e-02f, -3.748938402353e-02f, 5.772404817580e-02f, -1.024425154925e-01f, 3.170728928723e-01f, 3.170728928723e-01f, -1.024425154925e-01f, 5.772404817580e-02f, -3.748938402353e-02f, 2.563768696164e-02f, -1.780470137815e-02f, 1.231558384146e-02f, -8.376210977950e-03f, 5.543647380318e-03f, -3.534414533626e-03f, 2.145908711671e-03f, -1.222076083254e-03f, 6.381064172421e-04f, -2.935601002340e-04f, 1.090362377047e-04f, -2.401525401004e-05f };
+        static constexpr float t1[64] = { -1.794405667407e-06f, 6.095388231092e-06f, -1.421416703215e-05f, 2.807181546926e-05f, -5.016796492737e-05f, 8.366783833021e-05f, -1.324873507047e-04f, 2.013746147663e-04f, -2.959870987979e-04f, 4.229651184503e-04f, -5.900044420159e-04f, 8.059337487325e-04f, -1.080806805712e-03f, 1.426025008887e-03f, -1.854514175519e-03f, 2.380991554201e-03f, -3.022377320533e-03f, 3.798433601837e-03f, -4.732761093937e-03f, 5.854363275163e-03f, -7.200129876171e-03f, 8.818853646812e-03f, -1.077790498992e-02f, 1.317474006252e-02f, -1.615773064678e-02f, 1.996632006590e-02f, -2.501505340731e-02f, 3.208966520459e-02f, -4.287925098196e-02f, 6.178543462439e-02f, -1.049676535931e-01f, 3.179297069245e-01f, 3.179297069245e-01f, -1.049676535931e-01f, 6.178543462439e-02f, -4.287925098196e-02f, 3.208966520459e-02f, -2.501505340731e-02f, 1.996632006590e-02f, -1.615773064678e-02f, 1.317474006252e-02f, -1.077790498992e-02f, 8.818853646812e-03f, -7.200129876171e-03f, 5.854363275163e-03f, -4.732761093937e-03f, 3.798433601837e-03f, -3.022377320533e-03f, 2.380991554201e-03f, -1.854514175519e-03f, 1.426025008887e-03f, -1.080806805712e-03f, 8.059337487325e-04f, -5.900044420159e-04f, 4.229651184503e-04f, -2.959870987979e-04f, 2.013746147663e-04f, -1.324873507047e-04f, 8.366783833021e-05f, -5.016796492737e-05f, 2.807181546926e-05f, -1.421416703215e-05f, 6.095388231092e-06f, -1.794405667407e-06f };
         static constexpr float t2[16] = { -4.963152495409e-05f, 6.422753305175e-04f, -2.734532124793e-03f, 8.020590061658e-03f, -1.922827575231e-02f, 4.153808252110e-02f, -9.122783426325e-02f, 3.130559118267e-01f, 3.130559118267e-01f, -9.122783426325e-02f, 4.153808252110e-02f, -1.922827575231e-02f, 8.020590061658e-03f, -2.734532124793e-03f, 6.422753305175e-04f, -4.963152495409e-05f };
         static constexpr float i1[8] = { 0.0406334609f, 0.1505051290f, 0.3007570560f, 0.4607745050f,     // 2x: transition 0.46-0.54, ~99 dB
                                          0.6095243149f, 0.7385038411f, 0.8492238104f, 0.9497427837f };
@@ -241,6 +256,7 @@ public:
         for (auto& c : ch) { c.fir1.setTaps (t1); c.fir2.setTaps (t2); c.iir1.setCoefs (i1); c.iir2.setCoefs (i2); }
         aEnv = (float) (1.0 - std::exp (-1.0 / (0.3 * fs)));
         aGain = (float) (1.0 - std::exp (-1.0 / (0.05 * fs)));
+        aFast = (float) (1.0 - std::exp (-1.0 / (0.03 * fs)));
         fadeStep = (float) (1.0 / (0.02 * fs));
         set (settings, true);
         reset();
@@ -249,8 +265,8 @@ public:
     void reset()
     {
         for (auto& c : ch) c.reset();
-        pFin = 0.0f; trim = 1.0f;
-        pIn = pOut = 0.0f; gComp = 1.0f; bandEIn = bandEOut = airEIn = airEOut = 0.0f; guardDb = airDb = 0.0f; guardCount = 0;
+        pFin = pFinF = 0.0f; trim = 1.0f;
+        pIn = pOut = pInF = pOutF = 0.0f; gComp = 1.0f; bandEIn = bandEOut = airEIn = airEOut = 0.0f; guardDb = airDb = 0.0f; guardCount = 0;
         for (auto& c : ch) { c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); }
         fade = settings.on ? 1.0f : 0.0f;
         curMix = settings.mix; curGain = targetGain; curQ = settings.quality;
@@ -277,7 +293,9 @@ public:
             c.tiltDe.setInverseOf (c.tiltPre);
             c.recPre.set (3500.0, osRate, 2.0, true);                                 // TAPE record emphasis +6 dB
             c.recDe.setInverseOf (c.recPre);
-            c.dc.highPass (30.0, osRate, 0.707);
+            c.dc.highPass (180.0, osRate, 0.541);      // 4th-order Butterworth
+            c.dc2.highPass (180.0, osRate, 1.307);
+            c.hyLP.lowPass2 (3000.0, osRate, 0.707);
             c.plate.lowPass1 (9000.0, osRate);
             c.bandIn.bandPass (316.0, fs, 1.05);
             c.bandOut.bandPass (316.0, fs, 1.05);
@@ -289,8 +307,7 @@ public:
         osFs = osRate;
         aTubeAtt = (float) (1.0 - std::exp (-1.0 / (0.002 * osRate)));
         aTubeRel = (float) (1.0 - std::exp (-1.0 / (0.08 * osRate)));
-        aTapeAtt = (float) (1.0 - std::exp (-1.0 / (0.001 * osRate)));
-        aTapeRel = (float) (1.0 - std::exp (-1.0 / (0.05 * osRate)));
+        aTapeMs = (float) (1.0 - std::exp (-1.0 / (0.003 * osRate)));
         aSmooth = (float) (1.0 - std::exp (-1.0 / (0.01 * osRate)));
         if (force || qChanged) { curQ = settings.quality; for (auto& c : ch) c.reset(); }
         if (force) { curMix = settings.mix; curGain = targetGain; fade = settings.on ? 1.0f : 0.0f; }
@@ -311,7 +328,7 @@ public:
             else if (wasRunning)
             {
                 for (auto& c : ch) { c.reset(); c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); }
-                pIn = pOut = bandEIn = bandEOut = airEIn = airEOut = guardDb = airDb = pFin = 0; gComp = trim = 1; wasRunning = false;
+                pIn = pOut = pInF = pOutF = bandEIn = bandEOut = airEIn = airEOut = guardDb = airDb = pFin = pFinF = 0; gComp = trim = 1; wasRunning = false;
             }
             return;
         }
@@ -374,10 +391,18 @@ public:
                 const float yi = out[0][i] * out[0][i] + out[1][i] * out[1][i];
                 pIn += aEnv * (xi - pIn);
                 pOut += aEnv * (yi - pOut);
+                pInF += aFast * (xi - pInF);
+                pOutF += aFast * (yi - pOutF);
                 if (pIn < 1.0e-30f) pIn = 0.0f;
                 if (pOut < 1.0e-30f) pOut = 0.0f;
+                if (pInF < 1.0e-30f) pInF = 0.0f;
+                if (pOutF < 1.0e-30f) pOutF = 0.0f;
                 float target = 1.0f;
-                if (settings.levelComp) target = std::clamp (std::sqrt ((pIn + 1.0e-12f) / (pOut + 1.0e-12f)), 0.5f, 4.0f);
+                // the slow ratio (0.3 s) gives a steady gain; the fast one (30 ms) caps it, so the make-up gain of a
+                // loud, compressed moment is not carried into the uncompressed tail that follows (no swell, no
+                // change of the decay)
+                if (settings.levelComp)
+                    target = std::clamp (std::sqrt (std::min ((pIn + 1.0e-12f) / (pOut + 1.0e-12f), (pInF + 1.0e-12f) / (pOutF + 1.0e-12f))), 0.5f, 4.0f);
                 gComp += aGain * (target - gComp);
                 fade = settings.on ? std::min (1.0f, fade + fadeStep) : std::max (0.0f, fade - fadeStep);
                 float z[2];
@@ -400,11 +425,13 @@ public:
                 if (--guardCount <= 0)      // LOW-MID GUARD: the bell follows the band energy ratio
                 {
                     guardCount = 32;
-                    // corrections scale with MIX: at MIX 0 nothing is changed, so nothing is corrected
-                    const float want = curMix * 10.0f * std::log10 ((bandEIn + 1.0e-14f) / (bandEOut + 1.0e-14f));
+                    // corrections scale with MIX: at MIX 0 nothing is changed, so nothing is corrected. The bands are
+                    // measured before the final level trim, which is included here (the band is held where it is heard).
+                    const float t2 = trim * trim;
+                    const float want = curMix * 10.0f * std::log10 ((bandEIn + 1.0e-14f) / (bandEOut * t2 + 1.0e-14f));
                     guardDb += 0.25f * (std::clamp (want, -9.0f, 3.0f) - guardDb);
                     const float share = (settings.character == Tape ? 0.6f : 1.0f) * curMix;
-                    const float wantAir = share * 10.0f * std::log10 ((airEIn + 1.0e-16f) / (airEOut + 1.0e-16f));
+                    const float wantAir = share * 10.0f * std::log10 ((airEIn + 1.0e-16f) / (airEOut * t2 + 1.0e-16f));
                     airDb += 0.25f * (std::clamp (wantAir, 0.0f, 4.0f) - airDb);
                     for (auto& k : ch) { k.guard.peak (316.0, fs, 0.75, guardDb); k.air.highShelf (std::min (3000.0, 0.35 * fs), fs, airDb); }
                 }
@@ -412,9 +439,13 @@ public:
                 for (int c = 0; c < 2; ++c) f[c] = ch[c].air.run (ch[c].guard.run (z[c]));
                 if (settings.levelComp)     // the guards add or take a little: the final energy is held too
                 {
-                    pFin += aEnv * (f[0] * f[0] + f[1] * f[1] - pFin);
+                    const float fi = f[0] * f[0] + f[1] * f[1];
+                    pFin += aEnv * (fi - pFin);
+                    pFinF += aFast * (fi - pFinF);
                     if (pFin < 1.0e-30f) pFin = 0.0f;
-                    trim += aGain * (std::clamp (std::sqrt ((pIn + 1.0e-12f) / (pFin + 1.0e-12f)), 0.7f, 1.4f) - trim);
+                    if (pFinF < 1.0e-30f) pFinF = 0.0f;
+                    const float want = std::min ((pIn + 1.0e-12f) / (pFin + 1.0e-12f), (pInF + 1.0e-12f) / (pFinF + 1.0e-12f));
+                    trim += aGain * (std::clamp (std::sqrt (want), 0.7f, 1.4f) - trim);
                 }
                 else trim += aGain * (1.0f - trim);
                 for (int c = 0; c < 2; ++c)
@@ -440,11 +471,13 @@ private:
     {
         IirHalfband2x<8> iir1;
         IirHalfband2x<6> iir2;
-        FirHalfband2x<32> fir1;
+        FirHalfband2x<64> fir1;
         FirHalfband2x<16> fir2;
         Shelf1 tiltPre, tiltDe, recPre, recDe;
-        Biquad dc, plate, bandIn, bandOut, guard, airIn, airOut, airIn2, airOut2, air;
-        float env = 0, play = 0, bias = 0.45f, tb = 0.42189901f, invD = 1.2167f;
+        BiquadD dc, dc2;
+        Biquad hyLP;
+        Biquad plate, bandIn, bandOut, guard, airIn, airOut, airIn2, airOut2, air;
+        float env = 0, env2 = 0, play = 0, bias = 0.45f, tb = 0.42189901f, invD = 1.2167f;
         int biasCount = 0;
         float ref[kLatencyHQ + 1] {}; int refPos = 0;
         float hi[2] {}; int hiPos = 0;
@@ -453,9 +486,9 @@ private:
         void reset()
         {
             iir1.reset(); iir2.reset(); fir1.reset(); fir2.reset();
-            tiltPre.reset(); tiltDe.reset(); recPre.reset(); recDe.reset(); dc.reset(); plate.reset();
+            tiltPre.reset(); tiltDe.reset(); recPre.reset(); recDe.reset(); dc.reset(); dc2.reset(); plate.reset(); hyLP.reset();
             bandIn.reset(); bandOut.reset(); guard.reset(); airIn.reset(); airOut.reset(); airIn2.reset(); airOut2.reset(); air.reset();
-            env = play = 0; biasCount = 0; std::memset (ref, 0, sizeof (ref)); refPos = 0; hi[0] = hi[1] = 0; hiPos = 0;
+            env = env2 = play = 0; biasCount = 0; std::memset (ref, 0, sizeof (ref)); refPos = 0; hi[0] = hi[1] = 0; hiPos = 0;
         }
     };
 
@@ -482,11 +515,20 @@ private:
             case Tape:
             {
                 v = k.recPre.run (v);
-                const float a = std::abs (v);
-                k.env += (a > k.env ? aTapeAtt : aTapeRel) * (a - k.env);
-                const float r = 0.35f * k.env * std::tanh (k.env);               // loop opens with the level: none at low levels
-                k.play = std::clamp (k.play, v - r, v + r);
-                w = k.recDe.run (fastTanh (0.65f * v + 0.35f * k.play));
+                // The loop is driven by the band below 3 kHz (where tape's phase lag and "glue" are heard): its sharp
+                // closures then make harmonics of low notes only, which stay below the 4x fold; the band above
+                // saturates through the tanh. Loop width from a smooth level (mean square through two 3 ms one-poles).
+                const float vl = k.hyLP.run (v);
+                k.env += aTapeMs * (vl * vl - k.env);
+                k.env2 += aTapeMs * (k.env - k.env2);
+                const float a = std::sqrt (2.0f * k.env2);
+                const float r = 0.35f * a * fastTanh (a);                         // loop opens with the level: none at low levels
+                k.play = std::clamp (k.play, vl - r, vl + r);
+                // the play operator turns a corner where the loop closes (infinitely many harmonics, which fold
+                // back even at 4x); read through a smooth odd step with S'(+-1) = S''(+-1) = 0 it closes in a C2 curve
+                const float e = r > 1.0e-9f ? (k.play - vl) / r : 0.0f, e2 = e * e;
+                const float dev = r * e * (15.0f - 10.0f * e2 + 3.0f * e2 * e2) * 0.125f;
+                w = k.recDe.run (fastTanh (v + 0.35f * dev));
                 break;
             }
             default:
@@ -496,7 +538,7 @@ private:
         const float sat = k.tiltDe.run (w) * gOut;
         float h = sat - s;
         if (settings.character == Tube) h = k.plate.run (h);
-        h = k.dc.run (h);
+        h = k.dc2.run (k.dc.run (h));
         eRes += h * h; eIn += s * s;
         return s + mix * h;
     }
@@ -504,9 +546,9 @@ private:
     Settings settings;
     Chan ch[2];
     double fs = 48000.0, osFs = 96000.0;
-    float targetGain = 1.0f, curGain = 1.0f, curMix = 1.0f, gComp = 1.0f, pIn = 0, pOut = 0, fade = 0;
-    float aEnv = 0, aGain = 0, fadeStep = 0, aSmooth = 0, aTubeAtt = 0, aTubeRel = 0, aTapeAtt = 0, aTapeRel = 0;
-    float resAcc = 0, inAcc = 0, bandEIn = 0, bandEOut = 0, guardDb = 0, airEIn = 0, airEOut = 0, airDb = 0, pFin = 0, trim = 1;
+    float targetGain = 1.0f, curGain = 1.0f, curMix = 1.0f, gComp = 1.0f, pIn = 0, pOut = 0, pInF = 0, pOutF = 0, fade = 0;
+    float aEnv = 0, aGain = 0, aFast = 0, fadeStep = 0, aSmooth = 0, aTubeAtt = 0, aTubeRel = 0, aTapeMs = 0;
+    float resAcc = 0, inAcc = 0, bandEIn = 0, bandEOut = 0, guardDb = 0, airEIn = 0, airEOut = 0, airDb = 0, pFin = 0, pFinF = 0, trim = 1;
     int guardCount = 0;
     int curQ = 0, meterCount = 0;
     bool wasRunning = false;
