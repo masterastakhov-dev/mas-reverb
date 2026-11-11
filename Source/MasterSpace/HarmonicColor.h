@@ -6,7 +6,7 @@
 //
 //   s  -> u = s * gIn -> colour tilt -> CHARACTER -> inverse tilt -> / gIn = sat
 //   h  = sat - s                     (only what the nonlinearity adds or takes: harmonics, compression)
-//   h  -> 180 Hz high-pass, 4th order (the low end stays linear: no intermodulation rumble, no added weight)
+//   h  -> 30 Hz high-pass            (no rumble from intermodulation)
 //   o  = s + MIX * h
 //
 // so the linear part of the wet passes untouched and, at low levels (the end of a tail), the module is
@@ -15,6 +15,8 @@
 // LOW-MID GUARD: the energy of the 200-500 Hz band after the module is held at the band energy of its
 // input (slow band followers + a broad bell at 316 Hz, -9..+3 dB): harmonics and intermodulation can
 // change what the band contains, never how much of it there is.
+// LOW GUARD: intermodulation difference tones would fill the lows (weight the space never had): the band
+// below ~150 Hz is held at most at its input energy (a low shelf at 180 Hz, cut only).
 // AIR GUARD: what saturation takes from the top (above ~3.5 kHz, compressed with the rest and refilled
 // less than the lows) is given back by a high shelf that follows the band energy ratio (boost only,
 // up to +4 dB; TAPE keeps part of its softer top as character).
@@ -145,7 +147,7 @@ struct FirHalfband2x
     }
 };
 
-// The residue's high-pass runs at 4x the rate: its poles sit within 1e-2 of z = 1, where float
+// The residue's 30 Hz high-pass runs at 4x the rate: its poles sit within 1e-3 of z = 1, where float
 // coefficients and state would turn the DC of the even harmonics into low-frequency noise. Double here.
 struct BiquadD
 {
@@ -185,6 +187,15 @@ struct Biquad
     {
         const double w = 2 * kPi * f / fs, c = std::cos (w), al = std::sin (w) / (2 * q), a0 = 1 + al;
         b0 = (float) (al / a0); b1 = 0; b2 = (float) (-al / a0); a1 = (float) (-2 * c / a0); a2 = (float) ((1 - al) / a0);
+    }
+    void lowShelf (double f, double fs, double gainDb)
+    {
+        const double A = std::pow (10.0, gainDb / 40.0), w = 2 * kPi * f / fs, c = std::cos (w), sn = std::sin (w);
+        const double al = sn / 2 * std::sqrt (2.0), sq = 2 * std::sqrt (A) * al;
+        const double a0 = (A + 1) + (A - 1) * c + sq;
+        b0 = (float) (A * ((A + 1) - (A - 1) * c + sq) / a0); b1 = (float) (2 * A * ((A - 1) - (A + 1) * c) / a0);
+        b2 = (float) (A * ((A + 1) - (A - 1) * c - sq) / a0); a1 = (float) (-2 * ((A - 1) + (A + 1) * c) / a0);
+        a2 = (float) (((A + 1) + (A - 1) * c - sq) / a0);
     }
     void highShelf (double f, double fs, double gainDb)
     {
@@ -266,8 +277,8 @@ public:
     {
         for (auto& c : ch) c.reset();
         pFin = pFinF = 0.0f; trim = 1.0f;
-        pIn = pOut = pInF = pOutF = 0.0f; gComp = 1.0f; bandEIn = bandEOut = airEIn = airEOut = 0.0f; guardDb = airDb = 0.0f; guardCount = 0;
-        for (auto& c : ch) { c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); }
+        pIn = pOut = pInF = pOutF = 0.0f; gComp = 1.0f; bandEIn = bandEOut = airEIn = airEOut = lowEIn = lowEOut = 0.0f; guardDb = airDb = lowDb = 0.0f; guardCount = 0;
+        for (auto& c : ch) { c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); c.low.lowShelf (180.0, fs, 0.0); }
         fade = settings.on ? 1.0f : 0.0f;
         curMix = settings.mix; curGain = targetGain; curQ = settings.quality;
         meterResidue.store (-120.0f, std::memory_order_relaxed);
@@ -293,11 +304,14 @@ public:
             c.tiltDe.setInverseOf (c.tiltPre);
             c.recPre.set (3500.0, osRate, 2.0, true);                                 // TAPE record emphasis +6 dB
             c.recDe.setInverseOf (c.recPre);
-            c.dc.highPass (180.0, osRate, 0.541);      // 4th-order Butterworth
-            c.dc2.highPass (180.0, osRate, 1.307);
+            c.dc.highPass (30.0, osRate, 0.707);
             c.hyLP.lowPass2 (3000.0, osRate, 0.707);
             c.plate.lowPass1 (9000.0, osRate);
             c.bandIn.bandPass (316.0, fs, 1.05);
+            // 6th-order Butterworth at 150 Hz: the low band of a wet is often 50 dB under its low mids, which
+            // must not leak into the measurement
+            c.lowIn.lowPass2 (150.0, fs, 0.5176); c.lowIn2.lowPass2 (150.0, fs, 0.7071); c.lowIn3.lowPass2 (150.0, fs, 1.9319);
+            c.lowOut.lowPass2 (150.0, fs, 0.5176); c.lowOut2.lowPass2 (150.0, fs, 0.7071); c.lowOut3.lowPass2 (150.0, fs, 1.9319);
             c.bandOut.bandPass (316.0, fs, 1.05);
             c.airIn.highPass (std::min (3500.0, 0.4 * fs), fs, 0.707);
             c.airOut.highPass (std::min (3500.0, 0.4 * fs), fs, 0.707);
@@ -327,8 +341,8 @@ public:
             if (hq) for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) io[c][i] = ch[c].refDelay (io[c][i]);   // exact delay
             else if (wasRunning)
             {
-                for (auto& c : ch) { c.reset(); c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); }
-                pIn = pOut = pInF = pOutF = bandEIn = bandEOut = airEIn = airEOut = guardDb = airDb = pFin = pFinF = 0; gComp = trim = 1; wasRunning = false;
+                for (auto& c : ch) { c.reset(); c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); c.low.lowShelf (180.0, fs, 0.0); }
+                pIn = pOut = pInF = pOutF = bandEIn = bandEOut = airEIn = airEOut = lowEIn = lowEOut = guardDb = airDb = lowDb = pFin = pFinF = 0; gComp = trim = 1; wasRunning = false;
             }
             return;
         }
@@ -417,7 +431,12 @@ public:
                     const float ai = a.airIn2.run (a.airIn.run (mi)), ao = a.airOut2.run (a.airOut.run (mo));
                     airEIn += aEnv * (ai * ai - airEIn);
                     airEOut += aEnv * (ao * ao - airEOut);
+                    const float li = a.lowIn3.run (a.lowIn2.run (a.lowIn.run (mi))), lo = a.lowOut3.run (a.lowOut2.run (a.lowOut.run (mo)));
+                    lowEIn += aEnv * (li * li - lowEIn);
+                    lowEOut += aEnv * (lo * lo - lowEOut);
                 }
+                if (lowEIn < 1.0e-30f) lowEIn = 0.0f;
+                if (lowEOut < 1.0e-30f) lowEOut = 0.0f;
                 if (bandEIn < 1.0e-30f) bandEIn = 0.0f;
                 if (bandEOut < 1.0e-30f) bandEOut = 0.0f;
                 if (airEIn < 1.0e-30f) airEIn = 0.0f;
@@ -433,10 +452,14 @@ public:
                     const float share = (settings.character == Tape ? 0.6f : 1.0f) * curMix;
                     const float wantAir = share * 10.0f * std::log10 ((airEIn + 1.0e-16f) / (airEOut * t2 + 1.0e-16f));
                     airDb += 0.25f * (std::clamp (wantAir, 0.0f, 4.0f) - airDb);
-                    for (auto& k : ch) { k.guard.peak (316.0, fs, 0.75, guardDb); k.air.highShelf (std::min (3000.0, 0.35 * fs), fs, airDb); }
+                    // LOW GUARD: intermodulation fills the lows with difference tones (weight the space never had):
+                    // the band below ~150 Hz is held at most at its input energy (cut only)
+                    const float wantLow = curMix * 10.0f * std::log10 ((lowEIn + 1.0e-14f) / (lowEOut * t2 + 1.0e-14f));
+                    lowDb += 0.25f * (std::clamp (wantLow, -12.0f, 0.0f) - lowDb);
+                    for (auto& k : ch) { k.guard.peak (316.0, fs, 0.75, guardDb); k.air.highShelf (std::min (3000.0, 0.35 * fs), fs, airDb); k.low.lowShelf (180.0, fs, lowDb); }
                 }
                 float f[2];
-                for (int c = 0; c < 2; ++c) f[c] = ch[c].air.run (ch[c].guard.run (z[c]));
+                for (int c = 0; c < 2; ++c) f[c] = ch[c].air.run (ch[c].guard.run (ch[c].low.run (z[c])));
                 if (settings.levelComp)     // the guards add or take a little: the final energy is held too
                 {
                     const float fi = f[0] * f[0] + f[1] * f[1];
@@ -474,9 +497,9 @@ private:
         FirHalfband2x<64> fir1;
         FirHalfband2x<16> fir2;
         Shelf1 tiltPre, tiltDe, recPre, recDe;
-        BiquadD dc, dc2;
+        BiquadD dc;
         Biquad hyLP;
-        Biquad plate, bandIn, bandOut, guard, airIn, airOut, airIn2, airOut2, air;
+        Biquad plate, bandIn, bandOut, guard, airIn, airOut, airIn2, airOut2, air, lowIn, lowOut, lowIn2, lowOut2, lowIn3, lowOut3, low;
         float env = 0, env2 = 0, play = 0, bias = 0.45f, tb = 0.42189901f, invD = 1.2167f;
         int biasCount = 0;
         float ref[kLatencyHQ + 1] {}; int refPos = 0;
@@ -486,8 +509,8 @@ private:
         void reset()
         {
             iir1.reset(); iir2.reset(); fir1.reset(); fir2.reset();
-            tiltPre.reset(); tiltDe.reset(); recPre.reset(); recDe.reset(); dc.reset(); dc2.reset(); plate.reset(); hyLP.reset();
-            bandIn.reset(); bandOut.reset(); guard.reset(); airIn.reset(); airOut.reset(); airIn2.reset(); airOut2.reset(); air.reset();
+            tiltPre.reset(); tiltDe.reset(); recPre.reset(); recDe.reset(); dc.reset(); plate.reset(); hyLP.reset();
+            bandIn.reset(); bandOut.reset(); guard.reset(); airIn.reset(); airOut.reset(); airIn2.reset(); airOut2.reset(); air.reset(); lowIn.reset(); lowOut.reset(); lowIn2.reset(); lowOut2.reset(); lowIn3.reset(); lowOut3.reset(); low.reset();
             env = env2 = play = 0; biasCount = 0; std::memset (ref, 0, sizeof (ref)); refPos = 0; hi[0] = hi[1] = 0; hiPos = 0;
         }
     };
@@ -538,7 +561,7 @@ private:
         const float sat = k.tiltDe.run (w) * gOut;
         float h = sat - s;
         if (settings.character == Tube) h = k.plate.run (h);
-        h = k.dc2.run (k.dc.run (h));
+        h = k.dc.run (h);
         eRes += h * h; eIn += s * s;
         return s + mix * h;
     }
@@ -548,7 +571,7 @@ private:
     double fs = 48000.0, osFs = 96000.0;
     float targetGain = 1.0f, curGain = 1.0f, curMix = 1.0f, gComp = 1.0f, pIn = 0, pOut = 0, pInF = 0, pOutF = 0, fade = 0;
     float aEnv = 0, aGain = 0, aFast = 0, fadeStep = 0, aSmooth = 0, aTubeAtt = 0, aTubeRel = 0, aTapeMs = 0;
-    float resAcc = 0, inAcc = 0, bandEIn = 0, bandEOut = 0, guardDb = 0, airEIn = 0, airEOut = 0, airDb = 0, pFin = 0, pFinF = 0, trim = 1;
+    float resAcc = 0, inAcc = 0, bandEIn = 0, bandEOut = 0, guardDb = 0, airEIn = 0, airEOut = 0, airDb = 0, lowEIn = 0, lowEOut = 0, lowDb = 0, pFin = 0, pFinF = 0, trim = 1;
     int guardCount = 0;
     int curQ = 0, meterCount = 0;
     bool wasRunning = false;
