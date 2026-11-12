@@ -167,6 +167,28 @@ static int snapshots (const juce::File& dir)
     for (const char* tab : { "ADVANCED", "PRESETS" })
    #endif
         if (auto* b = findButton (*ed, tab)) { b->triggerClick(); pump (200); shot (juce::String ("2_") + tab); }
+   #ifdef MAS_EQ
+    {
+        auto set = [&] (const juce::String& id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto band = [&] (int bank, int i, int type, float f, float g, float q, int slope = 1)
+        {
+            using namespace ParamIDs;
+            set (eqId (bank, i, eqUsed), 1); set (eqId (bank, i, eqType), (float) type); set (eqId (bank, i, eqFreq), f);
+            set (eqId (bank, i, eqGain), g); set (eqId (bank, i, eqQ), q); set (eqId (bank, i, eqSlope), (float) slope);
+        };
+        set (ParamIDs::eqOn, 1);
+        band (0, 0, req::LowCut, 70, 0, 0.71f); band (0, 1, req::Bell, 110, 2.5f, 0.9f); band (0, 2, req::Bell, 350, -3, 1.2f);
+        band (0, 3, req::Bell, 2600, 3, 0.8f); band (0, 4, req::HighShelf, 9000, -2.5f, 0.71f);
+        band (2, 0, req::LowShelf, 200, -4, 0.71f); band (2, 1, req::HighCut, 9000, 0, 0.71f, 2);
+        if (auto* b = findButton (*ed, "REVERB EQ"))
+        {
+            ed->setVisible (true);              // off-screen, but the analyzer only runs while its page is shown
+            b->triggerClick(); pump (300);
+            for (int k = 0; k < 6; ++k) { auto sig = pinkish (48000, 0.25, 20 + k); run (*p, sig, 512); pump (120); }
+            shot ("2_REVERB_EQ");
+        }
+    }
+   #endif
    #ifdef MAS_RI
     if (auto* b = findButton (*ed, "COLOR"))
     {

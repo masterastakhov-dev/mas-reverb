@@ -15,7 +15,12 @@ namespace
     constexpr int kDuckerPage = 9;
     constexpr int kGuardPage = 10;
     constexpr int kColorPage = 11;
+   #if defined (MAS_EQ)
+    constexpr int kEqPage = 12;
+    constexpr int kPresetsPage = 13;
+   #else
     constexpr int kPresetsPage = 12;
+   #endif
    #elif defined (MAS_ATMOS)
     constexpr int kAtmosPage = 8;
     constexpr int kPresetsPage = 9;
@@ -1173,6 +1178,10 @@ private:
 #endif
 
 //==============================================================================
+#ifdef MAS_EQ
+#include "EqLabView.h"
+#endif
+
 MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     : processor (p), lnf (lf)
 {
@@ -1318,8 +1327,16 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::knob, hcDrive, "DRIVE", true }, { K::knob, hcColor, "COLOR", true }, { K::knob, hcMix, "MIX", true } } };
     pages.add (new ControlPage (processor.apvts, lnf, colorRows, 3, std::make_unique<ColorView> (processor), 420));
    #endif
+   #ifdef MAS_EQ
+    // REVERB EQ + spectral analyzer (1.5 EQ LAB): one custom block over the whole page
+    pages.add (new ControlPage (processor.apvts, lnf, {}, 1, std::make_unique<eqlab::Page> (processor), baseWidth - 60));
+    jassert (pages.size() - 1 == kEqPage);
+   #endif
 
-   #if defined (MAS_RI)
+   #if defined (MAS_EQ)
+    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MOD", "STEREO", "ADVANCED", "ATMOS",
+                                       "DUCKER", "GUARD", "COLOR", "REVERB EQ", "PRESETS" };
+   #elif defined (MAS_RI)
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MODULATION", "STEREO", "ADVANCED", "ATMOS",
                                        "DUCKER", "GUARD", "COLOR", "PRESETS" };
    #elif defined (MAS_ATMOS)
@@ -1440,7 +1457,11 @@ void MASPanel::updateState()
     loadButton.setVisible (ir);
 
     if (! ir)
+       #ifdef MAS_EQ
+        infoLabel.setText ("EQ LAB  v" JucePlugin_VersionString "   DON'T ADD REVERB. CREATE SPACE.", juce::dontSendNotification);
+       #else
         infoLabel.setText ("v" JucePlugin_VersionString "   DON'T ADD REVERB. CREATE SPACE.", juce::dontSendNotification);
+       #endif
     else if (shownIRName.isEmpty())
         infoLabel.setText ("Drop a WAV / AIFF / FLAC here", juce::dontSendNotification);
     else
@@ -1500,7 +1521,11 @@ void MASPanel::paint (juce::Graphics& g)
     const int tx = (int) (26.0f + emW + 18.0f);
     g.setColour (MASColours::text);
     g.setFont (uiFont (31.0f, true).withExtraKerningFactor (0.16f));
+   #ifdef MAS_EQ
+    g.drawText ("MASTER SPACE 1.5", tx, 18, 440, 38, juce::Justification::centredLeft);   // "EQ LAB" is in the version line
+   #else
     g.drawText (JucePlugin_Name, tx, 18, 440, 38, juce::Justification::centredLeft);
+   #endif
 
     if (wordmark.isValid())
     {

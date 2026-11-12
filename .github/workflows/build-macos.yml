@@ -2,7 +2,7 @@ name: Build macOS (AU + VST3)
 
 on:
   push:
-    branches: [ main, dev-1.2, feature/atmospheric-tail, feature/reverb-intelligence ]
+    branches: [ main, dev-1.2, feature/atmospheric-tail, feature/reverb-intelligence, feature/eq-lab ]
   workflow_dispatch:
 
 jobs:
@@ -49,18 +49,26 @@ jobs:
       - name: Build headless processor tests
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
-          cmake --build build --target MasterSpaceTests MasterSpaceAtmosTests MasterSpace14Tests
+          cmake --build build --target MasterSpaceTests MasterSpaceAtmosTests MasterSpace14Tests MasterSpace15Tests
       - name: Presets, A/B, state restore (48/96 kHz), transitions, migration, automation, CPU
         run: |
           ./build/MasterSpaceTests_artefacts/Release/MasterSpaceTests | tee plugin-tests.log
           ./build/MasterSpaceAtmosTests_artefacts/Release/MasterSpaceAtmosTests | tee -a plugin-tests.log
           ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests | tee plugin-tests-14.log
+          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests | tee plugin-tests-15.log
+      - name: 1.5 with REVERB EQ off = 1.4, bit for bit (48 / 96 kHz, modules off / on, LIVE / STUDIO HQ)
+        run: |
+          ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests --refhash > ref14.txt
+          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests --refhash > ref15.txt
+          python3 tests/compare_ref.py ref14.txt ref15.txt | tee identity-1.4-vs-1.5.log
       - uses: actions/upload-artifact@v4
         with:
           name: MASTER-SPACE-plugin-tests
           path: |
             plugin-tests.log
             plugin-tests-14.log
+            plugin-tests-15.log
+            identity-1.4-vs-1.5.log
 
   build:
     name: build (${{ matrix.name }})
@@ -86,6 +94,10 @@ jobs:
             name: MASTER SPACE 1.4
             code: MSp4
             slug: MASTER-SPACE-1.4.0-experimental
+          - target: MasterSpace15
+            name: MASTER SPACE 1.5 EQ LAB
+            code: MSp5
+            slug: MASTER-SPACE-1.5.0-EQ-LAB-experimental
     env:
       TARGET: ${{ matrix.target }}
       NAME: ${{ matrix.name }}
@@ -121,7 +133,7 @@ jobs:
           grep -q "AU VALIDATION SUCCEEDED" auval.log
 
       - name: pluginval (state save / restore, automation, 44.1 / 48 / 96 kHz)
-        if: matrix.target == 'MasterSpace' || matrix.target == 'MasterSpaceAtmos' || matrix.target == 'MasterSpace14'
+        if: matrix.target == 'MasterSpace' || matrix.target == 'MasterSpaceAtmos' || matrix.target == 'MasterSpace14' || matrix.target == 'MasterSpace15'
         run: |
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
           unzip -q pluginval.zip
