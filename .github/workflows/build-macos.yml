@@ -46,6 +46,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libasound2-dev libx11-dev libxinerama-dev libxext-dev libxrandr-dev libxcursor-dev \
                                       libfreetype6-dev libfontconfig1-dev ninja-build
+      - name: Install Python dependencies for identity checks
+        run: python3 -m pip install --quiet numpy
       - name: Build headless processor tests
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
