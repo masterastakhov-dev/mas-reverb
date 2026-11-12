@@ -3,6 +3,23 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
 
+#if defined (MAS_EQ)
+// MASTER SPACE 1.5: MIDNIGHT BLUE. Deep blue surfaces, gold accents; the brand red stays in the logo and
+// in the hot zone of the knobs (the arc turns red past 50 %).
+namespace MASColours
+{
+    const juce::Colour bgTop    { 0xff0a1a38 };
+    const juce::Colour bgBottom { 0xff03070f };
+    const juce::Colour panel    { 0xff0b162e };
+    const juce::Colour track    { 0xff1b2947 };
+    const juce::Colour accent   { 0xffe2b866 };   // gold
+    const juce::Colour accent2  { 0xfff3d79a };   // light gold
+    const juce::Colour blue     { 0xff5ad6ff };   // early / cyan
+    const juce::Colour text     { 0xffd6e0f0 };
+    const juce::Colour textDim  { 0xff7f8fa8 };
+    const juce::Colour hot      { 0xffe33f2b };   // brand red
+}
+#else
 namespace MASColours
 {
     const juce::Colour bgTop    { 0xff1c1e24 };
@@ -15,6 +32,7 @@ namespace MASColours
     const juce::Colour text     { 0xffe9e6df };
     const juce::Colour textDim  { 0xff8b8d93 };
 }
+#endif
 
 class MASLookAndFeel : public juce::LookAndFeel_V4
 {

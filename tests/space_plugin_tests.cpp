@@ -1,6 +1,9 @@
 // Headless tests of the MASTER SPACE plugin processor (state, presets, A/B, transitions, CPU).
 // Built with -DMAS_BUILD_TESTS=ON; run: MasterSpaceTests [--quick]
 #include "../Source/MasterSpace/PluginProcessor.h"
+#ifdef MAS_EQ
+#include "../Source/MasterSpace/EqLabView.h"
+#endif
 #include "../Source/MasterSpace/PresetManager.h"
 #include <cstdio>
 #include <cstdlib>
@@ -160,7 +163,32 @@ static int snapshots (const juce::File& dir)
         juce::PNGImageFormat().writeImageToStream (img, fo);
         std::printf ("  wrote %s.png\n", name.toRawUTF8());
     };
+   #ifdef MAS_EQ
+    {
+        // LIVING SPACE runs only while it is shown and fed by the audio thread: a vocal-like phrase, then its tail
+        ed->setVisible (true);
+        if (auto* r = p->apvts.getParameter (ParamIDs::algorithm)) r->setValueNotifyingHost (1.0f);       // HALL
+        if (auto* r = p->apvts.getParameter (ParamIDs::decay)) r->setValueNotifyingHost (r->convertTo0to1 (2.8f));
+        if (auto* r = p->apvts.getParameter (ParamIDs::mix)) r->setValueNotifyingHost (r->convertTo0to1 (40.0f));
+        pump (300);
+        for (int k = 0; k < 40; ++k)
+        {
+            auto sig = pinkish (48000, 0.05, 30 + k);
+            sig.applyGain ((k % 8) < 5 ? 0.5f : 0.0f);
+            run (*p, sig, 512); pump (50);
+        }
+        shot ("1_main");
+        if (auto* r = p->apvts.getParameter (ParamIDs::tail)) r->setValueNotifyingHost (1.0f);            // ATMOSPHERIC TAIL
+        if (auto* r = p->apvts.getParameter (ParamIDs::decay)) r->setValueNotifyingHost (r->convertTo0to1 (12.0f));
+        pump (700);
+        for (int k = 0; k < 50; ++k) { auto sig = pinkish (48000, 0.05, 80 + k); sig.applyGain (k < 30 ? 0.4f : 0.0f); run (*p, sig, 512); pump (50); }
+        shot ("1_main_atmos");
+        if (auto* r = p->apvts.getParameter (ParamIDs::tail)) r->setValueNotifyingHost (0.0f);
+        pump (300);
+    }
+   #else
     shot ("1_main");
+   #endif
    #ifdef MAS_RI
     for (const char* tab : { "ADVANCED", "DUCKER", "GUARD", "COLOR", "PRESETS" })
    #else
@@ -177,14 +205,23 @@ static int snapshots (const juce::File& dir)
             set (eqId (bank, i, eqGain), g); set (eqId (bank, i, eqQ), q); set (eqId (bank, i, eqSlope), (float) slope);
         };
         set (ParamIDs::eqOn, 1);
-        band (0, 0, req::LowCut, 70, 0, 0.71f); band (0, 1, req::Bell, 110, 2.5f, 0.9f); band (0, 2, req::Bell, 350, -3, 1.2f);
-        band (0, 3, req::Bell, 2600, 3, 0.8f); band (0, 4, req::HighShelf, 9000, -2.5f, 0.71f);
-        band (2, 0, req::LowShelf, 200, -4, 0.71f); band (2, 1, req::HighCut, 9000, 0, 0.71f, 2);
+        band (0, 0, req::LowShelf, 100, 2, 0.71f); band (0, 1, req::Bell, 350, -3, 1.2f);
+        band (0, 2, req::Bell, 2600, 3, 0.8f); band (0, 3, req::HighShelf, 9000, -2.5f, 0.71f);
+        band (2, 0, req::LowCut, 120, 0, 0.71f, 1); band (2, 3, req::HighCut, 9000, 0, 0.71f, 2);
         if (auto* b = findButton (*ed, "REVERB EQ"))
         {
             ed->setVisible (true);              // off-screen, but the analyzer only runs while its page is shown
             b->triggerClick(); pump (300);
-            for (int k = 0; k < 6; ++k) { auto sig = pinkish (48000, 0.25, 20 + k); run (*p, sig, 512); pump (120); }
+            req::BandParams rb[8];
+            const float rf[3] = { 387.0f, 1200.0f, 4800.0f };
+            for (int i = 0; i < 3; ++i) { rb[i].used = true; rb[i].freq = rf[i]; rb[i].gainDb = 18.0f; rb[i].q = 18.0f; }
+            req::Bank res; res.prepare (48000.0); res.set (rb, true, true);
+            for (int k = 0; k < 70; ++k)
+            {
+                auto sig = pinkish (48000, 1600.0 / 48000.0, 20 + k);
+                res.process (sig.getWritePointer (0), sig.getWritePointer (1), sig.getNumSamples());
+                run (*p, sig, 512); pump (34);
+            }
             shot ("2_REVERB_EQ");
         }
     }
@@ -1553,6 +1590,147 @@ int main (int argc, char** argv)
             float d = 0;
             for (int i = 0; i < n; ++i) d = juce::jmax (d, std::abs (a[(size_t) i] - 0.5f * (copy.getSample (0, copy.getNumSamples() - n + i) + copy.getSample (1, copy.getNumSamples() - n + i))));
             check (d == 0.0f, "analyzer INPUT tap is the plugin input, sample for sample");
+        }
+    }
+
+    //==========================================================================
+    section ("1.5 SPECTRAL ANALYZER 2.0: smoothing, peak detector, PEAK TO EQ");
+    {
+        using namespace ParamIDs;
+        const double pi = juce::MathConstants<double>::pi;
+        // runs the editor's analysis on a mono signal exactly as the page does: one FFT frame every 1/30 s
+        auto analyse = [] (spec::SpectrumEngine& eng, const std::vector<float>& x, double fs, double from, double to, const std::function<void (double)>& each = {})
+        {
+            eng.setOrder (fs > 60000.0 ? 14 : 13);
+            const int N = eng.size();
+            for (double tm = from; tm <= to; tm += 1.0 / 30.0)
+            {
+                const int end = (int) (tm * fs);
+                float* in = eng.input();
+                for (int i = 0; i < N; ++i) { const int k = end - N + i; in[i] = k >= 0 && k < (int) x.size() ? x[(size_t) k] : 0.0f; }
+                eng.analyse (fs, 1.0 / 30.0, 0.2, true);
+                if (each) each (tm);
+            }
+        };
+        auto hasNear = [] (const std::vector<spec::Peak>& m, double f) { for (const auto& p : m) if (std::abs (p.freq / f - 1.0) < 0.015) return true; return false; };
+        auto noiseWithPeaks = [&] (double fs, double seconds)
+        {
+            auto buf = pinkish (fs, seconds, 21);
+            req::BandParams bp[8];
+            const float fr[3] = { 387.0f, 1200.0f, 4800.0f };
+            for (int i = 0; i < 3; ++i) { bp[i].used = true; bp[i].type = req::Bell; bp[i].freq = fr[i]; bp[i].gainDb = 18.0f; bp[i].q = 18.0f; }
+            req::Bank bank; bank.prepare (fs); bank.set (bp, true, true);
+            bank.process (buf.getWritePointer (0), buf.getWritePointer (1), buf.getNumSamples());
+            std::vector<float> m ((size_t) buf.getNumSamples());
+            for (int i = 0; i < buf.getNumSamples(); ++i) m[(size_t) i] = 0.25f * (buf.getSample (0, i) + buf.getSample (1, i));
+            return m;
+        };
+
+        for (double fs : { 48000.0, 96000.0 })
+        {
+            const auto x = noiseWithPeaks (fs, 5.0);
+            spec::SpectrumEngine eng;
+            analyse (eng, x, fs, 0.3, 5.0);
+            const auto mk = eng.detector.markers();
+            int extra = 0;
+            for (const auto& p : mk) if (std::abs (p.freq / 387.0 - 1) > 0.015 && std::abs (p.freq / 1200.0 - 1) > 0.015 && std::abs (p.freq / 4800.0 - 1) > 0.015) ++extra;
+            juce::String found;
+            for (const auto& p : mk) found << juce::String (p.freq, 0) << " Hz (+" << juce::String (p.promDb, 1) << " dB, Q " << juce::String (p.q, 0) << ")  ";
+            check (hasNear (mk, 387) && hasNear (mk, 1200) && hasNear (mk, 4800) && extra == 0,
+                   juce::String (fs / 1000.0, 0) + " kHz, pink noise + narrow peaks at 387 Hz / 1.2 kHz / 4.8 kHz: detector (unsmoothed data) marks all three, false markers " + juce::String (extra) + "   [" + found.trim() + "]");
+
+            // the picture: 1/6 octave is calm, yet the detector above still saw the narrow peaks
+            double roughRaw = 0, roughSm = 0; float pkRaw = -200, pkSm = -200;
+            const int n = 600; std::vector<float> a ((size_t) n), b ((size_t) n);
+            for (int i = 0; i < n; ++i)
+            {
+                const double f0 = 40.0 * std::pow (400.0, (double) i / n), f1 = 40.0 * std::pow (400.0, (double) (i + 1) / n);
+                a[(size_t) i] = eng.displayDb (f0, f1, 0.0); b[(size_t) i] = eng.displayDb (f0, f1, 1.0 / 6.0);
+                if (std::abs (f0 / 387.0 - 1.0) < 0.03) { pkRaw = juce::jmax (pkRaw, a[(size_t) i]); pkSm = juce::jmax (pkSm, b[(size_t) i]); }
+            }
+            for (int i = 1; i < n - 1; ++i) { roughRaw += std::abs (a[(size_t) i - 1] - 2 * a[(size_t) i] + a[(size_t) i + 1]); roughSm += std::abs (b[(size_t) i - 1] - 2 * b[(size_t) i] + b[(size_t) i + 1]); }
+            check (roughSm < 0.2 * roughRaw && pkSm < pkRaw - 3.0f, juce::String (fs / 1000.0, 0) + " kHz: 1/6-octave picture is smooth (roughness " + juce::String (100.0 * roughSm / roughRaw, 0)
+                                                                     + " % of the raw spectrum; the 387 Hz peak reads " + juce::String (pkRaw - pkSm, 1) + " dB lower in the picture, not in the detector)");
+        }
+
+        // music: a melody of harmonic notes (overtones everywhere, nothing stays) must not light up markers
+        {
+            const double fs = 48000.0; const int n = (int) (fs * 8.0);
+            std::vector<float> x ((size_t) n);
+            const double notes[] = { 220, 247, 262, 294, 330, 294, 262, 247, 196, 220, 262, 330 };
+            double ph = 0; juce::Random rng (5);
+            for (int i = 0; i < n; ++i)
+            {
+                const double tm = i / fs, f = notes[(int) (tm / 0.35) % 12] * (1.0 + 0.006 * std::sin (2 * pi * 5.5 * tm));
+                ph += f / fs; if (ph >= 1.0) ph -= 1.0;
+                double s = 0; for (int h = 1; h <= 12; ++h) s += std::sin (2 * pi * ph * h) / h;
+                x[(size_t) i] = (float) (0.12 * s) + 0.01f * (rng.nextFloat() - 0.5f);
+            }
+            spec::SpectrumEngine eng; int worst = 0;
+            analyse (eng, x, fs, 0.3, 8.0, [&] (double) { worst = juce::jmax (worst, (int) eng.detector.markers().size()); });
+            check (worst == 0, "a melody with vibrato (12 harmonics per note, 8 s): false markers at any moment: " + juce::String (worst));
+
+            // a note held for 6 s is a steady harmonic series: it has to hold 3 s before it may show
+            for (int i = 0; i < n; ++i) { double s = 0; for (int h = 1; h <= 8; ++h) s += std::sin (2 * pi * 220.0 * h * i / fs) / h; x[(size_t) i] = (float) (0.12 * s) + 0.01f * (rng.nextFloat() - 0.5f); }
+            spec::SpectrumEngine e2; int at2 = -1, atEnd = 0;
+            analyse (e2, x, fs, 0.3, 6.0, [&] (double tm) { if (tm < 2.5) at2 = juce::jmax (at2, (int) e2.detector.markers().size()); atEnd = (int) e2.detector.markers().size(); });
+            check (at2 == 0, "a held note (harmonic series): no markers during the first 2.5 s (after 6 s: " + juce::String (atEnd) + ", by design: a tone that never moves is worth a look)");
+        }
+
+        // a long reverb tail with a resonance: the marker has to hold while the tail decays
+        {
+            auto q = makeProcessor (48000, 256);
+            q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            auto setP = [&] (const juce::String& id, float plain) { if (auto* r = q->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+            setP (decay, 6.0f); setP (routing, 1); setP (eqOn, 1);
+            setP (eqId (2, 4, eqUsed), 1); setP (eqId (2, 4, eqFreq), 387); setP (eqId (2, 4, eqGain), 15); setP (eqId (2, 4, eqQ), 18);   // stands in for a resonant room
+            pump (250);
+            q->analyzer.request[0] = req::Analyzer::LatePost; q->analyzer.request[1] = -1;
+            spec::SpectrumEngine eng; eng.setOrder (13);
+            int seenTail = 0, framesTail = 0, extraMax = 0;
+            for (int f = 0; f < 150; ++f)                       // 5 s at 30 frames per second
+            {
+                auto sig = pinkish (48000, 1600.0 / 48000.0, 200 + f);
+                if (f >= 30) sig.clear();                       // 1 s of noise, then only the tail
+                run (*q, sig, 256);
+                q->analyzer.read (0, eng.input(), eng.size());
+                eng.analyse (48000.0, 1.0 / 30.0, 0.2, true);
+                if (f >= 75)
+                {
+                    ++framesTail; const auto& mk = eng.detector.markers();
+                    if (hasNear (mk, 387)) ++seenTail;
+                    extraMax = juce::jmax (extraMax, (int) mk.size() - (hasNear (mk, 387) ? 1 : 0));
+                }
+            }
+            check (seenTail >= framesTail * 9 / 10 && extraMax <= 1, "reverb tail (decay 6 s, 2.5-5 s after the sound stops): the 387 Hz resonance stays marked in "
+                                     + juce::String (seenTail) + " of " + juce::String (framesTail) + " frames, other markers at most " + juce::String (extraMax));
+        }
+
+        // PEAK TO EQ: one click prepares a band; nothing is cut
+        {
+            auto q = makeProcessor (48000, 256), ref = makeProcessor (48000, 256);
+            auto getP = [&] (const juce::String& id) { return q->apvts.getRawParameterValue (id)->load(); };
+            auto render = [&] (MasterSpaceAudioProcessor& pr) { auto sig = pinkish (48000, 1.0, 3); run (pr, sig, 256); return sig; };
+            for (auto* pr : { q.get(), ref.get() }) if (auto* r = pr->apvts.getParameter (eqOn)) r->setValueNotifyingHost (1.0f);
+            pump (200);
+            render (*q); render (*ref);
+            eqlab::Model m (*q); m.refresh(); m.bank = 2;                         // target: LATE
+            spec::Peak pk; pk.freq = 387.0f; pk.q = 31.0f; pk.bwHz = 12.5f;
+            const int k = m.freeBandForPeak();
+            m.assignPeak (k, pk.freq, spec::suggestQ (pk));
+            pump (200);
+            const auto after = render (*q), before = render (*ref);
+            float d = 0; for (int i = 0; i < after.getNumSamples(); ++i) d = juce::jmax (d, std::abs (after.getSample (0, i) - before.getSample (0, i)));
+            check (k == 4 && getP (eqId (2, 4, eqUsed)) > 0.5f && std::abs (getP (eqId (2, 4, eqFreq)) - 387.0f) < 0.5f && getP (eqId (2, 4, eqGain)) == 0.0f
+                   && std::abs (getP (eqId (2, 4, eqQ)) - 12.0f) < 0.01f && juce::roundToInt (getP (eqId (2, 4, eqType))) == req::Bell && m.sel == 4
+                   && getP (eqId (0, 4, eqUsed)) < 0.5f && getP (eqId (1, 4, eqUsed)) < 0.5f,
+                   "PEAK TO EQ on a 387 Hz marker: free band 5 of the LATE bank becomes Bell, 387 Hz, Q 12 (measured 31, limited), gain 0 dB, selected; WET and EARLY untouched");
+            check (d < 2e-5f * peak (before), "PEAK TO EQ does not change the sound by itself (difference " + juce::String (20.0 * std::log10 (d / peak (before) + 1e-12), 1) + " dB re peak)");
+            m.undoPeak(); pump (100);
+            const bool undone = getP (eqId (2, 4, eqUsed)) < 0.5f;
+            int order[7]; for (int i = 0; i < 7; ++i) { order[i] = m.freeBandForPeak(); if (order[i] >= 0) m.assignPeak (order[i], 500.0f + 100.0f * i, 4.0f); }
+            check (undone && order[0] == 4 && order[1] == 5 && order[2] == 6 && order[3] == 7 && order[4] == 1 && order[5] == 2 && order[6] == -1,
+                   "undo restores the band; free bands are taken in the order 5, 6, 7, 8, LOW MID, HIGH MID; with none left nothing is replaced (the user is asked)");
         }
     }
    #endif

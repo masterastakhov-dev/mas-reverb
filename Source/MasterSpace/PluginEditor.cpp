@@ -127,6 +127,32 @@ void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, i
     g.setColour (MASColours::track.withMultipliedAlpha (dim));
     g.strokePath (track, juce::PathStrokeType (stroke, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
+   #if defined (MAS_EQ)
+    // gold up to the middle; past 50 % the arc gradually turns red (brand red at 100 %)
+    {
+        const float mid = 0.5f * (startAngle + endAngle), a = (hover ? 1.0f : 0.92f) * dim;
+        const juce::PathStrokeType st (stroke, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+        const juce::PathStrokeType flat (stroke, juce::PathStrokeType::curved, juce::PathStrokeType::butt);
+        if (pos > 0.002f)
+        {
+            juce::Path gold;
+            gold.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, juce::jmin (angle, mid), true);
+            g.setColour (MASColours::accent.withAlpha (a));
+            g.strokePath (gold, st);
+        }
+        const float over = juce::jlimit (0.0f, 1.0f, (pos - 0.5f) * 2.0f);
+        constexpr int kSeg = 16;
+        for (int k = 0; k < kSeg && over > (float) k / kSeg; ++k)
+        {
+            const float p0 = (float) k / kSeg, p1 = juce::jmin (over, (float) (k + 1) / kSeg);
+            juce::Path seg;
+            seg.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, mid + p0 * (endAngle - mid) - 0.02f, mid + p1 * (endAngle - mid), true);
+            g.setColour (MASColours::accent.interpolatedWith (MASColours::hot, std::pow (0.5f * (p0 + p1), 0.85f)).withAlpha (a));
+            g.strokePath (seg, p1 >= over - 1e-4f ? st : flat);
+        }
+    }
+    juce::ignoreUnused (big);
+   #else
     juce::Path value;
     value.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, startAngle, angle, true);
     if (big)
@@ -135,11 +161,17 @@ void MASLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, i
     else
         g.setColour (MASColours::accent.withAlpha ((hover ? 1.0f : 0.9f) * dim));
     g.strokePath (value, juce::PathStrokeType (stroke, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+   #endif
 
     const float bodyR = arcR - stroke - 4.0f;
     const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (c);
+   #if defined (MAS_EQ)
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff24365c).withMultipliedAlpha (dim), c.x, c.y - bodyR,
+                                             juce::Colour (0xff0d1830).withMultipliedAlpha (dim), c.x, c.y + bodyR, false));
+   #else
     g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3d46).withMultipliedAlpha (dim), c.x, c.y - bodyR,
                                              juce::Colour (0xff1d1f25).withMultipliedAlpha (dim), c.x, c.y + bodyR, false));
+   #endif
     g.fillEllipse (body);
     g.setColour (juce::Colours::black.withAlpha (0.6f * dim));
     g.drawEllipse (body, 1.2f);
@@ -207,7 +239,11 @@ void MASLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, boo
     const float dim = b.isEnabled() ? 1.0f : 0.35f;
     const juce::String text = b.getProperties().getWithDefault ("onoff", false) ? juce::String (on ? "ON" : "OFF") : b.getButtonText();
     g.setFont (getTextButtonFont (b, b.getHeight()));
+   #ifdef MAS_EQ
+    g.setColour ((tab ? (on ? MASColours::text : MASColours::textDim) : (on ? juce::Colour (0xff0a1226) : MASColours::text)).withMultipliedAlpha (dim));
+   #else
     g.setColour ((tab ? (on ? MASColours::text : MASColours::textDim) : (on ? juce::Colours::white : MASColours::text)).withMultipliedAlpha (dim));
+   #endif
     g.drawFittedText (text, b.getLocalBounds().reduced (4, 0), juce::Justification::centred, 1);
 }
 
@@ -501,6 +537,65 @@ private:
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> lockAtt;
 };
 
+#ifdef MAS_EQ
+#include "EqLabView.h"
+#include "LivingSpaceView.h"
+
+// MASTER SPACE 1.5, MAIN page, left block: LIVING SPACE (drag the source = DEPTH) and, under it,
+// the DEPTH value and the locks.
+class Main15Block : public juce::Component
+{
+public:
+    Main15Block (MasterSpaceAudioProcessor& p, MASLookAndFeel& l)
+        : lnf (l), space (p, juce::ImageCache::getFromMemory (BinaryData::emblem_png, BinaryData::emblem_pngSize))
+    {
+        addAndMakeVisible (space);
+        depth.setSliderStyle (juce::Slider::LinearBar);
+        depth.setLookAndFeel (&lnf);
+        addAndMakeVisible (depth);
+        att = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (p.apvts, ParamIDs::depth, depth);
+        setDefaultOnDoubleClick (depth, p.apvts, ParamIDs::depth);
+        styleLabel (depthTitle, "DEPTH", 11.0f); depthTitle.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (depthTitle);
+        styleLabel (lockTitle, "LOCK", 11.0f); lockTitle.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (lockTitle);
+        const char* ids[4] = { ParamIDs::lockLevel, ParamIDs::lockTone, ParamIDs::lockDecay, ParamIDs::lockWidth };
+        const char* names[4] = { "LEVEL", "TONE", "DECAY", "WIDTH" };
+        for (int i = 0; i < 4; ++i)
+        {
+            auto* b = locks.add (new juce::TextButton (names[i]));
+            b->setClickingTogglesState (true);
+            b->setLookAndFeel (&lnf);
+            b->setTooltip ("Keeps this constant while DEPTH moves");
+            addAndMakeVisible (b);
+            lockAtt.add (new juce::AudioProcessorValueTreeState::ButtonAttachment (p.apvts, ids[i], *b));
+        }
+    }
+    ~Main15Block() override { depth.setLookAndFeel (nullptr); for (auto* b : locks) b->setLookAndFeel (nullptr); }
+    void setIRMode (bool ir) { for (auto* b : locks) b->setEnabled (! ir); }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (4, 2);
+        r.removeFromRight (8);
+        auto row = r.removeFromBottom (30);
+        r.removeFromBottom (8);
+        space.setBounds (r);
+        depthTitle.setBounds (row.removeFromLeft (48));
+        depth.setBounds (row.removeFromLeft (112).reduced (0, 2));
+        row.removeFromLeft (14);
+        lockTitle.setBounds (row.removeFromLeft (40));
+        const int w = (row.getWidth() - 3 * 6) / 4;
+        for (int i = 0; i < 4; ++i) { locks[i]->setBounds (row.removeFromLeft (w)); row.removeFromLeft (6); }
+    }
+private:
+    MASLookAndFeel& lnf;
+    living::View space;
+    juce::Slider depth;
+    juce::Label depthTitle, lockTitle;
+    juce::OwnedArray<juce::TextButton> locks;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> lockAtt;
+};
+#endif
+
 //==============================================================================
 ControlPage::ControlPage (juce::AudioProcessorValueTreeState& s, MASLookAndFeel& l, std::vector<std::vector<Spec>> rows,
                           int columns, std::unique_ptr<juce::Component> left, int leftW)
@@ -659,6 +754,10 @@ void ControlPage::setIRMode (bool ir)
     }
     if (auto* d = dynamic_cast<DepthBlock*> (leftBlock.get()))
         d->setIRMode (ir);
+   #ifdef MAS_EQ
+    if (auto* d = dynamic_cast<Main15Block*> (leftBlock.get()))
+        d->setIRMode (ir);
+   #endif
 }
 
 
@@ -1178,10 +1277,6 @@ private:
 #endif
 
 //==============================================================================
-#ifdef MAS_EQ
-#include "EqLabView.h"
-#endif
-
 MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     : processor (p), lnf (lf)
 {
@@ -1229,7 +1324,17 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
           { K::knob, erLevel, "EARLY" }, { K::knob, lateLevel, "LATE" }, { K::knob, mix, "MIX" } },
         { { K::knob, diffusion, "DIFFUSION", true }, { K::knob, density, "DENSITY", true }, { K::knob, shape, "SHAPE", true },
           { K::knob, spread, "SPREAD", true }, { K::knob, width, "WIDTH" }, { K::knob, output, "OUTPUT" } } };
+   #ifdef MAS_EQ
+    // 1.5: LIVING SPACE takes the left of the page, the twelve knobs go 4 x 3 on the right
+    std::vector<std::vector<ControlPage::Spec>> mainRows15 {
+        { { K::knob, decay, "DECAY", true, irLength, "IR LENGTH" }, { K::knob, size, "SIZE", true }, { K::knob, preDelay, "PRE-DELAY" }, { K::knob, mix, "MIX" } },
+        { { K::knob, erLevel, "EARLY" }, { K::knob, lateLevel, "LATE" }, { K::knob, width, "WIDTH" }, { K::knob, output, "OUTPUT" } },
+        { { K::knob, diffusion, "DIFFUSION", true }, { K::knob, density, "DENSITY", true }, { K::knob, shape, "SHAPE", true }, { K::knob, spread, "SPREAD", true } } };
+    juce::ignoreUnused (mainRows);
+    pages.add (new ControlPage (processor.apvts, lnf, mainRows15, 4, std::make_unique<Main15Block> (processor, lnf), 560));
+   #else
     pages.add (new ControlPage (processor.apvts, lnf, mainRows, 6, std::make_unique<DepthBlock> (processor.apvts, lnf), 236));
+   #endif
    #ifdef MAS_RI
     pages.getLast()->setBottomBlock (std::make_unique<RIStrip> (processor, lnf), 44);
    #endif

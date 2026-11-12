@@ -300,6 +300,11 @@ public:
    #ifdef MAS_EQ
     // ---- 1.5 EQ LAB: REVERB EQ + analyzer
     req::Analyzer analyzer;                                      // taps the editor reads (lock-free)
+    // LIVING SPACE display: measured levels in dBFS (input, early L/R, late L/R), written by the audio thread
+    // only while the display asks for them
+    std::atomic<float> spaceLevel[5] { { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f } };
+    std::atomic<bool> spaceLevelsWanted { false };
+    std::atomic<int> spaceVisual { 0 };                          // 0 FULL, 1 ECO, 2 OFF (a view setting, not a parameter)
     req::Settings readEq() const;                                // current EQ settings (any thread)
     bool eqAvailable() const { return riMeters.engineAvailable.load(); }   // algorithmic 1.2 engine only
    #endif

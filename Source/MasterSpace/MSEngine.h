@@ -1445,6 +1445,20 @@ private:
             eqWetL.process (ltL, ltR, n);
             if (tA == req::Analyzer::WetPost) analyzer->pushSum (0, erL, erR, gE, ltL, ltR, gL, n);
             if (tB == req::Analyzer::WetPost) analyzer->pushSum (1, erL, erR, gE, ltL, ltR, gL, n);
+
+            // levels for the LIVING SPACE display (read only): input, early L/R, late L/R as they go on to the output
+            if (levelsOn)
+            {
+                double s[5] = {};
+                for (int i = 0; i < n; ++i)
+                {
+                    const double in = 0.5 * ((double) left[i] + (double) right[i]);
+                    s[0] += in * in; s[1] += (double) erL[i] * erL[i]; s[2] += (double) erR[i] * erR[i];
+                    s[3] += (double) ltL[i] * ltL[i]; s[4] += (double) ltR[i] * ltR[i];
+                }
+                const double a = 1.0 - std::exp (-(double) n / (0.012 * fs)), g[5] = { 1.0, (double) gE * gE, (double) gE * gE, (double) gL * gL, (double) gL * gL };
+                for (int k = 0; k < 5; ++k) levelMs[k] += a * (s[k] / n * g[k] - levelMs[k]);
+            }
         }
        #endif
         const float tDelta = params.rgDelta ? 1.0f : 0.0f;
@@ -1633,7 +1647,11 @@ private:
     }
     req::Bank eqEarly, eqLate, eqWetE, eqWetL;
     req::Analyzer* analyzer = nullptr;
+    double levelMs[5] = {};
+    bool levelsOn = false;
 public:
+    void setLevelsOn (bool on) { levelsOn = on; if (! on) for (double& v : levelMs) v = 0.0; }
+    float levelDb (int k) const { return (float) (10.0 * std::log10 (levelMs[k] + 1e-14)); }   // 0 in, 1/2 early L/R, 3/4 late L/R
     void setAnalyzer (req::Analyzer* a) { analyzer = a; }       // audio thread; nullptr = no taps
     bool eqActive() const { return eqEarly.isActive() || eqLate.isActive() || eqWetE.isActive() || eqWetL.isActive(); }
 private:

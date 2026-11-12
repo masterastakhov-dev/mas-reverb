@@ -850,6 +850,16 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         }
     }
     publishMeters (n);
+   #ifdef MAS_EQ
+    {
+        const bool want = spaceLevelsWanted.load (std::memory_order_relaxed);
+        auto& e = paths[activePath].engine;
+        paths[1 - activePath].engine.setLevelsOn (false);
+        e.setLevelsOn (want);
+        const bool on = want && algoRunning && ! curLegacy && get (ParamIDs::mode) < 0.5f;
+        for (int k = 0; k < 5; ++k) spaceLevel[k].store (on ? e.levelDb (k) : -140.0f, std::memory_order_relaxed);
+    }
+   #endif
    #else
     if (numOut >= 2 && numIn == 1)
         buffer.copyFrom (1, 0, buffer, 0, 0, n);   // mono in -> stereo out
