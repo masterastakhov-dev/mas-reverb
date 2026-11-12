@@ -25,6 +25,9 @@
 #include <functional>
 #include "HarmonicColor.h"
 #endif
+#ifdef MAS_EQ
+#include "ReverbEQ.h"
+#endif
 
 namespace mspace
 {
@@ -330,6 +333,10 @@ struct Params
     float hcDrive = 0.3f, hcColor = 0.0f, hcMix = 1.0f;
     bool  hcLevelComp = true;
     int   hcPos = 0;                            // 0 POST (on the formed wet), 1 PRE (on the signal that feeds the reverb)
+#endif
+#ifdef MAS_EQ
+    // REVERB EQ (1.5 EQ LAB): off by default, also for old projects / presets
+    req::Settings eq;
 #endif
 };
 
@@ -1028,6 +1035,9 @@ public:
         curQuality = std::clamp (pending.quality, 0, 1);
         curHcPos = std::clamp (pending.hcPos, 0, 1);
         scratch.assign (12 * kChunk, 0.0f);
+       #ifdef MAS_EQ
+        for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->prepare (fs);
+       #endif
        #else
         scratch.assign (8 * kChunk, 0.0f);
        #endif
@@ -1051,6 +1061,10 @@ public:
         for (auto* h : { &hcEarly, &hcLate, &hcPre }) h->reset();
         for (auto& d : directDelay) d.clear();
         for (auto& d : scDelay) d.clear();
+       #endif
+       #ifdef MAS_EQ
+        for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->reset();
+        applyEq (true);
        #endif
         er.update (params);
     }
@@ -1222,6 +1236,9 @@ private:
             hcPre.set (h, force);
         }
        #endif
+       #ifdef MAS_EQ
+        applyEq (force);
+       #endif
 
         // input filters
         const double lc = std::clamp ((double) params.lowCutHz, 20.0, 2000.0);
@@ -1350,6 +1367,30 @@ private:
        #endif
         late.process (inL, inR, ltL, ltR, n);
 
+       #ifdef MAS_EQ
+        // REVERB EQ, EARLY and LATE banks: on the generated early and late signals, before HARMONIC COLOR,
+        // RESONANCE GUARD and SMART DUCKER. Off (or no band in use): the buffers are not touched.
+        {
+            const int tA = analyzer != nullptr ? analyzer->wanted (0) : -1, tB = analyzer != nullptr ? analyzer->wanted (1) : -1;
+            const float gE = curEr, gL = curLate * algoGain;
+            auto tap = [&] (int id, const float* l, const float* r, float g)
+            { if (tA == id) analyzer->push (0, l, r, n, g); if (tB == id) analyzer->push (1, l, r, n, g); };
+            if (analyzer != nullptr)
+            {
+                tap (req::Analyzer::Input, left, right, 1.0f);
+                tap (req::Analyzer::EarlyPre, erL, erR, gE);
+                tap (req::Analyzer::LatePre, ltL, ltR, gL);
+            }
+            eqEarly.process (erL, erR, n);
+            eqLate.process (ltL, ltR, n);
+            if (analyzer != nullptr)
+            {
+                tap (req::Analyzer::EarlyPost, erL, erR, gE);
+                tap (req::Analyzer::LatePost, ltL, ltR, gL);
+            }
+        }
+       #endif
+
         const bool insert = params.routing == Insert;
         const float tEr = params.erOn ? dbToGain (params.erLevelDb) : 0.0f;
         const float tLate = params.lateOn ? dbToGain (params.lateLevelDb) : 0.0f;
@@ -1392,6 +1433,20 @@ private:
             }
             ducker.process (kL, kR, erL, erR, ltL, ltR, n, curEr, curLate * algoGain);
         }
+       #ifdef MAS_EQ
+        // REVERB EQ, WET bank: last in the wet chain, after the ducker. Early and late stay separate buses
+        // (their levels and widths follow), so the same filters run on both: equal to one EQ on their sum.
+        {
+            const int tA = analyzer != nullptr ? analyzer->wanted (0) : -1, tB = analyzer != nullptr ? analyzer->wanted (1) : -1;
+            const float gE = curEr, gL = curLate * algoGain;
+            if (tA == req::Analyzer::WetPre) analyzer->pushSum (0, erL, erR, gE, ltL, ltR, gL, n);
+            if (tB == req::Analyzer::WetPre) analyzer->pushSum (1, erL, erR, gE, ltL, ltR, gL, n);
+            eqWetE.process (erL, erR, n);
+            eqWetL.process (ltL, ltR, n);
+            if (tA == req::Analyzer::WetPost) analyzer->pushSum (0, erL, erR, gE, ltL, ltR, gL, n);
+            if (tB == req::Analyzer::WetPost) analyzer->pushSum (1, erL, erR, gE, ltL, ltR, gL, n);
+        }
+       #endif
         const float tDelta = params.rgDelta ? 1.0f : 0.0f;
         // quality or HARMONIC COLOR position changed: both move where the latency lives -> faded switch.
         // A position change while the module is off and silent in LIVE moves nothing audible: taken at once.
@@ -1566,6 +1621,22 @@ private:
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;
     int qHold = 0;
+   #endif
+   #ifdef MAS_EQ
+    void applyEq (bool force)
+    {
+        const auto& e = params.eq;
+        eqEarly.set (e.band[req::Early], e.on, force);
+        eqLate.set (e.band[req::Late], e.on, force);
+        eqWetE.set (e.band[req::Wet], e.on, force);
+        eqWetL.set (e.band[req::Wet], e.on, force);
+    }
+    req::Bank eqEarly, eqLate, eqWetE, eqWetL;
+    req::Analyzer* analyzer = nullptr;
+public:
+    void setAnalyzer (req::Analyzer* a) { analyzer = a; }       // audio thread; nullptr = no taps
+    bool eqActive() const { return eqEarly.isActive() || eqLate.isActive() || eqWetE.isActive() || eqWetL.isActive(); }
+private:
    #endif
     std::vector<float> scratch;
     double curLow = 20.0, curHigh = 20000.0;

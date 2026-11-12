@@ -255,6 +255,37 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
         ch (hcPos, "Color Position", { "Post (wet)", "Pre (reverb input)" }, 0, false);
     }
    #endif
+   #ifdef MAS_EQ
+    // ---- 1.5 EQ LAB: REVERB EQ. Off by default; states / presets without it load with the EQ off.
+    {
+        constexpr int kHintEQ = 5;
+        p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { eqOn, kHintEQ }, "Reverb EQ On", false));
+        const char* bankName[3] = { "WET", "EARLY", "LATE" };
+        auto fHz = [] (float v, int) { return v >= 1000.0f ? juce::String (v / 1000.0f, 2) + " kHz" : juce::String (juce::roundToInt (v)) + " Hz"; };
+        auto pHz = [] (const juce::String& s) { const auto t = s.trim().toLowerCase(); return t.getFloatValue() * (t.containsChar ('k') ? 1000.0f : 1.0f); };
+        for (int b = 0; b < 3; ++b)
+            for (int i = 0; i < req::kBands; ++i)
+            {
+                const auto nm = juce::String ("EQ ") + bankName[b] + " " + juce::String (i + 1) + " ";
+                auto pid = [b, i] (int field) { return juce::ParameterID { eqId (b, i, field), kHintEQ }; };
+                p.push_back (std::make_unique<juce::AudioParameterBool> (pid (eqUsed), nm + "In Use", false,
+                                                                         juce::AudioParameterBoolAttributes().withAutomatable (false)));
+                p.push_back (std::make_unique<juce::AudioParameterBool> (pid (eqBypass), nm + "Bypass", false));
+                p.push_back (std::make_unique<juce::AudioParameterChoice> (pid (eqType), nm + "Type",
+                                 juce::StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut" }, 0,
+                                 juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+                p.push_back (std::make_unique<APF> (pid (eqFreq), nm + "Freq", range (20.0f, 20000.0f, 1000.0f), 1000.0f,
+                                 Attr().withStringFromValueFunction (fHz).withValueFromStringFunction (pHz)));
+                p.push_back (std::make_unique<APF> (pid (eqGain), nm + "Gain", juce::NormalisableRange<float> (-18.0f, 18.0f), 0.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dB"; })));
+                p.push_back (std::make_unique<APF> (pid (eqQ), nm + "Q", range (0.1f, 18.0f, 1.0f), 1.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2); })));
+                p.push_back (std::make_unique<juce::AudioParameterChoice> (pid (eqSlope), nm + "Slope",
+                                 juce::StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 1,
+                                 juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+            }
+    }
+   #endif
 
     return { p.begin(), p.end() };
 }
@@ -270,6 +301,13 @@ MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
       apvts (*this, nullptr, "MasterSpaceState", createLayout())
 {
     lastIRFolder = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+   #ifdef MAS_EQ
+    eqOnRaw = apvts.getRawParameterValue (ParamIDs::eqOn);
+    for (int b = 0; b < req::numBanks; ++b)
+        for (int i = 0; i < req::kBands; ++i)
+            for (int f = 0; f < ParamIDs::eqNumFields; ++f)
+                eqRaw[b][i][f] = apvts.getRawParameterValue (ParamIDs::eqId (b, i, f));
+   #endif
     startTimerHz (10);
 }
 
@@ -292,8 +330,40 @@ mspace::Params MasterSpaceAudioProcessor::readParams() const
 {
     mspace::Params p;
     fillParams (p);
+   #ifdef MAS_EQ
+    p.eq = readEq();
+   #endif
     return p;
 }
+
+#ifdef MAS_EQ
+template <class Get>
+static req::Settings eqFrom (Get&& value, bool on)
+{
+    using namespace ParamIDs;
+    req::Settings s;
+    s.on = on;
+    for (int b = 0; b < req::numBanks; ++b)
+        for (int i = 0; i < req::kBands; ++i)
+        {
+            auto& d = s.band[b][i];
+            d.used   = value (b, i, eqUsed) > 0.5f;
+            d.bypass = value (b, i, eqBypass) > 0.5f;
+            d.type   = juce::jlimit (0, (int) req::numTypes - 1, juce::roundToInt (value (b, i, eqType)));
+            d.freq   = juce::jlimit (20.0f, 20000.0f, value (b, i, eqFreq));
+            d.gainDb = juce::jlimit (-18.0f, 18.0f, value (b, i, eqGain));
+            d.q      = juce::jlimit (0.1f, 18.0f, value (b, i, eqQ));
+            d.slope  = juce::jlimit (0, 3, juce::roundToInt (value (b, i, eqSlope)));
+        }
+    return s;
+}
+
+req::Settings MasterSpaceAudioProcessor::readEq() const
+{
+    return eqFrom ([this] (int b, int i, int f) { return eqRaw[b][i][f]->load (std::memory_order_relaxed); },
+                   eqOnRaw->load (std::memory_order_relaxed) > 0.5f);
+}
+#endif
 
 template <class P>
 void MasterSpaceAudioProcessor::fillParams (P& p) const
@@ -430,6 +500,9 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
             });
     }
     chunkSize = juce::jmax (64, samplesPerBlock);
+   #ifdef MAS_EQ
+    analyzer.sampleRate.store (sampleRate);
+   #endif
 
     {
         curP = readParams();
@@ -1118,6 +1191,10 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, c
 {
     if (txState != Tx::fading)
     {
+       #ifdef MAS_EQ
+        paths[1 - activePath].engine.setAnalyzer (nullptr);
+        paths[activePath].engine.setAnalyzer (&analyzer);
+       #endif
         paths[activePath].process (left, right, n, txState == Tx::holding ? frozenLegacy : curLegacy, sampleRateHz, scL, scR);
         return;
     }
@@ -1136,6 +1213,10 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, c
         left[i]  *= txGain;
         right[i] *= txGain;
     }
+   #ifdef MAS_EQ
+    paths[activePath].engine.setAnalyzer (nullptr);            // during a transition the incoming path feeds the analyzer
+    paths[1 - activePath].engine.setAnalyzer (&analyzer);
+   #endif
     paths[activePath].process (oL, oR, n, frozenLegacy, sampleRateHz, scL, scR);      // outgoing
     paths[1 - activePath].process (left, right, n, curLegacy, sampleRateHz, scL, scR);   // incoming (faded-in input)
     for (int i = 0; i < n; ++i)
@@ -1660,6 +1741,17 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
 {
     auto getter = [&m] (const char* id) { const auto it = m.find (id); return it != m.end() ? it->second : 0.0f; };
     mspace::Params p; fillParamsWith (p, getter);
+   #ifdef MAS_EQ
+    {
+        // a band that is missing from the map counts as not in use (its other fields then do not matter)
+        auto field = [&m] (int b, int i, int f)
+        {
+            const auto it = m.find (ParamIDs::eqId (b, i, f));
+            return it != m.end() ? it->second : (f == ParamIDs::eqFreq ? 1000.0f : f == ParamIDs::eqQ ? 1.0f : f == ParamIDs::eqSlope ? 1.0f : 0.0f);
+        };
+        p.eq = eqFrom (field, getter (ParamIDs::eqOn) > 0.5f);
+    }
+   #endif
     mspace11::Params lp; fillParamsWith (lp, getter);
     const bool legacy = getter (ParamIDs::engine) < 0.5f;
 
@@ -1825,6 +1917,13 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
     for (const char* id : ParamIDs::riParams)
         if (! presentIDs.contains (id))
             if (auto* prm = apvts.getParameter (id))
+                prm->setValueNotifyingHost (prm->getDefaultValue());
+   #endif
+   #ifdef MAS_EQ
+    // states written before 1.5: REVERB EQ off, no band in use
+    for (auto* prm : getParameters())
+        if (auto* wid = dynamic_cast<juce::AudioProcessorParameterWithID*> (prm))
+            if (ParamIDs::isEqParam (wid->paramID) && ! presentIDs.contains (wid->paramID))
                 prm->setValueNotifyingHost (prm->getDefaultValue());
    #endif
     endStateTransition();

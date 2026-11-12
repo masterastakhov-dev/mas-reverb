@@ -143,6 +143,21 @@ namespace ParamIDs
                                                 rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality,
                                                 hcOn, hcChar, hcDrive, hcColor, hcMix, hcComp, hcPos };
    #endif
+   #ifdef MAS_EQ
+    // REVERB EQ (1.5 EQ LAB): "eqon" and, per bank (w = WET, e = EARLY, l = LATE) and band (1..8):
+    // u = used, b = bypass, t = type, f = frequency, g = gain, q = Q, s = slope  ->  e.g. "eqw3f".
+    // States and presets without them load with the EQ off and no band in use.
+    inline constexpr const char* eqOn = "eqon";
+    inline constexpr char eqBankChar[3] = { 'w', 'e', 'l' };
+    inline constexpr char eqFieldChar[7] = { 'u', 'b', 't', 'f', 'g', 'q', 's' };
+    enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope, eqNumFields };
+    inline juce::String eqId (int bank, int band, int field)
+    {
+        return juce::String ("eq") + juce::String::charToString ((juce::juce_wchar) eqBankChar[bank]) + juce::String (band + 1)
+               + juce::String::charToString ((juce::juce_wchar) eqFieldChar[field]);
+    }
+    inline bool isEqParam (const juce::String& id) { return id == eqOn || (id.length() == 5 && id.startsWith ("eq") && id != "eqon"); }
+   #endif
 
     inline constexpr const char* materials[6] = { matFront, matBack, matLeft, matRight, matFloor, matCeiling };
 }
@@ -282,6 +297,12 @@ public:
     bool hasSidechainBus() const;
     int latencyForQuality (int q) const;
    #endif
+   #ifdef MAS_EQ
+    // ---- 1.5 EQ LAB: REVERB EQ + analyzer
+    req::Analyzer analyzer;                                      // taps the editor reads (lock-free)
+    req::Settings readEq() const;                                // current EQ settings (any thread)
+    bool eqAvailable() const { return riMeters.engineAvailable.load(); }   // algorithmic 1.2 engine only
+   #endif
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -320,6 +341,10 @@ private:
     bool qSwitchPending = false, modeRingSteady = false;
     float qFade = 1.0f, modeGainOut = 0.0f;
     mspace::DelayLine irAlign[2], txAlign, modeAlign;
+   #ifdef MAS_EQ
+    std::atomic<float>* eqRaw[req::numBanks][req::kBands][ParamIDs::eqNumFields] = {};
+    std::atomic<float>* eqOnRaw = nullptr;
+   #endif
    #else
     void processAlgo (float* left, float* right, int numSamples);
    #endif

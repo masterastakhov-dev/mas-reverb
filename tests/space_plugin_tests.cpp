@@ -180,10 +180,71 @@ static int snapshots (const juce::File& dir)
     return 0;
 }
 
+#ifdef MAS_RI
+// Prints a hash of the rendered output for fixed scenarios. Run on the 1.4 and on the 1.5 test binaries:
+// with the new EQ off (any variant of "off") every 1.5 hash must equal the 1.4 hash of the same scenario.
+static int refHashes()
+{
+    auto setP = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+    {
+        if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain));
+    };
+    struct Sc { const char* name; const char* preset; int duck, rg, hc, q; };
+    const Sc scs[] = { { "default", nullptr, 0, 0, 0, 0 }, { "atmos-vocal-glow", "factory:Vocal Spaces/ATMOS Vocal Glow", 0, 0, 0, 0 },
+                       { "hall-modules-live", "factory:Halls/Concert Hall", 1, 1, 1, 0 }, { "atmos-modules-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 1, 1, 1, 1 } };
+   #ifdef MAS_EQ
+    const char* variants[] = { "eq-default", "eq-off-bands-set", "eq-on-no-bands", "eq-on-all-bypassed" };
+   #else
+    const char* variants[] = { "base" };
+   #endif
+    for (double fs : { 48000.0, 96000.0 })
+        for (const auto& sc : scs)
+            for (int v = 0; v < (int) std::size (variants); ++v)
+            {
+                auto p = makeProcessor (fs, 256);
+                if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
+                setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);
+                setP (*p, ParamIDs::hcOn, (float) sc.hc); setP (*p, ParamIDs::quality, (float) sc.q);
+               #ifdef MAS_EQ
+                if (v >= 1)
+                    for (int b = 0; b < 3; ++b)
+                        for (int i = 0; i < 8; ++i)
+                        {
+                            setP (*p, ParamIDs::eqId (b, i, ParamIDs::eqUsed), v == 2 ? 0.0f : 1.0f);
+                            setP (*p, ParamIDs::eqId (b, i, ParamIDs::eqGain), 9.0f - 2.0f * i);
+                            setP (*p, ParamIDs::eqId (b, i, ParamIDs::eqFreq), 80.0f * (float) std::pow (2.2, i));
+                            setP (*p, ParamIDs::eqId (b, i, ParamIDs::eqType), (float) (i % 5));
+                            setP (*p, ParamIDs::eqId (b, i, ParamIDs::eqBypass), v == 3 ? 1.0f : 0.0f);
+                        }
+                setP (*p, ParamIDs::eqOn, v >= 2 ? 1.0f : 0.0f);
+               #endif
+                pump (300);
+                auto sig = pinkish (fs, 3.0, 9);
+                run (*p, sig, 256);
+                juce::uint64 h = 1469598103934665603ull;
+                for (int c = 0; c < 2; ++c)
+                {
+                    const auto* d = reinterpret_cast<const unsigned char*> (sig.getReadPointer (c));
+                    for (size_t i = 0; i < sizeof (float) * (size_t) sig.getNumSamples(); ++i) { h ^= d[i]; h *= 1099511628211ull; }
+                }
+                std::printf ("REF %.0f %s %s %016llx\n", fs, sc.name, variants[v], (unsigned long long) h);
+            }
+    return 0;
+}
+#endif
+
 int main (int argc, char** argv)
 {
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
+   #ifdef MAS_RI
+    if (argc > 1 && juce::String (argv[1]) == "--refhash")
+    {
+        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-ref-presets");
+        setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
+        return refHashes();
+    }
+   #endif
     if (argc > 2 && juce::String (argv[1]) == "--snapshot")
     {
         const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-snap-presets");
@@ -1134,6 +1195,339 @@ int main (int argc, char** argv)
     }
    #endif
 
+   #ifdef MAS_EQ
+    //==========================================================================
+    section ("1.5 REVERB EQ and analyzer");
+    {
+        using namespace ParamIDs;
+        const double pi = juce::MathConstants<double>::pi;
+        auto setP = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        {
+            if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain));
+        };
+        auto getP = [] (MasterSpaceAudioProcessor& q, const juce::String& id) { return q.apvts.getRawParameterValue (id)->load(); };
+        auto band = [&] (MasterSpaceAudioProcessor& q, int bank, int i, int type, float f, float g, float qq, int slope = 1)
+        {
+            setP (q, eqId (bank, i, eqUsed), 1); setP (q, eqId (bank, i, eqBypass), 0); setP (q, eqId (bank, i, eqType), (float) type);
+            setP (q, eqId (bank, i, eqFreq), f); setP (q, eqId (bank, i, eqGain), g); setP (q, eqId (bank, i, eqQ), qq);
+            setP (q, eqId (bank, i, eqSlope), (float) slope);
+        };
+        auto maxDiff = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int from = 0)
+        {
+            float m = 0;
+            for (int c = 0; c < 2; ++c) for (int i = from; i < a.getNumSamples(); ++i) m = juce::jmax (m, std::abs (a.getSample (c, i) - b.getSample (c, i)));
+            return m;
+        };
+        auto goertzelDb = [pi] (const float* x, int n, double f, double fs)
+        {
+            double re = 0, im = 0;
+            for (int i = 0; i < n; ++i) { re += x[i] * std::cos (2 * pi * f * i / fs); im -= x[i] * std::sin (2 * pi * f * i / fs); }
+            return 10.0 * std::log10 (re * re + im * im + 1e-300);
+        };
+
+        // ---- defaults and old projects
+        {
+            auto q = makeProcessor (48000, 256);
+            bool anyUsed = false;
+            for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) anyUsed = anyUsed || getP (*q, eqId (b, i, eqUsed)) > 0.5f;
+            check (getP (*q, eqOn) < 0.5f && ! anyUsed && q->getLatencySamples() == 0, "new instance: REVERB EQ off, no band in use, no latency");
+
+            juce::MemoryBlock st;
+            q->getStateInformation (st);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (st.getData(), (int) st.getSize());
+            juce::Array<juce::XmlElement*> drop;
+            for (auto* e : xml->getChildWithTagNameIterator ("PARAM")) if (isEqParam (e->getStringAttribute ("id"))) drop.add (e);
+            for (auto* e : drop) xml->removeChildElement (e, true);
+            xml->removeChildElement (xml->getChildByName ("ABCompare"), true);
+            juce::MemoryBlock old14;
+            juce::AudioProcessor::copyXmlToBinary (*xml, old14);
+            setP (*q, eqOn, 1); band (*q, 0, 0, req::Bell, 500, 12, 2); band (*q, 2, 3, req::LowCut, 200, 0, 0.71f, 3);
+            pump (200);
+            q->setStateInformation (old14.getData(), (int) old14.getSize());
+            pump (200);
+            anyUsed = false;
+            for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) anyUsed = anyUsed || getP (*q, eqId (b, i, eqUsed)) > 0.5f;
+            check (drop.size() == 169 && getP (*q, eqOn) < 0.5f && ! anyUsed, "a 1.4 project (no EQ parameters) loads with REVERB EQ off and no band in use");
+
+            // factory presets carry no EQ: loading one turns the EQ off
+            setP (*q, eqOn, 1); band (*q, 0, 0, req::Bell, 500, 12, 2);
+            pump (100);
+            q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            pump (200);
+            check (getP (*q, eqOn) < 0.5f && getP (*q, eqId (0, 0, eqUsed)) < 0.5f, "an older preset loads with REVERB EQ off");
+        }
+
+        // ---- the filters themselves: response of every type against the design, landmarks, both rates
+        for (double fs : { 44100.0, 48000.0, 88200.0, 96000.0 })
+        {
+            const int n = 1 << 16;
+            double worst = 0; bool marks = true;
+            struct T { int type; float f, g, q; int slope; };
+            for (const T t : { T { req::Bell, 350, -6, 1.2f, 1 }, T { req::Bell, 3000, 12, 4, 1 }, T { req::Bell, 9000, 18, 0.5f, 1 }, T { req::Bell, 60, -18, 18, 1 },
+                               T { req::LowShelf, 200, 9, 0.71f, 1 }, T { req::HighShelf, 6000, -12, 0.71f, 1 }, T { req::HighShelf, 12000, 6, 1.5f, 1 },
+                               T { req::LowCut, 120, 0, 0.71f, 0 }, T { req::LowCut, 120, 0, 0.71f, 1 }, T { req::LowCut, 120, 0, 0.71f, 2 }, T { req::LowCut, 120, 0, 0.71f, 3 },
+                               T { req::HighCut, 5000, 0, 0.71f, 0 }, T { req::HighCut, 5000, 0, 0.71f, 1 }, T { req::HighCut, 5000, 0, 0.71f, 2 }, T { req::HighCut, 5000, 0, 0.71f, 3 } })
+            {
+                req::BandParams bp[8];
+                bp[2].used = true; bp[2].type = t.type; bp[2].freq = t.f; bp[2].gainDb = t.g; bp[2].q = t.q; bp[2].slope = t.slope;
+                req::Bank bank; bank.prepare (fs); bank.set (bp, true, true);
+                std::vector<float> l ((size_t) n, 0.0f), r ((size_t) n, 0.0f);
+                l[0] = r[0] = 1.0f;
+                bank.process (l.data(), r.data(), n);
+                for (double f : { 30.0, 60.0, 120.0, 240.0, 350.0, 1000.0, 2500.0, 5000.0, 10000.0, 16000.0 })
+                {
+                    const double want = req::bandMagnitudeDb (bp[2], f, fs);
+                    if (want > -90.0) worst = juce::jmax (worst, std::abs (goertzelDb (l.data(), n, f, fs) - want));
+                }
+                const double atF = req::bandMagnitudeDb (bp[2], t.f, fs);
+                if (t.type == req::Bell) marks = marks && std::abs (atF - t.g) < 0.01;
+                if (t.type == req::LowShelf) marks = marks && std::abs (req::bandMagnitudeDb (bp[2], 20.0, fs) - t.g) < 0.3 && std::abs (req::bandMagnitudeDb (bp[2], 15000.0, fs)) < 0.1;
+                if (t.type == req::HighShelf) marks = marks && std::abs (req::bandMagnitudeDb (bp[2], 30.0, fs)) < 0.05;
+                if (req::isCut (t.type))
+                {
+                    const double oct = t.type == req::LowCut ? req::bandMagnitudeDb (bp[2], t.f / 4, fs) - req::bandMagnitudeDb (bp[2], t.f / 8, fs)
+                                                             : req::bandMagnitudeDb (bp[2], t.f * 2, fs) - req::bandMagnitudeDb (bp[2], t.f * 1.5, fs) ;
+                    marks = marks && std::abs (atF + 3.01) < 0.05;
+                    if (t.type == req::LowCut) marks = marks && std::abs (oct - 12.0 * (t.slope + 1)) < 0.6;
+                    else marks = marks && oct < 0.0;
+                }
+            }
+            check (worst < 0.02 && marks, juce::String (fs / 1000.0, 1) + " kHz: measured response of every filter type equals the displayed curve (worst "
+                                          + juce::String (worst, 4) + " dB); centre gain, -3 dB points and slopes as set");
+        }
+
+        // ---- in the plugin: the WET bank is exactly the designed filter on the wet signal (Aux = wet only)
+        for (double fs : { 48000.0, 96000.0 })
+        {
+            auto render = [&] (bool eq)
+            {
+                auto q = makeProcessor (fs, 256);
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+                setP (*q, routing, 1);
+                if (eq) { setP (*q, eqOn, 1); band (*q, 0, 1, req::Bell, 350, -6, 1.2f); band (*q, 0, 4, req::HighShelf, 5000, 4, 0.71f); band (*q, 0, 6, req::LowCut, 90, 0, 0.71f, 1); }
+                pump (250);
+                auto sig = pinkish (fs, 3.0, 4);
+                run (*q, sig, 256);
+                return sig;
+            };
+            auto off = render (false), on = render (true);
+            // reference: the same sections applied offline to the EQ-off output (direct form I, double)
+            req::BandParams bp[3];
+            bp[0].used = true; bp[0].type = req::Bell; bp[0].freq = 350; bp[0].gainDb = -6; bp[0].q = 1.2f;
+            bp[1].used = true; bp[1].type = req::HighShelf; bp[1].freq = 5000; bp[1].gainDb = 4; bp[1].q = 0.71f;
+            bp[2].used = true; bp[2].type = req::LowCut; bp[2].freq = 90; bp[2].q = 0.71f; bp[2].slope = 1;
+            auto ref = off;
+            for (const auto& b : bp)
+            {
+                req::Coefs c[req::kMaxStages];
+                const int ns = req::design (b.type, b.freq, b.gainDb, b.q, b.slope, fs, c);
+                for (int k = 0; k < ns; ++k)
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+                        auto* d = ref.getWritePointer (ch);
+                        for (int i = 0; i < ref.getNumSamples(); ++i)
+                        {
+                            const double x = d[i], y = c[k].b0 * x + c[k].b1 * x1 + c[k].b2 * x2 - c[k].a1 * y1 - c[k].a2 * y2;
+                            x2 = x1; x1 = x; y2 = y1; y1 = y; d[i] = (float) y;
+                        }
+                    }
+            }
+            const float d = maxDiff (on, ref, (int) (0.3 * fs)), pk = peak (off);
+            check (d < 2e-4f * pk && maxDiff (on, off) > 0.01f * pk, juce::String (fs / 1000.0, 0) + " kHz: WET EQ in the plugin = the designed filters on the wet signal (difference "
+                                         + juce::String (20.0 * std::log10 (d / pk + 1e-12), 1) + " dB re peak)");
+        }
+
+        // ---- routing: EARLY bank touches only the early part, LATE bank only the late part
+        {
+            auto render = [&] (bool erOnV, bool lateOnV, int eqBank)
+            {
+                auto q = makeProcessor (48000, 256);
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
+                setP (*q, routing, 1); setP (*q, erOn, erOnV ? 1.0f : 0.0f); setP (*q, lateOn, lateOnV ? 1.0f : 0.0f);
+                if (eqBank >= 0) { setP (*q, eqOn, 1); band (*q, eqBank, 0, req::Bell, 1000, 12, 1); band (*q, eqBank, 1, req::LowCut, 300, 0, 0.71f, 2); }
+                pump (250);
+                auto sig = pinkish (48000, 2.5, 6);
+                run (*q, sig, 256);
+                return sig;
+            };
+            const auto lateOnly = render (false, true, -1), earlyOnly = render (true, false, -1);
+            const float a = maxDiff (render (false, true, req::Early), lateOnly), b = maxDiff (render (true, false, req::Late), earlyOnly);
+            const float c = maxDiff (render (true, false, req::Early), earlyOnly), d = maxDiff (render (false, true, req::Late), lateOnly);
+            check (a == 0.0f && b == 0.0f, "EARLY EQ leaves the late reverb (ATMOSPHERIC TAIL) bit-exact, LATE EQ leaves the early reflections bit-exact");
+            check (c > 0.01f * peak (earlyOnly) && d > 0.01f * peak (lateOnly), "EARLY EQ shapes the early reflections, LATE EQ shapes the late reverb");
+
+            // room algorithm too
+            auto render2 = [&] (int eqBank, bool erOnV, bool lateOnV)
+            {
+                auto q = makeProcessor (48000, 256);
+                q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+                setP (*q, routing, 1); setP (*q, erOn, erOnV ? 1.0f : 0.0f); setP (*q, lateOn, lateOnV ? 1.0f : 0.0f);
+                if (eqBank >= 0) { setP (*q, eqOn, 1); band (*q, eqBank, 0, req::HighShelf, 2000, -12, 0.71f); }
+                pump (250);
+                auto sig = pinkish (48000, 2.0, 6);
+                run (*q, sig, 256);
+                return sig;
+            };
+            check (maxDiff (render2 (req::Early, false, true), render2 (-1, false, true)) == 0.0f
+                   && maxDiff (render2 (req::Late, true, false), render2 (-1, true, false)) == 0.0f, "the same with the room algorithm (Hall)");
+        }
+
+        // ---- the direct sound (Insert) is never equalised; flat bands change nothing audible; no latency
+        {
+            auto render = [&] (int mode)      // 0 off, 1 heavy EQ on all banks, 2 bands in use but flat
+            {
+                auto q = makeProcessor (48000, 256);
+                setP (*q, routing, 0); setP (*q, mix, 50);
+                if (mode == 1) { setP (*q, eqOn, 1); for (int b = 0; b < 3; ++b) { band (*q, b, 0, req::LowCut, 2000, 0, 0.71f, 3); band (*q, b, 1, req::HighCut, 2100, 0, 0.71f, 3); band (*q, b, 2, req::Bell, 2050, -18, 0.3f); band (*q, b, 3, req::Bell, 2050, -18, 0.3f); } }
+                if (mode == 2) { setP (*q, eqOn, 1); for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) band (*q, b, i, i % 3 == 0 ? req::Bell : i % 3 == 1 ? req::LowShelf : req::HighShelf, 100.0f * (i + 1) * (i + 1), 0, 1); }
+                pump (250);
+                juce::AudioBuffer<float> sig (2, 48000);
+                sig.clear();
+                sig.setSample (0, 100, 1.0f); sig.setSample (1, 100, 1.0f);
+                const int lat = q->getLatencySamples();
+                run (*q, sig, 256);
+                return std::make_pair (sig, lat);
+            };
+            const auto off = render (0), heavy = render (1), flat = render (2);
+            check (heavy.second == 0 && flat.second == 0, "REVERB EQ adds no latency in LIVE (reported latency 0 samples)");
+            check (heavy.first.getSample (0, 100) == off.first.getSample (0, 100) && off.first.getSample (0, 100) != 0.0f,
+                   "Insert: the direct sound is identical with the EQ on (first sample " + juce::String (off.first.getSample (0, 100), 4) + ")");
+            float tail = 0, tailOff = 0;
+            for (int i = 4000; i < 48000; ++i) { tail = juce::jmax (tail, std::abs (heavy.first.getSample (0, i))); tailOff = juce::jmax (tailOff, std::abs (off.first.getSample (0, i))); }
+            check (tail < 0.05f * tailOff, "with the wet removed by the EQ only the direct sound is left (tail " + juce::String (20.0 * std::log10 (tail / tailOff + 1e-9), 1) + " dB)");
+            check (maxDiff (flat.first, off.first) < 2e-5f * peak (off.first), "24 bands in use at 0 dB: output equals EQ off within float rounding");
+        }
+
+        // ---- click-free: switching and automation on a steady low tone (energy above 5 kHz stays at the floor)
+        for (double fs : { 48000.0, 96000.0 })
+        {
+            const int n = (int) (fs * 3.0), blk = 64;
+            std::vector<float> l ((size_t) n), r ((size_t) n);
+            for (int i = 0; i < n; ++i) l[(size_t) i] = r[(size_t) i] = (float) (0.5 * std::sin (2 * pi * 110.0 * i / fs));
+            req::Bank bank; bank.prepare (fs);
+            req::BandParams bp[8];
+            juce::Random rng (3);
+            int ev = 0;
+            for (int pos = 0; pos < n; pos += blk)
+            {
+                bool on = true;
+                if (pos % (blk * 40) == 0)
+                {
+                    ++ev;
+                    auto& b = bp[ev % 4];
+                    switch (ev % 7)
+                    {
+                        case 0: b.used = ! b.used; break;
+                        case 1: b.bypass = ! b.bypass; b.used = true; break;
+                        case 2: b.type = rng.nextInt (5); b.used = true; break;
+                        case 3: b.slope = rng.nextInt (4); b.type = req::LowCut; b.freq = 60; b.used = true; break;
+                        case 4: b.gainDb = b.gainDb > 0 ? -18.0f : 18.0f; b.type = req::Bell; b.freq = 110; b.used = true; break;
+                        case 5: b.freq = 40.0f + rng.nextFloat() * 400.0f; b.q = 0.1f + rng.nextFloat() * 17.0f; b.used = true; break;
+                        default: break;
+                    }
+                }
+                on = (pos / (blk * 280)) % 2 == 0;                       // EQ ON / OFF every ~0.37 s
+                // continuous automation of one band between the switches
+                bp[5].used = true; bp[5].type = req::Bell; bp[5].freq = 110.0f * (float) std::pow (2.0, std::sin (pos / fs * 9.0));
+                bp[5].gainDb = 12.0f * (float) std::sin (pos / fs * 13.0); bp[5].q = 2.0f;
+                bank.set (bp, on);
+                bank.process (l.data() + pos, r.data() + pos, juce::jmin (blk, n - pos));
+            }
+            // 4th-order high-pass at 5 kHz
+            req::Coefs hp[4];
+            const int ns = req::design (req::LowCut, 5000, 0, 0.71, 1, fs, hp);
+            double pkHp = 0, pkAll = 0;
+            double z[4][2] = {};
+            for (int i = 0; i < n; ++i)
+            {
+                double y = l[(size_t) i];
+                pkAll = juce::jmax (pkAll, std::abs (y));
+                for (int k = 0; k < ns; ++k) { const double x = y; y = hp[k].b0 * x + z[k][0]; z[k][0] = hp[k].b1 * x - hp[k].a1 * y + z[k][1]; z[k][1] = hp[k].b2 * x - hp[k].a2 * y; }
+                if (i > 2000) pkHp = juce::jmax (pkHp, std::abs (y));
+            }
+            bool finite = true;
+            for (float v : l) finite = finite && std::isfinite (v);
+            const double clickDb = 20.0 * std::log10 (pkHp / 0.5 + 1e-12);
+            check (finite && clickDb < -55.0 && pkAll < 64.0, juce::String (fs / 1000.0, 0) + " kHz: " + juce::String (ev) + " switches (band on/off, bypass, type, slope, jumps) + EQ ON/OFF + automation: content above 5 kHz "
+                                               + juce::String (clickDb, 1) + " dB re the tone (no clicks)");
+        }
+
+        // ---- state, presets, A/B
+        {
+            auto q = makeProcessor (48000, 256);
+            setP (*q, eqOn, 1); band (*q, 0, 2, req::Bell, 350, -3, 1.2f); band (*q, 1, 0, req::LowCut, 180, 0, 0.9f, 2); band (*q, 2, 7, req::HighShelf, 7000, -4.5f, 0.71f);
+            setP (*q, eqId (2, 7, eqBypass), 1);
+            pump (100);
+            const auto want = q->captureParamMap();
+            juce::MemoryBlock st;
+            q->getStateInformation (st);
+            auto q2 = makeProcessor (48000, 256);
+            q2->setStateInformation (st.getData(), (int) st.getSize());
+            pump (200);
+            bool same = true;
+            const auto got = q2->captureParamMap();
+            for (const auto& kv : want) if (isEqParam (kv.first)) same = same && std::abs (got.at (kv.first) - kv.second) < 1e-4f * juce::jmax (1.0f, std::abs (kv.second));
+            check (same && getP (*q2, eqId (1, 0, eqSlope)) == 2.0f && getP (*q2, eqId (0, 2, eqFreq)) > 349.0f, "project state: all three banks restored (169 EQ parameters)");
+
+            auto& pm = q->getPresetManager();
+            const bool saved = pm.saveAs ("EQ Lab Test", "Signature Collection", "", "", false).ok;
+            const auto savedKey = pm.getCurrentKey();
+            setP (*q, eqOn, 0); setP (*q, eqId (0, 2, eqGain), 9); setP (*q, eqId (1, 0, eqUsed), 0);
+            pump (100);
+            const int idx = pm.indexOf (savedKey);
+            if (idx >= 0) pm.load (idx);
+            pump (250);
+            check (saved && idx >= 0 && getP (*q, eqOn) > 0.5f && std::abs (getP (*q, eqId (0, 2, eqGain)) + 3.0f) < 1e-3f && getP (*q, eqId (1, 0, eqUsed)) > 0.5f
+                   && getP (*q, eqId (2, 7, eqBypass)) > 0.5f, "user preset: EQ saved and restored");
+
+            // A/B: A keeps the EQ, B gets a different one
+            q->selectSlot (1);
+            pump (250);
+            setP (*q, eqId (0, 2, eqGain), 6); setP (*q, eqId (2, 7, eqBypass), 0);
+            pump (100);
+            q->selectSlot (0);
+            pump (250);
+            const float gA = getP (*q, eqId (0, 2, eqGain));
+            q->selectSlot (1);
+            pump (250);
+            const float gB = getP (*q, eqId (0, 2, eqGain));
+            check (std::abs (gA + 3.0f) < 1e-3f && std::abs (gB - 6.0f) < 1e-3f, "A/B: each slot keeps its own EQ (A " + juce::String (gA, 1) + " dB, B " + juce::String (gB, 1) + " dB)");
+        }
+
+        // ---- analyzer taps carry the real signals
+        {
+            auto q = makeProcessor (48000, 256);
+            q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            setP (*q, eqOn, 1); band (*q, 0, 0, req::Bell, 1000, -18, 1.0f);
+            pump (250);
+            q->analyzer.request[0] = req::Analyzer::WetPre; q->analyzer.request[1] = req::Analyzer::WetPost;
+            auto sig = pinkish (48000, 2.0, 8);
+            run (*q, sig, 256);
+            const int n = 8192;
+            std::vector<float> a ((size_t) n), b ((size_t) n);
+            q->analyzer.read (0, a.data(), n); q->analyzer.read (1, b.data(), n);
+            double ea = 0, eb = 0, la = 0, lb = 0;
+            for (double f = 900; f <= 1100; f += 12.5) { ea += std::pow (10.0, goertzelDb (a.data(), n, f, 48000) / 10); eb += std::pow (10.0, goertzelDb (b.data(), n, f, 48000) / 10); }
+            for (double f = 100; f <= 200; f += 12.5) { la += std::pow (10.0, goertzelDb (a.data(), n, f, 48000) / 10); lb += std::pow (10.0, goertzelDb (b.data(), n, f, 48000) / 10); }
+            const double dMid = 10 * std::log10 (eb / ea), dLow = 10 * std::log10 (lb / la);
+            req::BandParams bp; bp.used = true; bp.freq = 1000; bp.gainDb = -18; bp.q = 1.0f;
+            const double wantLow = req::bandMagnitudeDb (bp, 150.0, 48000.0);
+            check (std::abs (dMid + 17.0) < 2.0 && std::abs (dLow - wantLow) < 0.3, "analyzer WET PRE / POST taps: -18 dB bell at 1 kHz reads " + juce::String (dMid, 1) + " dB around 1 kHz, "
+                                                    + juce::String (dLow, 2) + " dB at 150 Hz (curve " + juce::String (wantLow, 2) + " dB)");
+
+            q->analyzer.request[0] = req::Analyzer::Input; q->analyzer.request[1] = -1;
+            auto in = pinkish (48000, 0.5, 12);
+            const auto copy = in;
+            run (*q, in, 256);
+            q->analyzer.read (0, a.data(), n);
+            float d = 0;
+            for (int i = 0; i < n; ++i) d = juce::jmax (d, std::abs (a[(size_t) i] - 0.5f * (copy.getSample (0, copy.getNumSamples() - n + i) + copy.getSample (1, copy.getNumSamples() - n + i))));
+            check (d == 0.0f, "analyzer INPUT tap is the plugin input, sample for sample");
+        }
+    }
+   #endif
+
     //==========================================================================
     section ("Instances, automation, stability");
     {
@@ -1212,6 +1606,30 @@ int main (int argc, char** argv)
             }
             setP (ParamIDs::duckOn, 0); setP (ParamIDs::rgOn, 0); setP (ParamIDs::quality, 0); setP (ParamIDs::hcOn, 0);
             pump (250);
+           #ifdef MAS_EQ
+            for (int mode = 0; mode < 4; ++mode)      // EQ off / 5 WET bands / 8 bands in every bank / the same + analyzer
+            {
+                auto sp = [&] (const juce::String& id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+                sp (ParamIDs::eqOn, mode > 0 ? 1.0f : 0.0f);
+                for (int b = 0; b < 3; ++b)
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        sp (ParamIDs::eqId (b, i, ParamIDs::eqUsed), (mode >= 2 || (mode == 1 && b == 0 && i < 5)) ? 1.0f : 0.0f);
+                        sp (ParamIDs::eqId (b, i, ParamIDs::eqGain), 3.0f - i); sp (ParamIDs::eqId (b, i, ParamIDs::eqFreq), 60.0f * (float) std::pow (2.1, i));
+                    }
+                p->analyzer.request[0] = mode == 3 ? (int) req::Analyzer::WetPre : -1; p->analyzer.request[1] = mode == 3 ? (int) req::Analyzer::WetPost : -1;
+                pump (250);
+                auto warm = pinkish (fs, 1.0);
+                run (*p, warm, 256);
+                auto sg = pinkish (fs, quick ? 2.0 : 5.0);
+                const double t0 = nowMs();
+                run (*p, sg, 256);
+                const double ms = nowMs() - t0;
+                const char* nm[] = { "ATMOS, REVERB EQ off", "ATMOS + REVERB EQ, 5 WET bands", "ATMOS + REVERB EQ, 3 x 8 bands", "ATMOS + REVERB EQ 3 x 8 + analyzer taps" };
+                std::printf ("  %5.0f kHz  %-40s %6.2f %% of one core\n", fs / 1000.0, nm[mode], 100.0 * ms / (sg.getNumSamples() / fs * 1000.0));
+            }
+            { auto* r = p->apvts.getParameter (ParamIDs::eqOn); r->setValueNotifyingHost (0.0f); p->analyzer.request[0] = -1; p->analyzer.request[1] = -1; pump (100); }
+           #endif
         }
        #endif
         // during a transition both paths run

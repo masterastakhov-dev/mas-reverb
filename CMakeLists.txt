@@ -97,6 +97,16 @@ juce_add_binary_data(MasterSpace14Presets HEADER_NAME MasterSpacePresets.h NAMES
     SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
 target_link_libraries(MasterSpace14 PRIVATE MasterSpace14Presets)
 
+# MASTER SPACE 1.5 EQ LAB: 1.4 + REVERB EQ (three banks: WET / EARLY / LATE) and the spectral analyzer (MAS_EQ).
+# Same sources, its own name, code, bundle id and preset folder: installs next to every earlier build.
+mas_add_plugin(MasterSpace15 "MASTER SPACE 1.5 EQ LAB" MSp5 com.masterastakhovsound.masterspace15eqlab 1.5.0
+               Source/MasterSpace "MASTER SPACE with REVERB EQ and spectral analyzer")
+target_sources(MasterSpace15 PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp)
+target_compile_definitions(MasterSpace15 PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1)
+juce_add_binary_data(MasterSpace15Presets HEADER_NAME MasterSpacePresets.h NAMESPACE MasterSpacePresets
+    SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
+target_link_libraries(MasterSpace15 PRIVATE MasterSpace15Presets)
+
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
                Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
@@ -158,5 +168,20 @@ if(MAS_BUILD_TESTS)
         JucePlugin_Name="MASTER SPACE 1.4" JucePlugin_VersionString="1.4.0")
     target_link_libraries(MasterSpace14Tests PRIVATE
         MasterSpace14Presets MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # the same tests on MASTER SPACE 1.5 EQ LAB (plus the EQ checks: EQ off = 1.4, response, routing, clicks, state)
+    juce_add_console_app(MasterSpace15Tests PRODUCT_NAME "MasterSpace15Tests")
+    target_sources(MasterSpace15Tests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp)
+    target_compile_definitions(MasterSpace15Tests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1
+        JucePlugin_Name="MASTER SPACE 1.5 EQ LAB" JucePlugin_VersionString="1.5.0")
+    target_link_libraries(MasterSpace15Tests PRIVATE
+        MasterSpace15Presets MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

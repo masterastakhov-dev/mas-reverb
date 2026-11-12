@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #if defined (MAS_RI)
+   #if defined (MAS_EQ)
+    const char* product = "MASTER SPACE 1.5 EQ LAB";   // 1.5 build: its own library, older builds untouched
+   #elif defined (MAS_RI)
     const char* product = "MASTER SPACE 1.4";      // 1.4 build: its own library, 1.2 / ATMOS presets untouched
    #elif defined (MAS_ATMOS)
     const char* product = "MASTER SPACE ATMOS";    // experimental build: its own library, 1.2 presets untouched
@@ -216,6 +218,9 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                #ifdef MAS_RI
                 // SMART DUCKER / RESONANCE GUARD: older presets load with both modules off
                 for (const char* id : ParamIDs::riParams) addedLater = addedLater || pi.id == id;
+               #endif
+               #ifdef MAS_EQ
+                addedLater = addedLater || ParamIDs::isEqParam (pi.id);   // REVERB EQ: older presets load with it off
                #endif
                #else
                 const bool addedLater = false;
