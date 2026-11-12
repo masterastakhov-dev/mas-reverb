@@ -205,7 +205,7 @@ static int snapshots (const juce::File& dir)
 #ifdef MAS_RI
 // Prints a hash of the rendered output for fixed scenarios. Run on the 1.4 and on the 1.5 test binaries:
 // with the new EQ off (any variant of "off") every 1.5 hash must equal the 1.4 hash of the same scenario.
-static int refHashes()
+static int refHashes (const juce::File& dumpDir)
 {
     auto setP = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
     {
@@ -250,6 +250,13 @@ static int refHashes()
                     for (size_t i = 0; i < sizeof (float) * (size_t) sig.getNumSamples(); ++i) { h ^= d[i]; h *= 1099511628211ull; }
                 }
                 std::printf ("REF %.0f %s %s %016llx\n", fs, sc.name, variants[v], (unsigned long long) h);
+                if (dumpDir != juce::File())
+                {
+                    dumpDir.createDirectory();
+                    juce::FileOutputStream fo (dumpDir.getChildFile (juce::String ((int) fs) + "_" + sc.name + "_" + variants[v] + ".f32"));
+                    fo.setPosition (0); fo.truncate();
+                    for (int c = 0; c < 2; ++c) fo.write (sig.getReadPointer (c), sizeof (float) * (size_t) sig.getNumSamples());
+                }
             }
     return 0;
 }
@@ -264,7 +271,7 @@ int main (int argc, char** argv)
     {
         const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-ref-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
-        return refHashes();
+        return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
     }
    #endif
     if (argc > 2 && juce::String (argv[1]) == "--snapshot")

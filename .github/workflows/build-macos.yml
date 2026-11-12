@@ -56,11 +56,17 @@ jobs:
           ./build/MasterSpaceAtmosTests_artefacts/Release/MasterSpaceAtmosTests | tee -a plugin-tests.log
           ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests | tee plugin-tests-14.log
           ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests | tee plugin-tests-15.log
-      - name: 1.5 with REVERB EQ off = 1.4, bit for bit (48 / 96 kHz, modules off / on, LIVE / STUDIO HQ)
+      - name: 1.5 with REVERB EQ off = 1.4 (engine bit for bit; plugin builds null test; 48 / 96 kHz, modules off / on, LIVE / STUDIO HQ)
         run: |
-          ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests --refhash > ref14.txt
-          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests --refhash > ref15.txt
-          python3 tests/compare_ref.py ref14.txt ref15.txt | tee identity-1.4-vs-1.5.log
+          set -o pipefail
+          g++ -O2 -std=c++17 -DMAS_ATMOS -DMAS_RI -o render_14 tests/render_space.cpp
+          g++ -O2 -std=c++17 -DMAS_ATMOS -DMAS_RI -DMAS_EQ -o render_15 tests/render_space.cpp
+          echo "== engine, strict floating point: 1.4 vs 1.5 (REVERB EQ off)" | tee identity-1.4-vs-1.5.log
+          python3 tests/eq_identity.py ./render_14 ./render_15 | tee -a identity-1.4-vs-1.5.log
+          ./build/MasterSpace14Tests_artefacts/Release/MasterSpace14Tests --refhash ref14 > /dev/null
+          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests --refhash ref15 > /dev/null
+          echo "== plugin builds: 1.4 vs 1.5 (REVERB EQ off / idle)" | tee -a identity-1.4-vs-1.5.log
+          python3 tests/compare_ref.py ref14 ref15 | tee -a identity-1.4-vs-1.5.log
       - uses: actions/upload-artifact@v4
         with:
           name: MASTER-SPACE-plugin-tests
