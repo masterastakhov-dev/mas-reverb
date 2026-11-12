@@ -6,6 +6,9 @@
 #pragma once
 
 #include "SpectrumTools.h"
+#ifdef MAS_STUDIO
+ #include "StudioLook.h"
+#endif
 
 namespace eqlab
 {
@@ -36,6 +39,33 @@ public:
     std::function<void (int)> onChange;
     void setSelected (int i) { if (i != sel) { sel = i; repaint(); } }
     int getSelected() const { return sel; }
+   #ifdef MAS_STUDIO
+    // studio: a row of tactile keys, the selected one pressed and lit
+    float itemW (int i) const { return juce::GlyphArrangement::getStringWidth (studio::inter (9.5f, true, 0.14f), items[i]) + 20.0f; }
+    int idealWidth() const { float w = 0; for (int i = 0; i < items.size(); ++i) w += itemW (i) + (i ? 4.0f : 0.0f); return juce::roundToInt (w); }
+    void paint (juce::Graphics& g) override
+    {
+        float x = 0;
+        for (int i = 0; i < items.size(); ++i)
+        {
+            const juce::Rectangle<float> c (x, 1.0f, itemW (i), (float) getHeight() - 3.0f);
+            studio::KeyState s; s.on = i == sel; s.hover = hoverItem == i;
+            studio::key (g, c, studio::themeOf (*this), s);
+            studio::keyText (g, c, items[i], studio::themeOf (*this), s, 9.5f);
+            x += itemW (i) + 4.0f;
+        }
+    }
+    void mouseMove (const juce::MouseEvent& e) override { const int h = itemAt ((float) e.x); if (h != hoverItem) { hoverItem = h; repaint(); } }
+    void mouseExit (const juce::MouseEvent&) override { hoverItem = -1; repaint(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const int i = itemAt ((float) e.x);
+        if (i >= 0 && i != sel) { sel = i; repaint(); if (onChange) onChange (i); }
+    }
+private:
+    int itemAt (float px) const { float x = 0; for (int i = 0; i < items.size(); ++i) { if (px >= x && px < x + itemW (i) + 4.0f) return i; x += itemW (i) + 4.0f; } return -1; }
+    int hoverItem = -1;
+   #else
     int idealWidth() const
     {
         float w = 6.0f;
@@ -73,6 +103,7 @@ public:
             x += w;
         }
     }
+   #endif
 private:
     juce::StringArray items; juce::Colour acc; int sel = 0;
 };
@@ -87,6 +118,18 @@ public:
     bool isOn() const { return on; }
     void setText (const juce::String& t) { if (t != text) { text = t; repaint(); } }
     void setDim (bool d) { if (d != dimmed) { dimmed = d; repaint(); } }
+   #ifdef MAS_STUDIO
+    int idealWidth() const { return juce::roundToInt (juce::GlyphArrangement::getStringWidth (studio::inter (9.5f, true, 0.14f), text) + (text.startsWith ("UNDO") ? 24.0f : 36.0f)); }
+    void paint (juce::Graphics& g) override
+    {
+        const auto r = getLocalBounds().toFloat().withTrimmedBottom (2.0f).withTrimmedTop (1.0f);
+        studio::KeyState s; s.on = on; s.down = down; s.hover = isMouseOver(); s.enabled = ! dimmed; s.led = ! text.startsWith ("UNDO");
+        studio::key (g, r, studio::themeOf (*this), s);
+        studio::keyText (g, r, text, studio::themeOf (*this), s, 9.5f);
+    }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+   #else
     int idealWidth() const { return juce::roundToInt (juce::GlyphArrangement::getStringWidth (font (10.5f, true, 0.1f), text) + 24.0f); }
     void paint (juce::Graphics& g) override
     {
@@ -97,6 +140,7 @@ public:
         g.setColour (on ? acc : col::text); g.setFont (font (10.5f, true, 0.1f));
         g.drawText (text, r, juce::Justification::centred);
     }
+   #endif
     void mouseDown (const juce::MouseEvent&) override { down = true; repaint(); }
     void mouseUp (const juce::MouseEvent& e) override { down = false; repaint(); if (contains (e.getPosition()) && onClick) onClick(); }
 private:
@@ -109,8 +153,22 @@ class Switch : public juce::Component
 public:
     Switch() { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     std::function<void()> onClick;
+   #ifdef MAS_STUDIO
+    void setOn (bool b) { if (b != target) { target = b; repaint(); } }
+   #else
     void setOn (bool b) { target = b; }
+   #endif
     void advance() { const float t = target ? 1.0f : 0.0f; if (pos != t) { pos += juce::jlimit (-0.25f, 0.25f, t - pos); repaint(); } }
+   #ifdef MAS_STUDIO
+    void paint (juce::Graphics& g) override
+    {
+        const auto r = getLocalBounds().toFloat().withTrimmedBottom (2.0f).withTrimmedTop (1.0f);
+        studio::KeyState s; s.on = target; s.led = true;
+        studio::key (g, r, studio::themeOf (*this), s);
+        studio::keyText (g, r, target ? "ON" : "OFF", studio::themeOf (*this), s, 9.5f);
+        juce::ignoreUnused (pos);
+    }
+   #else
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().toFloat().reduced (1.0f);
@@ -118,6 +176,7 @@ public:
         const float d = r.getHeight() - 6.0f, x = r.getX() + 3.0f + pos * (r.getWidth() - d - 6.0f);
         g.setColour (juce::Colour (0xffaaaabb).interpolatedWith (col::gold, pos)); g.fillEllipse (x, r.getY() + 3.0f, d, d);
     }
+   #endif
     void mouseUp (const juce::MouseEvent& e) override { if (contains (e.getPosition()) && onClick) onClick(); }
 private:
     bool target = false; float pos = 0.0f;
@@ -291,9 +350,21 @@ public:
     void paint (juce::Graphics& g) override
     {
         const auto b = getLocalBounds().toFloat();
+       #ifdef MAS_STUDIO
+        {
+            const auto& th = studio::themeOf (*this);
+            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff05080e), 0, 0, studio::mix (juce::Colour (0xff060a12), th.screen, 0.5f), 0, b.getBottom(), false));
+            g.fillRoundedRectangle (b, 14.0f);
+            g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.8f), 0, 0, juce::Colours::transparentBlack, 0, 14.0f, false));
+            g.fillRoundedRectangle (b.withHeight (16.0f), 14.0f);
+            g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.9f), 0, 0, juce::Colours::white.withAlpha (0.12f), 0, b.getBottom(), false));
+            g.drawRoundedRectangle (b.reduced (0.5f), 14.0f, 1.2f);
+        }
+       #else
         g.setGradientFill (juce::ColourGradient (col::bgTop, 0, 0, col::bgBot, 0, b.getBottom(), false));
         g.fillRoundedRectangle (b, 12.0f);
         g.setColour (col::border()); g.drawRoundedRectangle (b.reduced (0.5f), 12.0f, 1.0f);
+       #endif
         const float x0 = padL, x1 = (float) getWidth() - padR, y0 = padT, y1 = padT + ph();
         const bool avail = md.proc.eqAvailable();
         const auto now = juce::Time::getMillisecondCounter();
@@ -701,6 +772,15 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+       #ifdef MAS_STUDIO
+        {
+            const auto& th = studio::themeOf (*this);
+            for (auto& l : captions)
+                studio::engraved (g, l.first, l.second.toFloat(), studio::inter (10.0f, true, 0.2f), juce::Colour (0xff9aa6b8), juce::Justification::centredLeft);
+            studio::engraved (g, "REVERB EQ", titleArea.toFloat(), studio::inter (12.0f, true, 0.22f), th.gold, juce::Justification::centredLeft);
+            return;
+        }
+       #endif
         auto r = getLocalBounds().toFloat().reduced (2.0f, 0.0f);
         g.setColour (col::panel.withAlpha (0.9f)); g.fillRoundedRectangle (r, 14.0f);
         g.setColour (col::border()); g.drawRoundedRectangle (r.reduced (0.5f), 14.0f, 1.0f);
@@ -713,13 +793,24 @@ public:
     void resized() override
     {
         captions.clear();
+       #ifdef MAS_STUDIO
+        const int W = getWidth(), H = getHeight(), m = 12, rowH = 30;
+        int y = 6, x = m;
+        titleArea = { x, y, 110, rowH }; x += 110;
+        eqSwitch.setBounds (x, y, 64, rowH); x += 84;
+       #else
         const int W = getWidth(), H = getHeight(), m = 12, rowH = 26;
         int y = 10, x = m;
         titleArea = { x, y, 92, rowH }; x += 92;
         eqSwitch.setBounds (x, y + 2, 42, 22); x += 60;
+       #endif
         captions.push_back ({ "APPLY TO", juce::Rectangle<int> (x, y, 70, rowH) }); x += 72;
         bankSeg.setBounds (x, y, bankSeg.idealWidth(), rowH);
+       #ifdef MAS_STUDIO
+        undoBtn.setBounds (W - m - undoBtn.idealWidth(), y, undoBtn.idealWidth(), rowH);
+       #else
         undoBtn.setBounds (W - m - 150, y, 150, rowH);
+       #endif
         const int gy = y + rowH + 8, bottomH = 2 * rowH + 8 + 10;
         graph.setBounds (m, gy, W - 2 * m, H - gy - bottomH - 8);
 

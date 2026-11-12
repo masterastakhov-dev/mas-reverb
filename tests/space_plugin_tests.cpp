@@ -1,6 +1,9 @@
 // Headless tests of the MASTER SPACE plugin processor (state, presets, A/B, transitions, CPU).
 // Built with -DMAS_BUILD_TESTS=ON; run: MasterSpaceTests [--quick]
 #include "../Source/MasterSpace/PluginProcessor.h"
+#ifdef MAS_STUDIO
+ #include "../Source/MasterSpace/StudioEditor.h"
+#endif
 #ifdef MAS_EQ
 #include "../Source/MasterSpace/EqLabView.h"
 #endif
@@ -239,6 +242,92 @@ static int snapshots (const juce::File& dir)
     return 0;
 }
 
+#ifdef MAS_STUDIO
+// --studio-snapshot <dir>: the studio editor at 100 % and at 2x (Retina): MAIN, MAIN + DEPTH VIEW, REVERB EQ, PRO pages, themes
+static int studioSnapshots (const juce::File& dir)
+{
+    dir.createDirectory();
+    auto p = std::make_unique<MasterSpaceAudioProcessor>();
+    p->setRateAndBufferSizeDetails (48000, 512);
+    p->prepareToPlay (48000, 512);
+    auto& pm = p->getPresetManager();
+    pm.load (pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room 1.2 Open"));
+    auto set = [&] (const juce::String& id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+    set (ParamIDs::algorithm, 2.0f); set (ParamIDs::decay, 2.8f); set (ParamIDs::mix, 32.0f); set (ParamIDs::depth, 42.0f);
+    set (ParamIDs::erLevel, -3.0f); set (ParamIDs::lateLevel, -1.5f); set (ParamIDs::preDelay, 18.0f); set (ParamIDs::rgOn, 1.0f);
+    pump (100);
+    std::unique_ptr<juce::AudioProcessorEditor> edp (p->createEditor());
+    auto* ed = dynamic_cast<studio::Editor*> (edp.get());
+    if (ed == nullptr) { std::printf ("not a studio editor\n"); return 1; }
+    auto& panel = ed->getPanel();
+    ed->setVisible (true);
+    panel.setPro (false); panel.setDrawer (false, false); panel.setPage (0);
+    ed->setSize (1100, panel.logicalHeight());
+    auto feed = [&] (int blocks)
+    {
+        for (int k = 0; k < blocks; ++k)
+        {
+            auto sig = pinkish (48000, 0.05, 30 + k);
+            sig.applyGain ((k % 8) < 5 ? 0.5f : 0.0f);
+            run (*p, sig, 512); pump (34);
+        }
+    };
+    auto shot = [&] (const juce::String& name)
+    {
+        pump (200);
+        for (float sc : { 1.0f, 2.0f })
+        {
+            const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, sc);
+            juce::FileOutputStream fo (dir.getChildFile (name + (sc > 1.5f ? "@2x" : "") + ".png"));
+            fo.setPosition (0); fo.truncate();
+            juce::PNGImageFormat().writeImageToStream (img, fo);
+        }
+        std::printf ("  wrote %s (%dx%d)\n", name.toRawUTF8(), ed->getWidth(), ed->getHeight());
+    };
+    feed (20);
+    shot ("01_MAIN");
+    panel.setDrawer (true, false);
+    feed (30);
+    shot ("02_MAIN_DEPTH_VIEW");
+    // a few REVERB EQ bands and resonances for the detector
+    {
+        auto band = [&] (int bank, int i, int type, float f, float g, float q, int slope = 1)
+        {
+            using namespace ParamIDs;
+            set (eqId (bank, i, eqUsed), 1); set (eqId (bank, i, eqType), (float) type); set (eqId (bank, i, eqFreq), f);
+            set (eqId (bank, i, eqGain), g); set (eqId (bank, i, eqQ), q); set (eqId (bank, i, eqSlope), (float) slope);
+        };
+        set (ParamIDs::eqOn, 1);
+        band (0, 0, req::LowShelf, 100, 2, 0.71f); band (0, 1, req::Bell, 350, -3, 1.2f);
+        band (0, 2, req::Bell, 2600, 3, 0.8f); band (0, 3, req::HighShelf, 9000, -2.5f, 0.71f);
+        panel.setPage (12);
+        req::BandParams rb[8];
+        const float rf[3] = { 387.0f, 1200.0f, 4800.0f };
+        for (int i = 0; i < 3; ++i) { rb[i].used = true; rb[i].freq = rf[i]; rb[i].gainDb = 18.0f; rb[i].q = 18.0f; }
+        req::Bank res; res.prepare (48000.0); res.set (rb, true, true);
+        for (int k = 0; k < 70; ++k)
+        {
+            auto sig = pinkish (48000, 1600.0 / 48000.0, 20 + k);
+            res.process (sig.getWritePointer (0), sig.getWritePointer (1), sig.getNumSamples());
+            run (*p, sig, 512); pump (34);
+        }
+        shot ("03_REVERB_EQ");
+    }
+    panel.setPro (true);
+    panel.setPage (0);
+    shot ("04_MAIN_PRO");
+    const char* names[] = { "MAIN", "SPACE", "EARLY", "LATE", "DECAY_EQ", "MOD", "STEREO", "ADVANCED", "ATMOS", "DUCKER", "GUARD", "COLOR", "REVERB_EQ", "PRESETS" };
+    for (int i = 1; i < 14; ++i) { panel.setPage (i); feed (3); shot (juce::String ("05_PRO_") + juce::String (i).paddedLeft ('0', 2) + "_" + names[i]); }
+    panel.setPro (false); panel.setPage (0);
+    for (int th = 1; th < studio::kNumThemes; ++th) { panel.setTheme (th); shot (juce::String ("06_THEME_") + studio::theme (th).name); }
+    panel.setTheme (0);
+    ed->setSize (770, juce::roundToInt (770.0f * (float) panel.logicalHeight() / 1100.0f));
+    shot ("07_MAIN_DEPTH_VIEW_70pct");
+    edp.reset();
+    return 0;
+}
+#endif
+
 #ifdef MAS_RI
 // Prints a hash of the rendered output for fixed scenarios. Run on the 1.4 and on the 1.5 test binaries:
 // with the new EQ off (any variant of "off") every 1.5 hash must equal the 1.4 hash of the same scenario.
@@ -309,6 +398,14 @@ int main (int argc, char** argv)
         const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-ref-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
+    }
+   #endif
+   #ifdef MAS_STUDIO
+    if (argc > 2 && juce::String (argv[1]) == "--studio-snapshot")
+    {
+        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-snap-presets");
+        setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
+        return studioSnapshots (juce::File (juce::String (argv[2])));
     }
    #endif
     if (argc > 2 && juce::String (argv[1]) == "--snapshot")

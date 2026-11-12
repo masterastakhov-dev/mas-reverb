@@ -1,0 +1,119 @@
+name: Build MASTER SPACE STUDIO TEST (macOS AU + VST3)
+
+# Separate workflow for the studio redesign test build: the existing workflow and its builds are untouched.
+on:
+  push:
+    branches: [ feature/ui-redesign-studio ]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libx11-dev libxinerama-dev libxext-dev libxrandr-dev libxcursor-dev libfreetype6-dev libfontconfig1-dev ninja-build > /dev/null
+      - name: Build tests (1.5 and STUDIO)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
+          cmake --build build --target MasterSpace15Tests MasterSpaceStudioTests
+      - name: Processor tests + sound identity (STUDIO = 1.5 bit for bit)
+        run: |
+          ./build/MasterSpaceStudioTests_artefacts/Release/MasterSpaceStudioTests | tee studio-tests.log
+          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests --refhash > h15.txt
+          ./build/MasterSpaceStudioTests_artefacts/Release/MasterSpaceStudioTests --refhash > hst.txt
+          diff <(grep REF h15.txt) <(grep REF hst.txt) && echo "IDENTICAL: 32 renders" | tee -a studio-tests.log
+      - name: Studio editor snapshots (100 % and 2x)
+        run: ./build/MasterSpaceStudioTests_artefacts/Release/MasterSpaceStudioTests --studio-snapshot snapshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-tests-and-snapshots
+          path: |
+            studio-tests.log
+            snapshots
+          retention-days: 30
+
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: MasterSpaceStudio
+            name: MASTER SPACE STUDIO TEST
+            code: MSp6
+            slug: MASTER-SPACE-STUDIO-TEST-1.6.0
+    env:
+      TARGET: ${{ matrix.target }}
+      NAME: ${{ matrix.name }}
+      CODE: ${{ matrix.code }}
+      SLUG: ${{ matrix.slug }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64)
+        run: |
+          cmake -B build -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: cmake --build build --config Release --target "${TARGET}_AU" "${TARGET}_VST3" -- -quiet
+
+      - name: Ad-hoc sign
+        run: |
+          ART="build/${TARGET}_artefacts/Release"
+          codesign --force --deep --sign - "$ART/AU/$NAME.component"
+          codesign --force --deep --sign - "$ART/VST3/$NAME.vst3"
+          lipo -info "$ART/AU/$NAME.component/Contents/MacOS/$NAME"
+
+      - name: Validate Audio Unit (auval)
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/${TARGET}_artefacts/Release/AU/$NAME.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i "Mast" || true
+          auval -strict -v aufx "$CODE" Mast | tee auval.log
+          grep -q "AU VALIDATION SUCCEEDED" auval.log
+
+      - name: pluginval (state save / restore, automation, 44.1 / 48 / 96 kHz)
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          mkdir -p ~/Library/Audio/Plug-Ins/VST3
+          cp -R "build/${TARGET}_artefacts/Release/VST3/$NAME.vst3" ~/Library/Audio/Plug-Ins/VST3/
+          $PV --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 64,256,512,1024 \
+              --validate ~/Library/Audio/Plug-Ins/VST3/"$NAME.vst3" 2>&1 | tee pluginval-vst3.log
+          $PV --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 64,256,512,1024 \
+              --validate ~/Library/Audio/Plug-Ins/Components/"$NAME.component" 2>&1 | tee pluginval-au.log
+
+      - name: Package
+        run: |
+          ART="build/${TARGET}_artefacts/Release"
+          OUT="dist/$NAME"
+          mkdir -p "$OUT"
+          cp -R "$ART/AU/$NAME.component" "$OUT/"
+          cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
+          sed "s/__NAME__/$NAME/g" installer/install.command.in > "$OUT/Install $NAME.command"
+          README_IN="installer/README-${TARGET}.txt.in"
+          [ -f "$README_IN" ] || README_IN="installer/README.txt.in"
+          sed "s/__NAME__/$NAME/g" "$README_IN" > "$OUT/README.txt"
+          chmod +x "$OUT/Install $NAME.command"
+          cp auval.log "$OUT/auval-report.txt"
+          [ -f pluginval-vst3.log ] && cp pluginval-vst3.log "$OUT/pluginval-vst3-report.txt"
+          [ -f pluginval-au.log ] && cp pluginval-au.log "$OUT/pluginval-au-report.txt"
+          [ -d presets/factory ] && [ "$TARGET" = "MasterSpace" ] && mkdir -p "$OUT/Preset format" && cp docs/PRESET_FORMAT.md "$OUT/Preset format/" 2>/dev/null || true
+          cd dist && ditto -c -k --keepParent "$NAME" "$SLUG-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.slug }}-macOS
+          path: dist/${{ matrix.slug }}-macOS.zip
+          retention-days: 90

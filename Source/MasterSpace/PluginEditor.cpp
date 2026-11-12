@@ -1,5 +1,8 @@
 #include "PluginEditor.h"
 #include "PresetPanel.h"
+#ifdef MAS_STUDIO
+ #include "StudioLook.h"
+#endif
 #include "BinaryData.h"
 
 namespace
@@ -621,14 +624,22 @@ ControlPage::ControlPage (juce::AudioProcessorValueTreeState& s, MASLookAndFeel&
             switch (spec.kind)
             {
                 case Kind::knob:
+                   #ifdef MAS_STUDIO
+                    cell->slider = std::make_unique<studio::Knob>();
+                   #else
                     cell->slider = std::make_unique<juce::Slider>();
+                   #endif
                     styleKnob (*cell->slider, lnf, 96, 20);
                     addAndMakeVisible (*cell->slider);
                     cell->sAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, spec.paramID, *cell->slider);
                     setDefaultOnDoubleClick (*cell->slider, apvts, spec.paramID);
                     if (spec.irParamID != nullptr)
                     {
+                       #ifdef MAS_STUDIO
+                        cell->irSlider = std::make_unique<studio::Knob>();
+                       #else
                         cell->irSlider = std::make_unique<juce::Slider>();
+                       #endif
                         styleKnob (*cell->irSlider, lnf, 96, 20);
                         addChildComponent (*cell->irSlider);
                         cell->irAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, spec.irParamID, *cell->irSlider);
@@ -678,6 +689,10 @@ ControlPage::~ControlPage()
 
 void ControlPage::paint (juce::Graphics& g)
 {
+   #ifdef MAS_STUDIO
+    juce::ignoreUnused (g);     // the studio plate behind the page is the background
+    return;
+   #endif
     const auto r = getLocalBounds().toFloat();
     g.setColour (MASColours::panel.withAlpha (0.7f));
     g.fillRoundedRectangle (r, 10.0f);
@@ -701,6 +716,11 @@ void ControlPage::resized()
    #ifdef MAS_RI
     if (bottomBlock != nullptr)
         bottomBlock->setBounds (area.removeFromBottom (bottomHeight));
+   #endif
+   #ifdef MAS_STUDIO
+    if (leftBlock != nullptr && cells.empty())
+        leftBlock->setBounds (area.removeFromLeft (area.getWidth()));   // REVERB EQ: the whole page
+    else
    #endif
     if (leftBlock != nullptr)
         leftBlock->setBounds (area.removeFromLeft (leftWidth));
@@ -1330,8 +1350,14 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::knob, decay, "DECAY", true, irLength, "IR LENGTH" }, { K::knob, size, "SIZE", true }, { K::knob, preDelay, "PRE-DELAY" }, { K::knob, mix, "MIX" } },
         { { K::knob, erLevel, "EARLY" }, { K::knob, lateLevel, "LATE" }, { K::knob, width, "WIDTH" }, { K::knob, output, "OUTPUT" } },
         { { K::knob, diffusion, "DIFFUSION", true }, { K::knob, density, "DENSITY", true }, { K::knob, shape, "SHAPE", true }, { K::knob, spread, "SPREAD", true } } };
+   #ifdef MAS_STUDIO
+    // never shown: the studio shell has its own MAIN; no LIVING SPACE view is created in this build
+    juce::ignoreUnused (mainRows15);
+    pages.add (new ControlPage (processor.apvts, lnf, mainRows, 6));
+   #else
     juce::ignoreUnused (mainRows);
     pages.add (new ControlPage (processor.apvts, lnf, mainRows15, 4, std::make_unique<Main15Block> (processor, lnf), 560));
+   #endif
    #else
     pages.add (new ControlPage (processor.apvts, lnf, mainRows, 6, std::make_unique<DepthBlock> (processor.apvts, lnf), 236));
    #endif
@@ -1520,8 +1546,30 @@ void MASPanel::setChoice (const char* paramID, int index)
     updateState();
 }
 
+#ifdef MAS_STUDIO
+void MASPanel::setHosted (std::function<void (int)> onPageRequest)
+{
+    hosted = true;
+    pageRequest = std::move (onPageRequest);
+    for (auto* arr : { &algoButtons, &tabButtons, &routeButtons, &modeButtons })
+        for (auto* b : *arr) b->setVisible (false);
+    loadButton.setVisible (false);
+    infoLabel.setVisible (false);
+    resized();
+}
+
+void MASPanel::showHostedPage (int index)
+{
+    const juce::ScopedValueSetter<bool> svs (inHostedShow, true);
+    showPage (index);
+}
+#endif
+
 void MASPanel::showPage (int index)
 {
+   #ifdef MAS_STUDIO
+    if (hosted && pageRequest && ! inHostedShow) { pageRequest (index); return; }
+   #endif
     currentPage = index;
     for (int i = 0; i < pages.size(); ++i)
         pages[i]->setVisible (i == index);
@@ -1559,7 +1607,11 @@ void MASPanel::updateState()
 
     for (auto* pg : pages) pg->setIRMode (ir);
     roomPreset.setEnabled (! ir);
+   #ifdef MAS_STUDIO
+    loadButton.setVisible (ir && ! hosted);
+   #else
     loadButton.setVisible (ir);
+   #endif
 
     if (! ir)
        #ifdef MAS_EQ
@@ -1613,6 +1665,9 @@ void MASPanel::loadIRFile (const juce::File& f)
 
 void MASPanel::paint (juce::Graphics& g)
 {
+   #ifdef MAS_STUDIO
+    if (hosted) return;
+   #endif
     const auto area = getLocalBounds().toFloat();
     g.setGradientFill (juce::ColourGradient (MASColours::bgTop, 0.0f, 0.0f, MASColours::bgBottom, 0.0f, area.getHeight(), false));
     g.fillAll();
@@ -1645,6 +1700,15 @@ void MASPanel::paint (juce::Graphics& g)
 
 void MASPanel::resized()
 {
+   #ifdef MAS_STUDIO
+    if (hosted)
+    {
+        for (auto* pg : pages) pg->setBounds (getLocalBounds());
+        if (presetBrowser != nullptr) presetBrowser->setBounds (getLocalBounds().reduced (6));
+        roomPreset.setBounds (22, 14, 160, 26);
+        return;   // the preset bar and the dialog live in the studio shell
+    }
+   #endif
     const int right = baseWidth - 32;
 
     // row 1: algorithms

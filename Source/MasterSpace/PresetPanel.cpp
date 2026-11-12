@@ -1,4 +1,7 @@
 #include "PresetPanel.h"
+#ifdef MAS_STUDIO
+ #include "StudioLook.h"
+#endif
 
 namespace
 {
@@ -271,6 +274,14 @@ PresetBar::PresetBar (MasterSpaceAudioProcessor& p, MASLookAndFeel& l, PresetDia
     matchButton.onClick = [this] { processor.setLevelMatch (! processor.getLevelMatch()); refresh(); };
     engineButton.onClick = [this] { showEngineMenu(); };
 
+   #ifdef MAS_STUDIO
+    // studio strip: compact keys; the DSP engine choice stays on the ADVANCED page
+    prevButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xb9")));
+    nextButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xba")));
+    for (auto* b : { &slotA, &slotB, &matchButton }) b->getProperties().set ("gold", true);
+    for (auto* b : { &prevButton, &nextButton }) b->getProperties().set ("fontH", 15.0f);
+    engineButton.setVisible (false);
+   #endif
     refresh();
     startTimerHz (5);
 }
@@ -448,6 +459,40 @@ void PresetBar::timerCallback()
 
 void PresetBar::paint (juce::Graphics& g)
 {
+   #ifdef MAS_STUDIO
+    {
+        const auto& th = studio::themeOf (*this);
+        const auto r = nameButton.getBounds().toFloat();
+        juce::ColourGradient bg (juce::Colour (0xff07090d), 0, r.getY(), juce::Colour (0xff0d1117), 0, r.getBottom(), false);
+        g.setGradientFill (bg); g.fillRoundedRectangle (r, 6.0f);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.9f), 0, r.getY(), juce::Colours::white.withAlpha (nameButton.isMouseOver() ? 0.16f : 0.07f), 0, r.getBottom(), false));
+        g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+        auto t = nameButton.getBounds().reduced (12, 0);
+        if (flashTicks > 0)
+        {
+            g.setColour (flashError ? juce::Colour (0xffff7a6a) : juce::Colour (0xffe8eef6));
+            g.setFont (studio::inter (12.5f, true));
+            g.drawFittedText (flashText, t, juce::Justification::centredLeft, 1);
+        }
+        else
+        {
+            const auto cf = studio::inter (9.0f, true, 0.16f);
+            g.setFont (cf);
+            g.setColour (th.gold.withAlpha (0.85f));
+            const int cw = juce::jmin (110, juce::GlyphArrangement::getStringWidthInt (cf, shownCategory.toUpperCase()) + 10);
+            g.drawText (shownCategory.toUpperCase(), t.removeFromLeft (cw), juce::Justification::centredLeft);
+            g.setColour (juce::Colour (0xffe8eef6));
+            g.setFont (studio::inter (12.5f));
+            g.drawFittedText (shownName + (shownModified ? " *" : ""), t.withTrimmedRight (16), juce::Justification::centredLeft, 1);
+        }
+        juce::Path chev;
+        const float ax = r.getRight() - 13.0f, ay = r.getCentreY();
+        chev.startNewSubPath (ax - 4.0f, ay - 2.0f); chev.lineTo (ax, ay + 2.0f); chev.lineTo (ax + 4.0f, ay - 2.0f);
+        g.setColour (juce::Colour (0xff8a95a6));
+        g.strokePath (chev, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        return;
+    }
+   #endif
     // preset name field (drawn over the transparent name button)
     const auto r = nameButton.getBounds().toFloat();
     g.setColour (MASColours::panel);
@@ -490,6 +535,13 @@ void PresetBar::resized()
     auto r = getLocalBounds();
     const int h = r.getHeight();
     auto take = [&r, h] (int w, int gap = 6) { auto b = r.removeFromLeft (w).withHeight (h); r.removeFromLeft (gap); return b; };
+   #ifdef MAS_STUDIO
+    prevButton.setBounds (take (28, 4)); nameButton.setBounds (take (200, 4)); nextButton.setBounds (take (28, 8));
+    favButton.setBounds (take (28)); saveButton.setBounds (take (54)); saveAsButton.setBounds (take (66, 14));
+    slotA.setBounds (take (32, 4)); slotB.setBounds (take (32)); copyButton.setBounds (take (48));
+    undoButton.setBounds (take (54)); matchButton.setBounds (take (62, 0));
+    return;
+   #endif
 
     prevButton.setBounds (take (28, 4));
     nameButton.setBounds (take (300, 4));

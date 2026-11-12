@@ -1,0 +1,61 @@
+__NAME__ 1.6.0 (тестовая сборка нового интерфейса) — masterastakhovsound
+"Don't add reverb. Create space."
+
+Установка
+1. Распакуй архив.
+2. Нажми правой кнопкой на «Install __NAME__.command» → «Открыть» → «Открыть».
+   Если macOS не даёт открыть: Системные настройки → Конфиденциальность
+   и безопасность → внизу «Всё равно открыть» (скрипт не подписан Apple).
+3. Перезапусти DAW. В Logic: Audio FX → Audio Units → masterastakhovsound → __NAME__.
+
+Установка вручную (Терминал)
+  cp -R "__NAME__.component" ~/Library/Audio/Plug-Ins/Components/
+  cp -R "__NAME__.vst3" ~/Library/Audio/Plug-Ins/VST3/
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"__NAME__.component" ~/Library/Audio/Plug-Ins/VST3/"__NAME__.vst3"
+
+Что это
+  Звук и все параметры — MASTER SPACE 1.5 EQ LAB без изменений (проверено:
+  32 рендера бит в бит одинаковы с 1.5). Новое только окно плагина — студийный
+  редизайн. Ставится РЯДОМ со всеми прежними версиями: своё имя, свой код
+  плагина (MSp6) и своя папка пресетов — ничего не заменяет. Проекты с 1.5
+  в эту сборку не переносятся (это другой плагин для DAW), но пресеты 1.5
+  можно скопировать в её папку: формат тот же.
+
+Окно
+  Верх: логотип, MASTER SPACE, THEME (5 тем: MIDNIGHT BLUE, GRAPHITE GOLD,
+  DEEP RED, PURPLE VELVET, PURE BLACK).
+  Строка команд: пресеты (‹ › список ★ SAVE SAVE AS), A / B, A→B, UNDO, MATCH,
+  переход MAIN / REVERB EQ и переключатель MIX / PRO.
+  MIX — только MAIN и REVERB EQ. PRO — все страницы прежней версии вкладками
+  (SPACE, EARLY, LATE, DECAY EQ, MOD, STEREO, ADVANCED, ATMOS, DUCKER, GUARD,
+  COLOR, REVERB EQ, PRESETS). MIX / PRO на звук не влияет.
+
+MAIN
+  В центре DEPTH, слева DECAY, справа MIX. Малые ручки: EARLY, LATE, PRE-DELAY,
+  BLOOM (BLOOM работает только с ATMOS TAIL, иначе приглушена).
+  Ряд клавиш: STUDIO ROOM / CHAMBER / HALL / ATMOS TAIL, INSERT / AUX, IR,
+  SMART DUCKER, RESONANCE GUARD, HARMONIC COLOR.
+  IR: клик переключает ALGO / IR (если IR не загружен — откроется выбор файла);
+  WAV / AIFF / FLAC можно просто бросить на окно. В режиме IR вместо DECAY
+  появляется IR LENGTH.
+  OUTPUT, DIFFUSION, DENSITY, SHAPE, SPREAD и блокировки — в PRO (LATE, ADVANCED).
+
+Ручки
+  Тянуть вверх / вниз. Shift — точная настройка. Колесо мыши. Двойной клик —
+  значение по умолчанию. Клик по числу под ручкой — ввод с клавиатуры.
+
+DEPTH VIEW (SPATIAL POSITION)
+  Клавиша DEPTH VIEW или полоса SPATIAL POSITION открывает панель снизу: окно
+  плагина становится выше примерно за 0,2 с, звук не прерывается. Некоторые DAW
+  меняют размер окна сразу, без плавности, — это нормально.
+  SOURCE (золотой шар) — это та же самая ручка DEPTH: тянешь шар вглубь — ручка
+  поворачивается, крутишь ручку — шар едет. Колесо мыши над комнатой тоже меняет
+  DEPTH. Кольца вокруг шара показывают WIDTH. По бокам фейдеры WIDTH и SIZE.
+  Полоса EARLY / LATE — доля ранних отражений и хвоста, измеренная движком.
+  Открыта панель или нет — хранится только в окне, на звук не влияет.
+
+Размер окна
+  Тянется за правый нижний угол, от 70 % до 200 %. Всё перерисовывается в
+  нужном разрешении, на Retina чётко.
+
+Шрифты: Inter и Cinzel, лицензия SIL Open Font License 1.1.

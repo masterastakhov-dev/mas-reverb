@@ -1,5 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#ifdef MAS_STUDIO
+ #include "StudioEditor.h"
+#endif
 #include "PresetManager.h"
 
 using APF  = juce::AudioParameterFloat;
@@ -1951,7 +1954,11 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
 
 juce::AudioProcessorEditor* MasterSpaceAudioProcessor::createEditor()
 {
+   #ifdef MAS_STUDIO
+    return new studio::Editor (*this);
+   #else
     return new MasterSpaceEditor (*this);
+   #endif
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

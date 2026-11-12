@@ -147,7 +147,20 @@ public:
     void resized() override;
     void loadIRFile (const juce::File&);
 
+   #ifdef MAS_STUDIO
+    // studio build: this panel only hosts the classic pages inside the studio shell (no header, tabs or bar of its own)
+    void setHosted (std::function<void (int)> onPageRequest);
+    void showHostedPage (int index);
+    void chooseIR() { chooseIRFile(); }
+    PresetBar* getPresetBar() { return presetBar.get(); }
+    PresetDialog* getPresetDialog() { return presetDialog.get(); }
+   #endif
+
 private:
+   #ifdef MAS_STUDIO
+    bool hosted = false, inHostedShow = false;
+    std::function<void (int)> pageRequest;
+   #endif
     void timerCallback() override;
     void setChoice (const char* paramID, int index);
     void updateState();

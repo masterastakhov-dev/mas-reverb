@@ -107,6 +107,19 @@ juce_add_binary_data(MasterSpace15Presets HEADER_NAME MasterSpacePresets.h NAMES
     SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
 target_link_libraries(MasterSpace15 PRIVATE MasterSpace15Presets)
 
+# MASTER SPACE STUDIO TEST: the 1.5 EQ LAB engine, unchanged, with the studio redesign of the editor (MAS_STUDIO).
+# A test build: its own name, code, bundle id and preset folder, so it installs next to 1.5 and every earlier build.
+juce_add_binary_data(MasStudioFonts HEADER_NAME StudioFonts.h NAMESPACE StudioFonts
+    SOURCES Resources/fonts/Inter-Regular.ttf Resources/fonts/Inter-SemiBold.ttf Resources/fonts/Cinzel-SemiBold.ttf)
+mas_add_plugin(MasterSpaceStudio "MASTER SPACE STUDIO TEST" MSp6 com.masterastakhovsound.masterspacestudiotest 1.6.0
+               Source/MasterSpace "MASTER SPACE studio redesign (test build)")
+target_sources(MasterSpaceStudio PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp
+               Source/MasterSpace/StudioLook.cpp Source/MasterSpace/StudioEditor.cpp)
+target_compile_definitions(MasterSpaceStudio PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1)
+juce_add_binary_data(MasterSpaceStudioPresets HEADER_NAME MasterSpacePresets.h NAMESPACE MasterSpacePresets
+    SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
+target_link_libraries(MasterSpaceStudio PRIVATE MasterSpaceStudioPresets MasStudioFonts)
+
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
                Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
@@ -183,5 +196,22 @@ if(MAS_BUILD_TESTS)
         JucePlugin_Name="MASTER SPACE 1.5 EQ LAB" JucePlugin_VersionString="1.5.0")
     target_link_libraries(MasterSpace15Tests PRIVATE
         MasterSpace15Presets MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # the same tests on the STUDIO TEST build (1.5 engine + studio editor), plus studio snapshots
+    juce_add_console_app(MasterSpaceStudioTests PRODUCT_NAME "MasterSpaceStudioTests")
+    target_sources(MasterSpaceStudioTests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp
+        Source/MasterSpace/StudioLook.cpp
+        Source/MasterSpace/StudioEditor.cpp)
+    target_compile_definitions(MasterSpaceStudioTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1
+        JucePlugin_Name="MASTER SPACE STUDIO TEST" JucePlugin_VersionString="1.6.0")
+    target_link_libraries(MasterSpaceStudioTests PRIVATE
+        MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

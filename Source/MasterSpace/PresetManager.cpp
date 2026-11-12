@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #if defined (MAS_EQ)
+   #if defined (MAS_STUDIO)
+    const char* product = "MASTER SPACE STUDIO TEST"; // studio test build: its own library, 1.5 untouched
+   #elif defined (MAS_EQ)
     const char* product = "MASTER SPACE 1.5 EQ LAB";   // 1.5 build: its own library, older builds untouched
    #elif defined (MAS_RI)
     const char* product = "MASTER SPACE 1.4";      // 1.4 build: its own library, 1.2 / ATMOS presets untouched
