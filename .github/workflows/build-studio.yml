@@ -4,6 +4,8 @@ name: Build MASTER SPACE STUDIO TEST (macOS AU + VST3)
 on:
   push:
     branches: [ feature/ui-redesign-studio ]
+  pull_request:
+    branches: [ feature/ui-redesign-studio ]
   workflow_dispatch:
 
 jobs:
