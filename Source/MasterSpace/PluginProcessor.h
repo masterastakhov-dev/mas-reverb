@@ -150,12 +150,12 @@ namespace ParamIDs
     inline constexpr const char* eqOn = "eqon";
     inline constexpr char eqBankChar[3] = { 'w', 'e', 'l' };
     inline constexpr char eqFieldChar[] = { 'u', 'b', 't', 'f', 'g', 'q', 's'
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
                                              , 'd', 'h', 'm'
 #endif
                                            };
     enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope,
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
                    eqDynOn, eqDynThreshold, eqDynMax,
 #endif
                    eqNumFields };
