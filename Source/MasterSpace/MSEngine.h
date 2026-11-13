@@ -27,7 +27,7 @@
 #endif
 #ifdef MAS_EQ
 #include "ReverbEQ.h"
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
 #include "ManualDynamicEQ.h"
 #endif
 #endif
@@ -1040,7 +1040,7 @@ public:
         scratch.assign (12 * kChunk, 0.0f);
        #ifdef MAS_EQ
         for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->prepare (fs);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         for (auto* b : { &dynEarly, &dynLate, &dynWetE, &dynWetL }) b->prepare (fs);
 #endif
        #endif
@@ -1070,7 +1070,7 @@ public:
        #endif
        #ifdef MAS_EQ
         for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->reset();
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         for (auto* b : { &dynEarly, &dynLate, &dynWetE, &dynWetL }) b->reset();
 #endif
         applyEq (true);
@@ -1392,7 +1392,7 @@ private:
             }
             eqEarly.process (erL, erR, n);
             eqLate.process (ltL, ltR, n);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
             dynEarly.process (erL, erR, n);
             dynLate.process (ltL, ltR, n);
 #endif
@@ -1456,7 +1456,7 @@ private:
             if (tB == req::Analyzer::WetPre) analyzer->pushSum (1, erL, erR, gE, ltL, ltR, gL, n);
             eqWetE.process (erL, erR, n);
             eqWetL.process (ltL, ltR, n);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
             dynWetE.process (erL, erR, n);
             dynWetL.process (ltL, ltR, n);
 #endif
@@ -1657,7 +1657,7 @@ private:
     void applyEq (bool force)
     {
         const auto& e = params.eq;
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         // Dynamic bands are processed exclusively by ManualDynamicBank, not the static EQ bank.
         req::BandParams sb[req::numBanks][req::kBands];
         for (int b = 0; b < req::numBanks; ++b)
@@ -1682,7 +1682,7 @@ private:
 #endif
     }
     req::Bank eqEarly, eqLate, eqWetE, eqWetL;
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
     req::ManualDynamicBank dynEarly, dynLate, dynWetE, dynWetL;
 #endif
     req::Analyzer* analyzer = nullptr;
@@ -1693,7 +1693,7 @@ public:
     float levelDb (int k) const { return (float) (10.0 * std::log10 (levelMs[k] + 1e-14)); }   // 0 in, 1/2 early L/R, 3/4 late L/R
     void setAnalyzer (req::Analyzer* a) { analyzer = a; }       // audio thread; nullptr = no taps
     bool eqActive() const { return eqEarly.isActive() || eqLate.isActive() || eqWetE.isActive() || eqWetL.isActive()
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         || dynEarly.isActive() || dynLate.isActive() || dynWetE.isActive() || dynWetL.isActive()
 #endif
         ; }
