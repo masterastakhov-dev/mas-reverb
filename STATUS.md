@@ -17,7 +17,7 @@
 |---|---|---|---|
 | MASTER SPACE 1.5 EQ LAB | MSp5 | `feature/eq-lab` (`353ee11`) | заморожена, точка сохранения |
 | MASTER SPACE STUDIO TEST 1.6.0 | MSp6 | `feature/ui-redesign-studio` (`16a6459`) | собрана (Claude), auval + pluginval OK, звук = 1.5 бит в бит; **ждёт отзыва владельца из DAW** |
-| MASTER SPACE 1.7d DYNAMIC TEST | MS7d | `claude/1.7d-dynamic` (на основе PR #2), PR claude → `feature/ui-redesign-studio` | Claude: ревью и доработка по Issue #4, 153 теста, OFF = 1.6 бит в бит; **ждёт независимого ревью ChatGPT и проверки владельцем в DAW** |
+| MASTER SPACE 1.7d DYNAMIC TEST | MS7d | `claude/1.7d-dynamic` (на основе PR #2), PR #5 → `feature/ui-redesign-studio` | Claude: Dynamic Cut, PEAK DETECT, лампы, **SIGNAL RAILS** (`091af45`); 184 проверки, OFF = 1.6 = 1.5 бит в бит; **ждёт ревью ChatGPT и проверки владельцем в DAW** |
 | — | — | `chatgpt/ci-fix-numpy-eq-lab`, PR #1 | правка CI (numpy) для 1.4 / 1.5; ждёт слияния владельцем |
 | — | — | `claude/collab-rules`, PR #3 | правила совместной работы; ждёт проверки и слияния владельцем |
 
@@ -29,11 +29,46 @@
 
 ## Следующие шаги
 
-- **ChatGPT:** независимое ревью PR `claude/1.7d-dynamic` (код, тесты, соответствие Issue #4; лампы и UX Dynamic Cut по снимкам в артефакте CI).
-- **Владелец:** установить ZIP 1.7d, проверить в DAW. Послушать `1_dynamic_cut_OFF.wav` / `2_dynamic_cut_ON.wav`, решить по звучанию Dynamic Cut.
-- **Claude:** исправления по ревью; PR #2 после этого можно закрыть как поглощённый (решение владельца).
+- **ChatGPT:** ревью SIGNAL RAILS в PR #5 (коммит `091af45`): `IOMeters.h`, точки измерения в `processBlock` / `processBlockBypassed`, `MainPage::tickRails`, тесты, снимки `R1…R4_RAILS_*` в артефакте CI, установщик `install-MasterSpace17d.command.in`. Эталон дизайна: `docs/design/signal-rails-concept-approved.png`.
+- **Владелец:** установить новый ZIP 1.7d, проверить индикаторы и AU в REAPER (установщик сам предложит проверку auval).
+- **Claude, следующая итерация:** фирменная эмблема вместо волны в шапке (ТЗ ChatGPT в PR #5 от 13.11, 15:37) — сначала скриншот владельцу.
+- **Вопрос к ChatGPT / владельцу:** RMS показывается без поправки +3 dB (синус −18 dBFS = −21 dBFS RMS). Если нужна шкала «синус = пик» (AES-17), это одна константа, звук не затрагивается.
 
 ## Журнал
+
+### 13.11.2026 — Claude: 1.7d SIGNAL RAILS (концепт утверждён владельцем, PR #5)
+- Коммит `091af45` в `claude/1.7d-dynamic`. Дизайн — ровно утверждённый концепт: INPUT под DECAY (синий), OUTPUT под MIX (золотой), окно не менялось.
+- Измерение (`Source/MasterSpace/IOMeters.h`, только при `MAS_STUDIO_DYN`):
+  - INPUT — вход плагина до любой обработки (моно-вход: один сигнал на L и R).
+  - OUTPUT — то, что выходит из плагина после всего: dry/wet, A/B MATCH, OUTPUT.
+  - RMS — одно-полюсное усреднение 300 мс по каждому каналу, не зависит от размера блока; без поправки +3 dB.
+  - Sample peak — fetch-max в атомике; UI забирает через exchange.
+  - В аудиопотоке нет выделений, блокировок и обращений к GUI. Измерение идёт, только пока MAIN на экране.
+  - Bypass хоста: `processBlockBypassed` измеряет вокруг стандартного bypass JUCE, звук не меняется.
+  - NaN/inf не «замораживают» индикатор; в тишине точный ноль, без денормалов.
+- UI (`RailBallistics`, таймер 60 Гц в MainPage):
+  - пик — мгновенно, удержание 0,8 с, мягкий возврат 24 dB/s;
+  - красный — только реальный sample peak от −3 dBFS;
+  - остановленный хост → индикаторы плавно гаснут;
+  - рамка OUTPUT теплеет с SATURATION MIX при работающем HARMONIC COLOR (только оформление).
+- Исправлено: двойной `restoreState` в отрисовке (из-за него OUTPUT рисовался не на месте в первом черновике концепта).
+- Тесты 184/184, в том числе:
+  - −18 dBFS синус 44,1/48/96 кГц: RMS −21,01, пик −18,00;
+  - OUTPUT сверен с независимым офлайн-расчётом по реальному выходу;
+  - моно/стерео, блоки 64 vs 4096, смена частоты на одном экземпляре, одиночный отсчёт в любом месте блока;
+  - тишина, HC on/off, bypass, NaN; звук с индикаторами и без — бит в бит;
+  - стоимость 0,03 % реального времени;
+  - снимки с реальным звуком (тишина / средний / пики / перегрузка выхода) с проверкой пикселей; `--refhash` без изменений.
+- Наблюдение (не ошибка): в INSERT при MIX 0 % OUTPUT ниже INPUT — так работает DEPTH (расстояние источника, `directGain`). Звук не трогал.
+- Установщик только для 1.7d (`installer/install-MasterSpace17d.command.in`):
+  - после установки предлагает `auval -v aufx MS7d Mast` (Enter = да, n = нет);
+  - ясные сообщения: OK / не прошёл / не найден / auval недоступен / таймаут 2 мин;
+  - установку никогда не прерывает; подсказка про AU re-scan в REAPER;
+  - проверено на 5 сценариях (код возврата 0 во всех); CI проверяет, что шаблон заполнен.
+- README 1.7d: разделы SIGNAL RAILS и «REAPER видит только VST3».
+- CI зелёный: https://github.com/masterastakhov-dev/mas-reverb/actions/runs/43459090020 — 184/184, IDENTICAL 32 renders (1.5 = 1.6 = 1.7d OFF), auval SUCCEEDED, pluginval AU и VST3 SUCCESS, универсальный x86_64 + arm64.
+  - ZIP: артефакт `MASTER-SPACE-1.7d-DYNAMIC-TEST-macOS`.
+  - Снимки и лог: артефакт `dynamic17d-tests-and-snapshots`.
 
 ### 13.11.2026 — Claude: 1.7d, два замечания ревью ChatGPT (PR #5)
 - Лампы: при HC ON и SATURATION MIX 0 % свечение почти дежурное (idle 0,12 → 0,14). Дальше разгорается по реальному количеству сатурации; DRIVE и уровень сигнала масштабируются тем же количеством.
