@@ -300,6 +300,75 @@ void grille (juce::Graphics& g, juce::Rectangle<float> r, const Theme& t)
     g.fillPath (web);
 }
 
+
+#ifdef MAS_STUDIO_DYN
+// A warm filament glow BEHIND the existing hexagonal metal mesh. UI-only.
+// Every update is message-thread cached by Panel; no work in the audio callback.
+void glowingGrille (juce::Graphics& g, juce::Rectangle<float> r, const Theme& t, float heat)
+{
+    heat = juce::jlimit (0.0f, 1.0f, heat);
+    recess (g, r.expanded (3.0f), 7.0f, rgb (3, 4, 6));
+    juce::Path clip;
+    clip.addRoundedRectangle (r, 5.0f);
+    juce::Graphics::ScopedSaveState save (g);
+    g.reduceClipRegion (clip);
+    g.setColour (rgb (5, 5, 7));
+    g.fillRect (r);
+
+    if (heat > 0.001f)
+    {
+        const juce::Colour amber (0xffffa04c), core (0xffffce83), red (0xff76280d);
+        juce::ColourGradient background (red.withAlpha (0.20f * heat), r.getCentreX(), r.getY(),
+                                          red.withAlpha (0.16f * heat), r.getCentreX(), r.getBottom(), false);
+        background.addColour (0.5, amber.withAlpha (0.34f * heat));
+        g.setGradientFill (background);
+        g.fillRect (r);
+
+        // Three hidden heat sources: soft, uneven radiation diffusing through the apertures.
+        for (int n = 0; n < 3; ++n)
+        {
+            const float cy = r.getY() + r.getHeight() * (0.21f + 0.29f * n);
+            const float asym = n == 1 ? -3.0f : 2.0f;
+            const float cx = r.getCentreX() + asym;
+            juce::ColourGradient glow (core.withAlpha (0.55f * heat), cx, cy,
+                                        red.withAlpha (0.0f), cx + 25.0f, cy + 37.0f, true);
+            glow.addColour (0.40, amber.withAlpha (0.33f * heat));
+            g.setGradientFill (glow);
+            g.fillEllipse (cx - 25.0f, cy - 39.0f, 50.0f, 78.0f);
+        }
+    }
+
+    // The mesh is painted LAST: warm light remains recessed inside the chassis.
+    juce::Path web;
+    web.addRectangle (r);
+    const float cr = 3.1f, dx = cr * 1.8f, dy = cr * 1.56f, ir = cr * 0.78f;
+    int j = 0;
+    for (float y = r.getY() - 2.0f; y < r.getBottom() + 4.0f; y += dy, ++j)
+        for (float x = r.getX() - 2.0f + ((j & 1) ? dx * 0.5f : 0.0f); x < r.getRight() + 4.0f; x += dx)
+        {
+            juce::Path h;
+            for (int k = 0; k < 6; ++k)
+            {
+                const float a = kPi / 6.0f + (float) k * kPi / 3.0f;
+                if (k == 0) h.startNewSubPath (x + std::cos (a) * ir, y + std::sin (a) * ir);
+                else h.lineTo (x + std::cos (a) * ir, y + std::sin (a) * ir);
+            }
+            h.closeSubPath();
+            web.addPath (h);
+        }
+    web.setUsingNonZeroWinding (false);
+    g.setColour (rgb (21, 23, 27));
+    g.fillPath (web);
+
+    if (heat > 0.001f)
+    {
+        g.setColour (juce::Colour (0xffffb35f).withAlpha (0.12f * heat));
+        g.drawRoundedRectangle (r.reduced (0.9f), 4.2f, 0.75f);
+    }
+    juce::ignoreUnused (t);
+}
+#endif
+
 void goldLine (juce::Graphics& g, float x, float y0, float y1, const Theme& t)
 {
     g.setColour (juce::Colours::black.withAlpha (0.6f));
