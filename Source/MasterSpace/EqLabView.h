@@ -226,10 +226,17 @@ struct Model
     {
         ensure (i);
         setRaw (i, ParamIDs::eqType, (float) type); setRaw (i, ParamIDs::eqQ, typeQ (type));
+#ifdef MAS_STUDIO
+        if (type != req::Bell) setRaw (i, ParamIDs::eqDynOn, 0.0f);
+#endif
         if (req::isCut (type)) setRaw (i, ParamIDs::eqGain, 0.0f);
         refresh();
     }
-    void resetBand (int i) { setRaw (i, ParamIDs::eqUsed, 0.0f); setRaw (i, ParamIDs::eqBypass, 0.0f); refresh(); }   // main band: back home and out of the signal; free band: removed
+    void resetBand (int i) {
+#ifdef MAS_STUDIO
+        setRaw (i, ParamIDs::eqDynOn, 0.0f);
+#endif
+        setRaw (i, ParamIDs::eqUsed, 0.0f); setRaw (i, ParamIDs::eqBypass, 0.0f); refresh(); }   // main band: back home and out of the signal; free band: removed
 
     // ---- PEAK TO EQ: prepares a Bell at the peak, gain 0 dB. Never cuts anything by itself.
     int freeBandForPeak() const
