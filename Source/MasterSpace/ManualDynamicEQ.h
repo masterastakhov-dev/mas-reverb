@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
 namespace req
 {
 class ManualDynamicBank
