@@ -291,10 +291,14 @@ static int studioSnapshots (const juce::File& dir)
     set (ParamIDs::hcOn, 0.0f);
     feed (70);
     shot ("01a_ANALOG_GRILLES_LAMP_OFF");
-    set (ParamIDs::hcDrive, 80.0f);
+    set (ParamIDs::hcDrive, 50.0f);
+    set (ParamIDs::hcMix, 35.0f);
     set (ParamIDs::hcOn, 1.0f);
     feed (25);
-    shot ("01b_ANALOG_GRILLES_LAMP_ON");
+    shot ("01b_ANALOG_GRILLES_LAMP_ON_MIX35");
+    set (ParamIDs::hcMix, 100.0f);
+    feed (25);
+    shot ("01c_ANALOG_GRILLES_LAMP_ON_MIX100");
     set (ParamIDs::hcOn, 0.0f);
 #endif
     panel.setDrawer (true, false);
@@ -2098,25 +2102,25 @@ int main (int argc, char** argv)
         };
 
        #ifdef MAS_STUDIO_DYN
-        {   // 1.7d: a confirmed marker is held >= 3 s after the resonance stops, marked as held, then released
+        {   // 1.7d: a confirmed marker is held >= 5 s after the resonance stops, marked as held, then released
             const double fs = 48000.0;
             auto x = noiseWithPeaks (fs, 4.0);
-            auto plain = pinkish (fs, 6.0, 21);
+            auto plain = pinkish (fs, 9.0, 21);
             for (int i = 0; i < plain.getNumSamples(); ++i) x.push_back (0.25f * (plain.getSample (0, i) + plain.getSample (1, i)));
             spec::SpectrumEngine eng;
             bool at25 = false, heldFlag = false, at45 = true, liveBefore = false;
-            analyse (eng, x, fs, 0.3, 9.6, [&] (double tm)
+            analyse (eng, x, fs, 0.3, 12.6, [&] (double tm)
             {
                 const auto& mk = eng.detector.markers();
                 for (const auto& p : mk) if (std::abs (p.freq / 1200.0 - 1.0) < 0.015)
                 {
                     if (tm > 3.5 && tm < 3.9 && ! p.held) liveBefore = true;
-                    if (tm > 6.4 && tm < 6.6) { at25 = true; heldFlag = heldFlag || p.held; }
+                    if (tm > 8.4 && tm < 8.6) { at25 = true; heldFlag = heldFlag || p.held; }
                 }
-                if (tm > 8.6 && tm < 8.8) at45 = hasNear (mk, 1200.0);
+                if (tm > 10.6 && tm < 10.8) at45 = hasNear (mk, 1200.0);
             });
-            check (liveBefore && at25 && heldFlag, "PEAK DETECT: the 1.2 kHz marker is still there (held) ~2.5 s after the resonance stopped");
-            check (! at45, "PEAK DETECT: and is released afterwards (gone ~4.7 s after the resonance stopped)");
+            check (liveBefore && at25 && heldFlag, "PEAK DETECT: the 1.2 kHz marker is still there (held) ~4.5 s after the resonance stopped");
+            check (! at45, "PEAK DETECT: and is released afterwards (gone ~6.7 s after the resonance stopped)");
         }
        #endif
         for (double fs : { 48000.0, 96000.0 })

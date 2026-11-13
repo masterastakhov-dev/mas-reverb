@@ -31,7 +31,7 @@ public:
     int maxMarkers = 6;
     float minPromDb = 9.0f, floorDb = -84.0f, lonePeakSeconds = 1.0f, harmonicSeconds = 3.0f;
 #ifdef MAS_STUDIO_DYN
-    float markerHoldSeconds = 3.0f; // keep a CONFIRMED marker actionable after the last matching peak
+    float markerHoldSeconds = 5.0f; // keep a CONFIRMED marker actionable after the last matching peak (owner: 5 s)
 #endif
 
     void reset() { tracks.clear(); shown.clear(); }
