@@ -142,8 +142,14 @@ public:
             t.p.held = ! t.hit;
             if (t.linger > 0.0f) shown.push_back (t.p);
         }
+        // six places: peaks detected right now come first, held ones (up to 5 s) fill the remaining places,
+        // so a fast-changing spectrum never hides a live resonance behind old markers; within each group
+        // fundamentals first, then prominence
         std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b)
-        { return a.fundamental != b.fundamental ? a.fundamental : a.promDb > b.promDb; });
+        {
+            if (a.held != b.held) return ! a.held;
+            return a.fundamental != b.fundamental ? a.fundamental : a.promDb > b.promDb;
+        });
 #else
         for (const auto& t : tracks)
             if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds)) shown.push_back (t.p);

@@ -292,8 +292,11 @@ static int studioSnapshots (const juce::File& dir)
     feed (70);
     shot ("01a_ANALOG_GRILLES_LAMP_OFF");
     set (ParamIDs::hcDrive, 50.0f);
-    set (ParamIDs::hcMix, 35.0f);
+    set (ParamIDs::hcMix, 0.0f);
     set (ParamIDs::hcOn, 1.0f);
+    feed (25);
+    shot ("01b0_ANALOG_GRILLES_LAMP_ON_MIX0");
+    set (ParamIDs::hcMix, 35.0f);
     feed (25);
     shot ("01b_ANALOG_GRILLES_LAMP_ON_MIX35");
     set (ParamIDs::hcMix, 100.0f);
@@ -2121,6 +2124,36 @@ int main (int argc, char** argv)
             });
             check (liveBefore && at25 && heldFlag, "PEAK DETECT: the 1.2 kHz marker is still there (held) ~4.5 s after the resonance stopped");
             check (! at45, "PEAK DETECT: and is released afterwards (gone ~6.7 s after the resonance stopped)");
+        }
+        {   // 1.7d: a fast-changing spectrum: six strong resonances, then three weaker new ones while the six are held.
+            // The live ones must get places among the six markers; the held ones keep the remaining places.
+            const double fs = 48000.0;
+            auto withPeaks = [&] (std::initializer_list<float> fr, float gain, double seconds, int seed)
+            {
+                auto buf = pinkish (fs, seconds, seed);
+                req::BandParams bp[8]; int k = 0;
+                for (float f : fr) { bp[k].used = true; bp[k].type = req::Bell; bp[k].freq = f; bp[k].gainDb = gain; bp[k].q = 18.0f; ++k; }
+                req::Bank bank; bank.prepare (fs); bank.set (bp, true, true);
+                bank.process (buf.getWritePointer (0), buf.getWritePointer (1), buf.getNumSamples());
+                std::vector<float> m ((size_t) buf.getNumSamples());
+                for (int i = 0; i < buf.getNumSamples(); ++i) m[(size_t) i] = 0.25f * (buf.getSample (0, i) + buf.getSample (1, i));
+                return m;
+            };
+            auto x = withPeaks ({ 250.0f, 450.0f, 800.0f, 1500.0f, 3000.0f, 6000.0f }, 18.0f, 3.0, 31);
+            const auto b = withPeaks ({ 600.0f, 2200.0f, 4300.0f }, 13.0f, 4.0, 32);
+            x.insert (x.end(), b.begin(), b.end());
+            spec::SpectrumEngine eng;
+            int liveShown = 0, heldShown = 0, total = 0;
+            analyse (eng, x, fs, 0.3, 5.8, [&] (double tm)
+            {
+                if (tm < 5.6) return;
+                const auto& mk = eng.detector.markers();
+                liveShown = 0; heldShown = 0; total = (int) mk.size();
+                for (const auto& p : mk) if (p.held) ++heldShown;
+                liveShown = (hasNear (mk, 600.0) ? 1 : 0) + (hasNear (mk, 2200.0) ? 1 : 0) + (hasNear (mk, 4300.0) ? 1 : 0);
+            });
+            check (liveShown == 3, "PEAK DETECT, fast-changing spectrum: all 3 new (weaker) resonances are shown (" + juce::String (liveShown) + " / 3)");
+            check (total <= 6 && heldShown >= 1, "  and the held markers of the previous six still fill the free places (" + juce::String (heldShown) + " held, " + juce::String (total) + " shown)");
         }
        #endif
         for (double fs : { 48000.0, 96000.0 })

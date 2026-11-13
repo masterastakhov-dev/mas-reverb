@@ -977,9 +977,11 @@ void Panel::timerCallback()
         const float inDb = proc.spaceLevel[0].load (std::memory_order_relaxed);
         const float load = juce::jlimit (0.0f, 1.0f, (inDb + 48.0f) / 36.0f);
         lampLoad += (float) (1.0 - std::exp (-dt / 0.35)) * (load - lampLoad);
-        constexpr float idle = 0.12f;
+        // MIX 0 % (or HARMONIC COLOR OFF) = the idle glow; the light rises with the real amount of saturation mixed in.
+        // ON at 0 % is only a hair above idle; DRIVE and the measured signal add a little, scaled by the amount itself.
+        constexpr float idle = 0.12f, onFloor = 0.02f, top = 0.92f;
         const float amount = hc ? juce::jlimit (0.0f, 1.0f, std::pow (hmix, 0.8f) * (0.8f + 0.2f * drive)) : 0.0f;
-        const float goal = hc ? juce::jlimit (0.0f, 1.0f, 0.3f + 0.62f * amount + 0.08f * lampLoad) : idle;
+        const float goal = hc ? juce::jlimit (0.0f, 1.0f, idle + onFloor + (top - idle - onFloor) * amount + 0.08f * lampLoad * amount) : idle;
         const float goalCol = hc ? amount : 0.0f;
         const double tau = goal > lampHeat ? 0.28 : 0.72;
         const float k = (float) (1.0 - std::exp (-dt / tau));
