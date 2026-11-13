@@ -32,6 +32,9 @@ void recess (juce::Graphics&, juce::Rectangle<float>, float radius, juce::Colour
 void screw (juce::Graphics&, juce::Point<float>, float r, float rotation, const Theme&);
 void slit (juce::Graphics&, juce::Rectangle<float>, const Theme&);
 void grille (juce::Graphics&, juce::Rectangle<float>, const Theme&);
+#ifdef MAS_STUDIO_DYN
+void glowingGrille (juce::Graphics&, juce::Rectangle<float>, const Theme&, float heat);
+#endif
 void goldLine (juce::Graphics&, float x, float y0, float y1, const Theme&);
 void glowStroke (juce::Graphics&, const juce::Path&, juce::Colour, float width, float glow, float alpha = 1.0f);
 void engraved (juce::Graphics&, const juce::String&, juce::Rectangle<float>, juce::Font, juce::Colour,
