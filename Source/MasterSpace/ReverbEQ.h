@@ -35,6 +35,11 @@ struct BandParams
     float gainDb = 0.0f;     // -18 .. +18 (Bell and shelves)
     float q = 1.0f;          // 0.1 .. 18
     int   slope = 1;         // cuts: 0 = 12, 1 = 24, 2 = 36, 3 = 48 dB/oct
+#ifdef MAS_STUDIO
+    bool  dynamic = false;          // manual, user-confirmed dynamic cut; no automatic activation
+    float dynamicThresholdDb = -36.0f;
+    float dynamicMaxDb = 3.0f;
+#endif
 };
 
 struct Settings
