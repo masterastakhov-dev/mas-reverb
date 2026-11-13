@@ -1359,6 +1359,57 @@ int main (int argc, char** argv)
    #endif
 
    #ifdef MAS_EQ
+#ifdef MAS_STUDIO
+    //==========================================================================
+    section ("STUDIO: opt-in manual dynamic cuts and transparent bypass");
+    {
+        req::ManualDynamicBank dyn;
+        constexpr double fs = 48000.0;
+        constexpr int count = 256;
+        dyn.prepare (fs);
+        float l[count] {}, r[count] {};
+        for (int i = 0; i < count; ++i) l[i] = r[i] = 0.25f * (float) std::sin (2.0 * 3.141592653589793 * 1000.0 * i / fs);
+        auto original = l[0];
+        dyn.process (l, r, count);
+        check (l[0] == original && ! dyn.isActive(), "manual dynamic EQ disabled: bit-exact and inactive");
+
+        req::BandParams bands[req::kBands] {};
+        bands[0].used = true;
+        bands[0].dynamic = true;
+        bands[0].freq = 1000.0f;
+        bands[0].q = 3.0f;
+        bands[0].dynamicThresholdDb = -54.0f;
+        bands[0].dynamicMaxDb = 3.0f;
+        dyn.set (bands, true, true);
+        auto testLevel = [&] (double amplitude, int blocks)
+        {
+            double inEnergy = 0.0, outEnergy = 0.0;
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < count; ++i)
+                    l[i] = r[i] = (float) (amplitude * std::sin (2.0 * 3.141592653589793 * 1000.0 * (b * count + i) / fs));
+                dyn.process (l, r, count);
+                if (b > blocks - 7)
+                    for (int i = 0; i < count; ++i)
+                    {
+                        const double x = amplitude * std::sin (2.0 * 3.141592653589793 * 1000.0 * (b * count + i) / fs);
+                        inEnergy += x * x;
+                        outEnergy += (double) l[i] * l[i];
+                    }
+            }
+            return 10.0 * std::log10 ((outEnergy + 1e-30) / (inEnergy + 1e-30));
+        };
+        const double cutDb = testLevel (0.25, 150);
+        check (cutDb < -1.0 && cutDb > -4.0, "approved 1 kHz resonance: dynamic cut is active and <= 3 dB (measured " + juce::String (cutDb, 2) + " dB)");
+        const double restoredDb = testLevel (0.00001, 750);
+        check (std::abs (restoredDb) < 0.5, "quiet resonance: gain returns to unity after release (" + juce::String (restoredDb, 2) + " dB)");
+        bands[0].dynamic = false;
+        dyn.set (bands, true);
+        const double bypassDb = testLevel (0.25, 200);
+        check (std::abs (bypassDb) < 0.0001, "disarmed manual dynamic band bypasses without affecting audio");
+    }
+#endif
+
     //==========================================================================
     section ("1.5 REVERB EQ and analyzer");
     {
@@ -1410,7 +1461,7 @@ int main (int argc, char** argv)
             pump (200);
             anyUsed = false;
             for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) anyUsed = anyUsed || getP (*q, eqId (b, i, eqUsed)) > 0.5f;
-            check (drop.size() == 169 && getP (*q, eqOn) < 0.5f && ! anyUsed, "a 1.4 project (no EQ parameters) loads with REVERB EQ off and no band in use");
+            check (drop.size() == 1 + 3 * req::kBands * ParamIDs::eqNumFields && getP (*q, eqOn) < 0.5f && ! anyUsed, "a 1.4 project (no EQ parameters) loads with REVERB EQ off and no band in use");
 
             // factory presets carry no EQ: loading one turns the EQ off
             setP (*q, eqOn, 1); band (*q, 0, 0, req::Bell, 500, 12, 2);
