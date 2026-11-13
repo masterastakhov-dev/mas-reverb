@@ -1,6 +1,6 @@
 # MASTER SPACE 1.8 STUDIO — архитектура M/S OUTPUT COMPRESSOR и M/S HARMONIC COLOR
 
-Статус: **предложение Claude, ждёт подтверждения владельца** (Issue #6, Issue #7). DSP ещё не программируется.
+Статус: **утверждено владельцем и реализовано** в `claude/1.8-studio` (PR #8): M/S HARMONIC COLOR `02e5398`, M/S OUTPUT COMPRESSOR `2506124`, интерфейс `3f4c25c`.
 Основа: реальный код 1.7d (`MSEngine.h`, `PluginProcessor.cpp`, `HarmonicColor.h`), а не схема «по памяти».
 
 ## 0. Как устроен тракт сейчас (1.7d)

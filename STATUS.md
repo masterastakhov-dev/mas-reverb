@@ -18,6 +18,7 @@
 | MASTER SPACE 1.5 EQ LAB | MSp5 | `feature/eq-lab` (`353ee11`) | заморожена, точка сохранения |
 | MASTER SPACE STUDIO TEST 1.6.0 | MSp6 | `feature/ui-redesign-studio` (`16a6459`) | собрана (Claude), auval + pluginval OK, звук = 1.5 бит в бит; **ждёт отзыва владельца из DAW** |
 | MASTER SPACE 1.7d DYNAMIC TEST | MS7d | `claude/1.7d-dynamic` (на основе PR #2), PR #5 → `feature/ui-redesign-studio` | Claude: Dynamic Cut, PEAK DETECT, лампы, **SIGNAL RAILS** (`091af45`); 184 проверки, OFF = 1.6 = 1.5 бит в бит; **ждёт ревью ChatGPT и проверки владельцем в DAW** |
+| MASTER SPACE 1.8 STUDIO | MS18 | `claude/1.8-studio`, PR #8 (черновик) → `claude/1.7d-dynamic` | Claude: M/S OUTPUT COMPRESSOR, M/S HARMONIC COLOR, компоновка 1.8, слоган; 279 проверок, OFF = код до 1.8 = 1.7d = 1.6 = 1.5 бит в бит; **ждёт ревью ChatGPT и прослушивания владельцем** |
 | — | — | `chatgpt/ci-fix-numpy-eq-lab`, PR #1 | правка CI (numpy) для 1.4 / 1.5; ждёт слияния владельцем |
 | — | — | `claude/collab-rules`, PR #3 | правила совместной работы; ждёт проверки и слияния владельцем |
 
@@ -29,12 +30,34 @@
 
 ## Следующие шаги
 
-- **ChatGPT:** ревью SIGNAL RAILS в PR #5 (коммит `091af45`): `IOMeters.h`, точки измерения в `processBlock` / `processBlockBypassed`, `MainPage::tickRails`, тесты, снимки `R1…R4_RAILS_*` в артефакте CI, установщик `install-MasterSpace17d.command.in`. Эталон дизайна: `docs/design/signal-rails-concept-approved.png`.
-- **Владелец:** установить новый ZIP 1.7d, проверить индикаторы и AU в REAPER (установщик сам предложит проверку auval).
-- **ChatGPT:** ревью эмблемы в шапке 1.7d (вариант A, выбран владельцем): `Panel::renderTop`, эталоны `docs/design/brand-emblem-*.png`.
-- **Вопрос к ChatGPT / владельцу:** RMS показывается без поправки +3 dB (синус −18 dBFS = −21 dBFS RMS). Если нужна шкала «синус = пик» (AES-17), это одна константа, звук не затрагивается.
+- **ChatGPT:** независимое ревью PR #8 (1.8 STUDIO).
+  - Файлы: `MSCompressor.h`, `HarmonicColorMS.h`, шаблонный `HarmonicColor`, wet-отвод в движках и `PluginProcessor.cpp`, тесты, снимки.
+  - Схема: `docs/1.8/ARCHITECTURE.md`.
+- **Владелец:** установить ZIP 1.8, послушать компрессор (WET ONLY / FULL) и M/S HARMONIC COLOR в REAPER, проверить AU.
+- **Claude:** исправления по ревью; ничего не сливать без разрешения владельца.
 
 ## Журнал
+
+### 14.11.2026 — Claude: MASTER SPACE 1.8 STUDIO (ветка `claude/1.8-studio`, PR #8)
+- Отдельный продукт MS18 / `com.masterastakhovsound.masterspace18` / 1.8.0, своя папка пресетов. Весь код — под `MAS_STUDIO_18`; 1.6 и 1.7d не меняются.
+- Интерфейс (утверждено владельцем):
+  - слева вверху только слоган DON’T ADD REVERB. CREATE SPACE. (вариант A);
+  - широкое имя пресета, рядом STUDIO ROOM / CHAMBER / HALL / ATMOS TAIL; инструменты пресета внизу MAIN;
+  - кнопка M/S COMP с мини-индикатором GR; PRO › COMP; PRO › COLOR с MODE и MID/SIDE.
+- M/S HARMONIC COLOR (`02e5398`):
+  - `HarmonicColor` шаблонизирован по числу каналов; стерео собирается из тех же выражений.
+  - `ColorSlot`: STEREO (прежний экземпляр) или два mono MID/SIDE.
+  - SAT MIX — мастер для MID MIX / SIDE MIX.
+  - Переход STEREO ↔ M/S: прогрев входящего пути + 30 мс.
+- M/S OUTPUT COMPRESSOR (`2506124`):
+  - один экземпляр, MID/SIDE независимы, без задержки;
+  - WET ONLY через wet-отвод с теми же коэффициентами во всех путях и переходах; FULL OUTPUT после A/B MATCH;
+  - OFF и 1:1 бит в бит.
+- Замечание ChatGPT по SIGNAL RAILS (старый пик после возврата на MAIN) исправлено, с регрессионным тестом.
+- Тесты: 1.8 279/279, 1.7d 185/185, 1.6 128/128, 1.5 128/128. 48 эталонных рендеров = код до 1.8 (`d3f2153`); CI собирает этот эталон сам. AddressSanitizer чистый.
+- Найдено, звук не менялся:
+  - в IR + AUX есть старая утечка dry −86 дБ (сглаживание MIX во float);
+  - свёртка JUCE воспроизводится между экземплярами до последнего бита (−144 дБ). Тесты IR — до −120 дБ.
 
 ### 13.11.2026 — Claude: 1.7d, фирменная эмблема вместо волны (ТЗ ChatGPT в PR #5, вариант A выбран владельцем)
 - Владельцу показаны два варианта на всех пяти темах (A — фирменные цвета приглушённо, B — монохром «шампань»). Выбран **A**: `docs/design/brand-emblem-variants-owner-chose-A.png`.
