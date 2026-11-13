@@ -98,7 +98,7 @@ public:
         // harmonic series: notes and their overtones have to hold much longer before they are shown
         // (a series = a root with at least two whole-number multiples among the peaks present right now; two
         // resonances that just happen to sit an octave or two apart are not a series)
-        for (auto& t : tracks) { t.p.harmonic = false; t.p.fundamental = false; }
+        for (auto& t : tracks) if (t.hit) { t.p.harmonic = false; t.p.fundamental = false; }
         for (auto& u : tracks)
         {
             if (! u.hit) continue;
