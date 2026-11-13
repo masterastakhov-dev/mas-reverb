@@ -286,6 +286,17 @@ static int studioSnapshots (const juce::File& dir)
     };
     feed (20);
     shot ("01_MAIN");
+#ifdef MAS_STUDIO_DYN
+    // The lamp is UI-only: photograph identical grille geometry when off and when warmed up.
+    set (ParamIDs::hcOn, 0.0f);
+    feed (70);
+    shot ("01a_ANALOG_GRILLES_LAMP_OFF");
+    set (ParamIDs::hcDrive, 80.0f);
+    set (ParamIDs::hcOn, 1.0f);
+    feed (25);
+    shot ("01b_ANALOG_GRILLES_LAMP_ON");
+    set (ParamIDs::hcOn, 0.0f);
+#endif
     panel.setDrawer (true, false);
     feed (30);
     shot ("02_MAIN_DEPTH_VIEW");
