@@ -68,6 +68,9 @@ private:
     MasterSpaceAudioProcessor& proc;
     LookAndFeel& lnf;
     juce::Image wordmark;
+   #ifdef MAS_STUDIO_DYN
+    juce::Image emblem;                                    // Resources/emblem.png, the original (never modified)
+   #endif
 
     int page = 0;
     bool pro = false, drawerOpen = false;

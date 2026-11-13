@@ -918,6 +918,9 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
 {
     setLookAndFeel (&lnf);
     wordmark = juce::ImageCache::getFromMemory (BinaryData::wordmark_png, BinaryData::wordmark_pngSize);
+   #ifdef MAS_STUDIO_DYN
+    emblem = juce::ImageCache::getFromMemory (BinaryData::emblem_png, BinaryData::emblem_pngSize);
+   #endif
     themeIndex = juce::jlimit (0, kNumThemes - 1, (int) proc.apvts.state.getProperty ("studioTheme", 0));
     lnf.setThemeIndex (themeIndex);
     pro = (bool) proc.apvts.state.getProperty ("studioPro", false);
@@ -1206,6 +1209,40 @@ void Panel::renderTop (juce::Graphics& g, int h)
         g.drawText ("MASTER SPACE", tr, juce::Justification::centred);
     }
     {
+       #ifdef MAS_STUDIO_DYN
+        // 1.7d: the original brand emblem above the wordmark, in place of the decorative wave. A quiet premium
+        // watermark: proportional (never stretched), centred on the wordmark, rendered once into the cached top
+        // layer at the physical pixel size (progressive down-scaling, so the small dots and the profile stay clean).
+        if (emblem.isValid())
+        {
+            const float eh = 35.0f, ew = eh * (float) emblem.getWidth() / (float) emblem.getHeight();
+            const float cx = 40.0f + 75.0f;                     // centre of the wordmark (x 40, width 150)
+            const juce::Rectangle<float> er (cx - ew * 0.5f, 61.0f - eh, ew, eh);
+            const float sc = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+            const int pw = juce::roundToInt (ew * sc), ph = juce::roundToInt (eh * sc);
+            juce::Image img = emblem.convertedToFormat (juce::Image::ARGB);
+            while (img.getHeight() > ph * 2)
+                img = img.rescaled (img.getWidth() / 2, img.getHeight() / 2, juce::Graphics::highResamplingQuality);
+            img = img.rescaled (pw, ph, juce::Graphics::highResamplingQuality);
+            {
+                // the original brand colours, slightly muted (owner's choice A): a watermark, not a second focal point
+                juce::Image::BitmapData bd (img, juce::Image::BitmapData::readWrite);
+                for (int y = 0; y < bd.height; ++y)
+                    for (int x = 0; x < bd.width; ++x)
+                    {
+                        auto c = bd.getPixelColour (x, y);
+                        const float a = c.getFloatAlpha();
+                        if (a <= 0.0f) continue;
+                        const float lum = 0.2126f * c.getFloatRed() + 0.7152f * c.getFloatGreen() + 0.0722f * c.getFloatBlue();
+                        const auto grey = juce::Colour::fromFloatRGBA (lum, lum, lum, a);
+                        bd.setPixelColour (x, y, c.interpolatedWith (grey, 0.28f).withMultipliedBrightness (0.86f).withAlpha (a));
+                    }
+            }
+            g.setOpacity (0.82f);
+            g.drawImage (img, er, juce::RectanglePlacement::centred);
+            g.setOpacity (1.0f);
+        }
+       #else
         juce::Path wave;
         const float wx = 40, wy = 46;
         const float amps[] = { 0, 2, 5, 9, 3, 12, 6, 14, 4, 9, 2, 0 };
@@ -1213,6 +1250,7 @@ void Panel::renderTop (juce::Graphics& g, int h)
         for (int i = 0; i < 12; ++i) wave.lineTo (wx + 12 + (float) i * 7, wy - amps[i] * ((i % 2) ? 1.0f : -1.0f));
         wave.lineTo (wx + 110, wy);
         glowStroke (g, wave, t.ind, 1.5f, 2.5f, 0.95f);
+       #endif
         if (wordmark.isValid())
         {
             const float ww = 150.0f, wh = ww * (float) wordmark.getHeight() / (float) wordmark.getWidth();

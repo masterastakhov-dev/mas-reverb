@@ -288,6 +288,21 @@ static int studioSnapshots (const juce::File& dir)
     shot ("01_MAIN");
 #ifdef MAS_STUDIO_DYN
     {
+        // brand emblem in place of the old wave: red disc above the wordmark, no cyan wave line left there
+        const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        int red = 0, cyan = 0;
+        for (int y = 24; y < 62; ++y)
+            for (int x = 36; x < 196; ++x)
+            {
+                const auto c = img.getPixelAt (x, y);
+                if (c.getRed() > 120 && c.getRed() > c.getGreen() + 50 && c.getRed() > c.getBlue() + 40) ++red;
+                if (c.getBlue() > 170 && c.getGreen() > 140 && c.getRed() < 120) ++cyan;
+            }
+        const bool ok = red > 60 && cyan == 0;
+        std::printf ("  [%s] header: brand emblem above the wordmark (red %d px), no wave (cyan %d px)\n", ok ? " ok " : "FAIL", red, cyan);
+        if (! ok) return 1;
+    }
+    {
         // SIGNAL RAILS with real audio through the plugin: silence, a medium programme, peaks near 0 dBFS.
         // The rails are found in the 1x picture and checked: dark in silence, lit without red at a medium level,
         // red peak markers (>= -3 dBFS) right after the peaks.
