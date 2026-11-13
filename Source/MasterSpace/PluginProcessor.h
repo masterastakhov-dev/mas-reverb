@@ -312,6 +312,9 @@ public:
     // only while the display asks for them
     std::atomic<float> spaceLevel[5] { { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f } };
     std::atomic<bool> spaceLevelsWanted { false };
+   #ifdef MAS_STUDIO_DYN
+    std::atomic<float> dynReduction[3][8] {};     // Dynamic Cut: current reduction per bank / band, dB (>= 0)
+   #endif
     std::atomic<int> spaceVisual { 0 };                          // 0 FULL, 1 ECO, 2 OFF (a view setting, not a parameter)
     req::Settings readEq() const;                                // current EQ settings (any thread)
     bool eqAvailable() const { return riMeters.engineAvailable.load(); }   // algorithmic 1.2 engine only

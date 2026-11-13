@@ -80,8 +80,7 @@ private:
     Cache topCache;
     int themeIndex = 0;
 #ifdef MAS_STUDIO_DYN
-    float lampHeat = 0.0f;
-    int lampStep = 0;
+    float lampHeat = 0.0f, lampLoad = 0.0f;
     double lampLastMs = 0.0;
 #endif
 

@@ -876,6 +876,11 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         e.setLevelsOn (want);
         const bool on = want && algoRunning && ! curLegacy && get (ParamIDs::mode) < 0.5f;
         for (int k = 0; k < 5; ++k) spaceLevel[k].store (on ? e.levelDb (k) : -140.0f, std::memory_order_relaxed);
+       #ifdef MAS_STUDIO_DYN
+        for (int b = 0; b < req::numBanks; ++b)       // Dynamic Cut: the live reduction of each band, for the EQ graph
+            for (int i = 0; i < req::kBands; ++i)
+                dynReduction[b][i].store (e.dynReductionDb (b, i), std::memory_order_relaxed);
+       #endif
     }
    #endif
    #else

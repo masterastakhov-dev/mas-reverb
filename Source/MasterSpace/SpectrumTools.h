@@ -21,6 +21,7 @@ struct Peak
     bool harmonic = false;
 #ifdef MAS_STUDIO_DYN
     bool fundamental = false;   // root of a detected harmonic family (overtones are marked separately)
+    bool held = false;          // no longer detected right now: kept (and clickable) for markerHoldSeconds
 #endif
 };
 
@@ -138,6 +139,7 @@ public:
         {
             if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds))
                 t.linger = markerHoldSeconds;
+            t.p.held = ! t.hit;
             if (t.linger > 0.0f) shown.push_back (t.p);
         }
         std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b)

@@ -1041,7 +1041,7 @@ public:
        #ifdef MAS_EQ
         for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->prepare (fs);
 #ifdef MAS_STUDIO_DYN
-        for (auto* b : { &dynEarly, &dynLate, &dynWetE, &dynWetL }) b->prepare (fs);
+        for (auto* b : { &dynEarly, &dynLate, &dynWet }) b->prepare (fs);
 #endif
        #endif
        #else
@@ -1071,7 +1071,7 @@ public:
        #ifdef MAS_EQ
         for (auto* b : { &eqEarly, &eqLate, &eqWetE, &eqWetL }) b->reset();
 #ifdef MAS_STUDIO_DYN
-        for (auto* b : { &dynEarly, &dynLate, &dynWetE, &dynWetL }) b->reset();
+        for (auto* b : { &dynEarly, &dynLate, &dynWet }) b->reset();
 #endif
         applyEq (true);
        #endif
@@ -1393,8 +1393,8 @@ private:
             eqEarly.process (erL, erR, n);
             eqLate.process (ltL, ltR, n);
 #ifdef MAS_STUDIO_DYN
-            dynEarly.process (erL, erR, n);
-            dynLate.process (ltL, ltR, n);
+            dynEarly.process (erL, erR, n, gE);
+            dynLate.process (ltL, ltR, n, gL);
 #endif
             if (analyzer != nullptr)
             {
@@ -1457,8 +1457,7 @@ private:
             eqWetE.process (erL, erR, n);
             eqWetL.process (ltL, ltR, n);
 #ifdef MAS_STUDIO_DYN
-            dynWetE.process (erL, erR, n);
-            dynWetL.process (ltL, ltR, n);
+            dynWet.processLinked (erL, erR, gE, ltL, ltR, gL, n);
 #endif
             if (tA == req::Analyzer::WetPost) analyzer->pushSum (0, erL, erR, gE, ltL, ltR, gL, n);
             if (tB == req::Analyzer::WetPost) analyzer->pushSum (1, erL, erR, gE, ltL, ltR, gL, n);
@@ -1664,7 +1663,7 @@ private:
             for (int i = 0; i < req::kBands; ++i)
             {
                 sb[b][i] = e.band[b][i];
-                if (sb[b][i].dynamic) sb[b][i].used = false;
+                if (sb[b][i].dynamic && sb[b][i].type == req::Bell) sb[b][i].used = false;   // only Bells can be dynamic
             }
         eqEarly.set (sb[req::Early], e.on, force);
         eqLate.set (sb[req::Late], e.on, force);
@@ -1672,8 +1671,7 @@ private:
         eqWetL.set (sb[req::Wet], e.on, force);
         dynEarly.set (e.band[req::Early], e.on, force);
         dynLate.set (e.band[req::Late], e.on, force);
-        dynWetE.set (e.band[req::Wet], e.on, force);
-        dynWetL.set (e.band[req::Wet], e.on, force);
+        dynWet.set (e.band[req::Wet], e.on, force);
 #else
         eqEarly.set (e.band[req::Early], e.on, force);
         eqLate.set (e.band[req::Late], e.on, force);
@@ -1683,7 +1681,7 @@ private:
     }
     req::Bank eqEarly, eqLate, eqWetE, eqWetL;
 #ifdef MAS_STUDIO_DYN
-    req::ManualDynamicBank dynEarly, dynLate, dynWetE, dynWetL;
+    req::ManualDynamicBank dynEarly, dynLate, dynWet;   // dynWet: early + late buses, linked
 #endif
     req::Analyzer* analyzer = nullptr;
     double levelMs[5] = {};
@@ -1692,9 +1690,13 @@ public:
     void setLevelsOn (bool on) { levelsOn = on; if (! on) for (double& v : levelMs) v = 0.0; }
     float levelDb (int k) const { return (float) (10.0 * std::log10 (levelMs[k] + 1e-14)); }   // 0 in, 1/2 early L/R, 3/4 late L/R
     void setAnalyzer (req::Analyzer* a) { analyzer = a; }       // audio thread; nullptr = no taps
+#ifdef MAS_STUDIO_DYN
+    float dynReductionDb (int bank, int band) const
+    { return bank == req::Early ? dynEarly.reductionDb (band) : bank == req::Late ? dynLate.reductionDb (band) : dynWet.reductionDb (band); }
+#endif
     bool eqActive() const { return eqEarly.isActive() || eqLate.isActive() || eqWetE.isActive() || eqWetL.isActive()
 #ifdef MAS_STUDIO_DYN
-        || dynEarly.isActive() || dynLate.isActive() || dynWetE.isActive() || dynWetL.isActive()
+        || dynEarly.isActive() || dynLate.isActive() || dynWet.isActive()
 #endif
         ; }
 private:

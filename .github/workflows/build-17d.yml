@@ -4,7 +4,7 @@ name: Build MASTER SPACE 1.7d DYNAMIC TEST (macOS AU + VST3)
 # No publishing/merging of working 1.6 and no existing workflow changes.
 on:
   push:
-    branches: [ chatgpt/manual-dynamic-peaks-studio ]
+    branches: [ chatgpt/manual-dynamic-peaks-studio, claude/1.7d-dynamic ]
   pull_request:
     branches: [ feature/ui-redesign-studio ]
   workflow_dispatch:

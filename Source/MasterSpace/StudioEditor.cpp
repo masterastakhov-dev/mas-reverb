@@ -48,6 +48,114 @@ namespace
     };
 }
 
+#ifdef MAS_STUDIO_DYN
+//==============================================================================
+// 1.7d: warm valve light behind a side grille. Three cached layers (recess, light at full heat, metal mesh)
+// rendered once per size / scale / theme; a heat change only redraws this small component with a different
+// light opacity, so warming up and cooling down cost almost nothing. UI only: the audio thread is not involved.
+class LampGrille : public juce::Component
+{
+public:
+    static constexpr int kPad = 22;     // room around the grille for the light spilling onto the plate
+    LampGrille() { setInterceptsMouseClicks (false, false); }
+
+    void setHeat (float h)
+    {
+        h = juce::jlimit (0.0f, 1.0f, h);
+        if (std::abs (h - heat) < 0.002f && ! (h == 0.0f && heat != 0.0f)) return;
+        heat = h;
+        repaint();
+    }
+    float getHeat() const { return heat; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = themeOf (*this);
+        const float W = (float) getWidth(), H = (float) getHeight();
+        const juce::Rectangle<float> r ((float) kPad, (float) kPad, W - 2.0f * kPad, H - 2.0f * kPad);
+        // warm light reflected on the brushed plate around the grille (subtle, only when lit)
+        if (heat > 0.001f)
+        {
+            juce::ColourGradient spill (juce::Colour (0xffffa04c).withAlpha (0.16f * heat), r.getCentreX(), r.getCentreY(),
+                                        juce::Colour (0xffffa04c).withAlpha (0.0f), r.getCentreX() + (float) kPad + r.getWidth() * 0.5f, r.getCentreY(), true);
+            g.setGradientFill (spill);
+            g.fillEllipse (r.expanded ((float) kPad - 2.0f, (float) kPad * 0.6f));
+        }
+        Panel::drawCached (g, base, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+        {
+            recess (gg, r.expanded (3.0f), 7.0f, rgb (3, 4, 6));
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            gg.reduceClipRegion (clip);
+            gg.setColour (rgb (5, 5, 7)); gg.fillRect (r);
+        });
+        if (heat > 0.001f)
+        {
+            juce::Graphics::ScopedSaveState s (g);
+            g.setOpacity (heat);
+            Panel::drawCached (g, light, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+            {
+                juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+                gg.reduceClipRegion (clip);
+                const juce::Colour amber (0xffffa04c), core (0xffffce83), ember (0xff76280d);
+                juce::ColourGradient bg (ember.withAlpha (0.45f), r.getCentreX(), r.getY(), ember.withAlpha (0.4f), r.getCentreX(), r.getBottom(), false);
+                bg.addColour (0.5, amber.withAlpha (0.7f));
+                gg.setGradientFill (bg); gg.fillRect (r);
+                for (int n = 0; n < 3; ++n)   // three hidden valves, slightly uneven
+                {
+                    const float cy = r.getY() + r.getHeight() * (0.2f + 0.3f * (float) n), cx = r.getCentreX() + (n == 1 ? -3.0f : 2.0f);
+                    juce::ColourGradient glow (core.withAlpha (1.0f), cx, cy, amber.withAlpha (0.0f), cx + 30.0f, cy + 44.0f, true);
+                    glow.addColour (0.35, juce::Colour (0xffffb766).withAlpha (0.8f));
+                    gg.setGradientFill (glow);
+                    gg.fillEllipse (cx - 30.0f, cy - 46.0f, 60.0f, 92.0f);
+                }
+            });
+        }
+        Panel::drawCached (g, mesh, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+        {
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            gg.reduceClipRegion (clip);
+            juce::Path web; web.addRectangle (r);
+            const float cr = 3.1f, dx = cr * 1.8f, dy = cr * 1.56f, ir = cr * 0.78f;
+            int j = 0;
+            for (float y = r.getY() - 2.0f; y < r.getBottom() + 4.0f; y += dy, ++j)
+                for (float x = r.getX() - 2.0f + ((j & 1) ? dx * 0.5f : 0.0f); x < r.getRight() + 4.0f; x += dx)
+                {
+                    juce::Path h;
+                    for (int k = 0; k < 6; ++k)
+                    {
+                        const float a = juce::MathConstants<float>::pi * (1.0f / 6.0f + (float) k / 3.0f);
+                        if (k == 0) h.startNewSubPath (x + std::cos (a) * ir, y + std::sin (a) * ir); else h.lineTo (x + std::cos (a) * ir, y + std::sin (a) * ir);
+                    }
+                    h.closeSubPath(); web.addPath (h);
+                }
+            web.setUsingNonZeroWinding (false);
+            gg.setColour (rgb (21, 23, 27)); gg.fillPath (web);
+            // the inner edges of the cells catch a little light: drawn once, faded with the light below
+        });
+        if (heat > 0.001f)
+        {
+            // light scattered in front of the mesh (the cells glow a little, like a real lamp behind a grille)
+            juce::Graphics::ScopedSaveState s (g);
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            g.reduceClipRegion (clip);
+            for (int n = 0; n < 3; ++n)
+            {
+                const float cy = r.getY() + r.getHeight() * (0.2f + 0.3f * (float) n), cx = r.getCentreX() + (n == 1 ? -3.0f : 2.0f);
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xffffc275).withAlpha (0.28f * heat), cx, cy,
+                                                         juce::Colour (0xffffa04c).withAlpha (0.0f), cx + 22.0f, cy + 34.0f, true));
+                g.fillEllipse (cx - 22.0f, cy - 34.0f, 44.0f, 68.0f);
+            }
+            g.setColour (juce::Colour (0xffffb35f).withAlpha (0.22f * heat));      // warm rim on the inner metal
+            g.drawRoundedRectangle (r.reduced (0.9f), 4.2f, 0.75f);
+        }
+    }
+
+private:
+    float heat = 0.0f;
+    Panel::Cache base, light, mesh;
+};
+#endif
+
 //==============================================================================
 // MAIN: DEPTH in the centre, DECAY and MIX on the sides, EARLY / LATE / PRE-DELAY / BLOOM, the module rail
 class MainPage : public juce::Component
@@ -118,8 +226,19 @@ public:
             b->setBounds (640 + i * 142, 340, 136, 32);
             modAtt.add (new juce::AudioProcessorValueTreeState::ButtonAttachment (proc.apvts, modIds[i], *b));
         }
+       #ifdef MAS_STUDIO_DYN
+        for (auto* l : { &lampL, &lampR }) addAndMakeVisible (*l);
+        lampL.setBounds (36 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
+        lampR.setBounds (1042 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
+        for (auto* l : { &lampL, &lampR }) l->toBack();
+       #endif
         sync();
     }
+
+   #ifdef MAS_STUDIO_DYN
+    void setLampHeat (float h) { lampL.setHeat (h); lampR.setHeat (h); }
+    float lampHeat() const { return lampL.getHeat(); }
+   #endif
 
     const Theme& th() const { return themeOf (panel); }
 
@@ -189,6 +308,9 @@ private:
     juce::TextButton depthView { "DEPTH VIEW" }, irKey { "IR" };
     juce::OwnedArray<juce::TextButton> algo, route, mods;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> modAtt;
+   #ifdef MAS_STUDIO_DYN
+    LampGrille lampL, lampR;
+   #endif
 };
 
 //==============================================================================
@@ -817,26 +939,31 @@ void Panel::timerCallback()
 {
     main->sync();
 #ifdef MAS_STUDIO_DYN
-    // Musical 'tube warm-up': ~0.3 s light-up and ~0.8 s cool-down.
-    // This is only visual and samples the real HARMONIC COLOR parameters.
-    const double nowMs = juce::Time::getMillisecondCounterHiRes();
-    const double dt = lampLastMs > 0.0 ? juce::jlimit (0.0, 0.1, (nowMs - lampLastMs) * 0.001) : 0.03;
-    lampLastMs = nowMs;
-    const bool harmonicOn = plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f;
-    const bool algoMode = plainOf (proc.apvts, ParamIDs::mode) < 0.5f;
-    const float drive = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcDrive) / 100.0f);
-    const float goal = harmonicOn && algoMode ? 0.25f + 0.70f * std::sqrt (drive) : 0.0f;
-    const double tau = goal > lampHeat ? 0.28 : 0.72;
-    lampHeat += (1.0f - (float) std::exp (-dt / tau)) * (goal - lampHeat);
-    if (std::abs (lampHeat) < 0.002f && goal == 0.0f) lampHeat = 0.0f;
-    const int nextStep = juce::jlimit (0, 24, juce::roundToInt (lampHeat * 24.0f));
-    if (nextStep != lampStep)
+    // Valve light behind the side grilles follows the real HARMONIC COLOR state: ON, its DRIVE and MIX set the
+    // filament heat; the signal it is actually working on (input level, measured by the engine) adds a little
+    // "load". Warm-up ~0.3 s, cool-down ~0.8 s. Visual only.
     {
-        lampStep = nextStep;
-        if (page == 0) repaint();
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const double dt = lampLastMs > 0.0 ? juce::jlimit (0.0, 0.1, (nowMs - lampLastMs) * 0.001) : 0.03;
+        lampLastMs = nowMs;
+        const bool hc = plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f && plainOf (proc.apvts, ParamIDs::mode) < 0.5f;
+        const float drive = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcDrive) / 100.0f);
+        const float hmix = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcMix) / 100.0f);
+        const float inDb = proc.spaceLevel[0].load (std::memory_order_relaxed);
+        const float load = juce::jlimit (0.0f, 1.0f, (inDb + 48.0f) / 36.0f);
+        lampLoad += (float) (1.0 - std::exp (-dt / 0.35)) * (load - lampLoad);
+        const float goal = hc ? juce::jlimit (0.0f, 1.0f, (0.22f + 0.58f * std::sqrt (drive)) * (0.55f + 0.45f * hmix) + 0.16f * lampLoad) : 0.0f;
+        const double tau = goal > lampHeat ? 0.28 : 0.72;
+        lampHeat += (float) (1.0 - std::exp (-dt / tau)) * (goal - lampHeat);
+        if (goal == 0.0f && lampHeat < 0.003f) lampHeat = 0.0f;
+        if (page == 0) main->setLampHeat (lampHeat);
     }
 #endif
+   #ifdef MAS_STUDIO_DYN
+    const bool wantLevels = page == 0 && isVisible() && (drawerT > 0.0f || plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f);
+   #else
     const bool wantLevels = page == 0 && drawerT > 0.0f && isVisible();
+   #endif
     if (proc.spaceLevelsWanted.load() != wantLevels) proc.spaceLevelsWanted.store (wantLevels);
     if (room != nullptr && page == 0 && drawerT > 0.0f) room->tick();
     static int slow = 0;
@@ -860,10 +987,7 @@ void Panel::paint (juce::Graphics& g)
 {
     const int h = page == 0 ? barY() : contentY() + kPageH;
     const auto& t = theme (themeIndex);
-    juce::String cacheKey = juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x");
-#ifdef MAS_STUDIO_DYN
-    if (page == 0) cacheKey += "lamp" + juce::String (lampStep);
-#endif
+    const juce::String cacheKey = juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x");
     drawCached (g, topCache, cacheKey, kW, h, [this, h] (juce::Graphics& gg) { renderTop (gg, h); });
 }
 
@@ -924,8 +1048,7 @@ void Panel::renderTop (juce::Graphics& g, int h)
         plate (g, { 270, y, 560, 316 }, 18.0f, t);
         plate (g, { 838, y, 236, 316 }, 16.0f, t);
 #ifdef MAS_STUDIO_DYN
-        glowingGrille (g, { 36, y + 52, 22, 212 }, t, (float) lampStep / 24.0f);
-        glowingGrille (g, { 1042, y + 52, 22, 212 }, t, (float) lampStep / 24.0f);
+        // the side grilles are LampGrille components (lit by HARMONIC COLOR)
 #else
         grille (g, { 36, y + 52, 22, 212 }, t);
         grille (g, { 1042, y + 52, 22, 212 }, t);

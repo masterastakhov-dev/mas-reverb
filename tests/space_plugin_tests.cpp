@@ -312,6 +312,11 @@ static int studioSnapshots (const juce::File& dir)
         band (0, 0, req::LowShelf, 100, 2, 0.71f); band (0, 1, req::Bell, 350, -3, 1.2f);
         band (0, 2, req::Bell, 2600, 3, 0.8f); band (0, 3, req::HighShelf, 9000, -2.5f, 0.71f);
         panel.setPage (12);
+       #ifdef MAS_STUDIO_DYN
+        band (0, 4, req::Bell, 1200, 0, 3.0f);
+        set (ParamIDs::eqId (0, 4, ParamIDs::eqDynThreshold), -60.0f); set (ParamIDs::eqId (0, 4, ParamIDs::eqDynMax), 4.0f);
+        set (ParamIDs::eqId (0, 4, ParamIDs::eqDynOn), 1.0f);
+       #endif
         req::BandParams rb[8];
         const float rf[3] = { 387.0f, 1200.0f, 4800.0f };
         for (int i = 0; i < 3; ++i) { rb[i].used = true; rb[i].freq = rf[i]; rb[i].gainDb = 18.0f; rb[i].q = 18.0f; }
@@ -1419,6 +1424,243 @@ int main (int argc, char** argv)
         const double bypassDb = testLevel (0.25, 200);
         check (std::abs (bypassDb) < 0.0001, "disarmed manual dynamic band bypasses without affecting audio");
     }
+
+    //==========================================================================
+    section ("1.7d DYNAMIC CUT in the plugin: cut, clicks, sample rates, blocks, mono, state, NaN, CPU");
+    {
+        using namespace ParamIDs;
+        const double pi = juce::MathConstants<double>::pi;
+        auto setP = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        { if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto getP = [] (MasterSpaceAudioProcessor& q, const juce::String& id) { return q.apvts.getRawParameterValue (id)->load(); };
+        // material: pink noise bursts + a sustained 1.2 kHz tone that rings in the reverb; 100 % wet
+        auto material = [pi] (double fs, double secs, int seed)
+        {
+            auto b = pinkish (fs, secs, seed);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const double tt = i / fs;
+                const float gate = std::fmod (tt, 0.5) < 0.12 ? 0.5f : 0.02f;
+                const float tone = (float) (0.18 * std::sin (2.0 * pi * 1200.0 * tt));
+                for (int c = 0; c < 2; ++c) b.setSample (c, i, b.getSample (c, i) * gate + tone);
+            }
+            return b;
+        };
+        auto setup = [&] (MasterSpaceAudioProcessor& q, int bank, bool dyn, float thr = -48.0f, float mx = 3.0f)
+        {
+            setP (q, mix, 100.0f); setP (q, decay, 3.0f); setP (q, eqOn, 1.0f);
+            setP (q, erOn, bank == req::Late ? 0.0f : 1.0f);      // EARLY / LATE banks: listen to that bus alone
+            setP (q, lateOn, bank == req::Early ? 0.0f : 1.0f);
+            const int i = 4;
+            setP (q, eqId (bank, i, eqUsed), 1); setP (q, eqId (bank, i, eqBypass), 0); setP (q, eqId (bank, i, eqType), (float) req::Bell);
+            setP (q, eqId (bank, i, eqFreq), 1200.0f); setP (q, eqId (bank, i, eqGain), 0.0f); setP (q, eqId (bank, i, eqQ), 3.0f);
+            setP (q, eqId (bank, i, eqDynThreshold), thr); setP (q, eqId (bank, i, eqDynMax), mx);
+            setP (q, eqId (bank, i, eqDynOn), dyn ? 1.0f : 0.0f);
+        };
+        auto goertzelDb = [pi] (const juce::AudioBuffer<float>& b, double fs, double f, int from)
+        {
+            double e = 0.0;
+            for (int c = 0; c < 2; ++c)
+            {
+                const double w = 2.0 * pi * f / fs, k = 2.0 * std::cos (w);
+                double s1 = 0, s2 = 0;
+                for (int i = from; i < b.getNumSamples(); ++i) { const double s0 = b.getSample (c, i) + k * s1 - s2; s2 = s1; s1 = s0; }
+                e += s1 * s1 + s2 * s2 - k * s1 * s2;
+            }
+            return 10.0 * std::log10 (e + 1e-30);
+        };
+        auto bandDb = [] (const juce::AudioBuffer<float>& b, double fs, double f0, double f1, int from)
+        {   // energy of a band by a 2nd-order band-pass, both channels
+            const double fc = std::sqrt (f0 * f1), q = fc / (f1 - f0), w = juce::MathConstants<double>::twoPi * fc / fs, al = std::sin (w) / (2 * q), a0 = 1 + al;
+            const double b0 = al / a0, a1 = -2 * std::cos (w) / a0, a2 = (1 - al) / a0;
+            double e = 0;
+            for (int c = 0; c < 2; ++c)
+            {
+                double z[4][2] = {};
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                {
+                    double y = b.getSample (c, i);
+                    for (auto& s : z) { const double x = y; y = b0 * x + s[0]; s[0] = -a1 * y + s[1]; s[1] = -b0 * x - a2 * y; }   // 8th order: the test tone cannot leak in
+                    if (i >= from) e += y * y;
+                }
+            }
+            return 10.0 * std::log10 (e + 1e-30);
+        };
+        auto finite = [] (const juce::AudioBuffer<float>& b)
+        { for (int c = 0; c < b.getNumChannels(); ++c) for (int i = 0; i < b.getNumSamples(); ++i) if (! std::isfinite (b.getSample (c, i))) return false; return true; };
+        auto maxD2 = [] (const juce::AudioBuffer<float>& b, int from, int to)
+        {   // the largest second difference: a click shows up here long before it is audible elsewhere
+            float m = 0;
+            for (int c = 0; c < 2; ++c)
+                for (int i = juce::jmax (2, from); i < juce::jmin (to, b.getNumSamples()); ++i)
+                    m = juce::jmax (m, std::abs (b.getSample (c, i) - 2 * b.getSample (c, i - 1) + b.getSample (c, i - 2)));
+            return m;
+        };
+        auto render = [&] (double fs, int block, int bank, bool dyn, double secs, std::function<void (MasterSpaceAudioProcessor&, int)> perBlock = nullptr, float thr = -48.0f)
+        {
+            auto q = makeProcessor (fs, block);
+            setup (*q, bank, dyn, thr);
+            pump (60);
+            auto buf = material (fs, secs, 7);
+            juce::MidiBuffer midi;
+            int k = 0;
+            for (int pos = 0; pos < buf.getNumSamples(); pos += block, ++k)
+            {
+                if (perBlock) perBlock (*q, k);
+                const int n = juce::jmin (block, buf.getNumSamples() - pos);
+                juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), 2, pos, n);
+                q->processBlock (view, midi);
+            }
+            return buf;
+        };
+
+        // 1. the cut: at the resonance, within the max, and nothing else moves
+        for (int bank : { (int) req::Wet, (int) req::Early, (int) req::Late })
+        {
+            const char* bn[] = { "WET", "EARLY", "LATE" };
+            const double fs = 48000.0;
+            const int from = (int) (fs * 3.0);
+            auto off = render (fs, 512, bank, false, 6.0), on = render (fs, 512, bank, true, 6.0);
+            if (std::getenv ("DYN_DEBUG"))
+            {
+                auto off2 = render (fs, 512, bank, false, 6.0);
+                auto onHi = render (fs, 512, bank, true, 6.0, nullptr, -6.0f);
+                std::printf ("    DEBUG off2-off lo %.2f  onHi-off lo %.2f  tone %.2f\n", bandDb (off2, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from),
+                             bandDb (onHi, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from), goertzelDb (onHi, fs, 1200, from) - goertzelDb (off, fs, 1200, from));
+            }
+            const double cut = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+            const double lo = bandDb (on, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from);
+            const double hi = bandDb (on, fs, 6000, 9000, from) - bandDb (off, fs, 6000, 9000, from);
+            check (finite (on) && cut < -0.8 && cut > -3.3, juce::String (bn[bank]) + " bank: the 1.2 kHz resonance is cut by " + juce::String (cut, 2) + " dB (max 3 dB)");
+            check (std::abs (lo) < 0.25 && std::abs (hi) < 0.25, juce::String (bn[bank]) + " bank: 200-400 Hz and 6-9 kHz stay put (" + juce::String (lo, 2) + " / " + juce::String (hi, 2) + " dB)");
+        }
+
+        // 2. no clicks: switching Dynamic Cut on / off and sweeping the threshold while the reverb rings
+        {
+            const double fs = 48000.0; const int block = 256, n = (int) (fs * 6.0);
+            auto steady = render (fs, block, req::Wet, true, 6.0);
+            auto toggled = render (fs, block, req::Wet, true, 6.0, [&] (MasterSpaceAudioProcessor& q, int k)
+            { if (k % 90 == 45) setP (q, eqId (req::Wet, 4, eqDynOn), (k / 90) % 2 == 0 ? 0.0f : 1.0f); });
+            auto swept = render (fs, block, req::Wet, true, 6.0, [&] (MasterSpaceAudioProcessor& q, int k)
+            { setP (q, eqId (req::Wet, 4, eqDynThreshold), -60.0f + 40.0f * (float) (0.5 + 0.5 * std::sin (k * 0.05))); });
+            const float base = maxD2 (steady, (int) fs, n);
+            check (maxD2 (toggled, (int) fs, n) <= base * 1.2f + 1e-4f, "Dynamic Cut ON / OFF while the tail rings: no click (2nd difference " + juce::String (maxD2 (toggled, (int) fs, n), 4) + " vs " + juce::String (base, 4) + ")");
+            check (maxD2 (swept, (int) fs, n) <= base * 1.2f + 1e-4f, "threshold automated across -60..-20 dBFS: no zipper / click");
+            check (finite (toggled) && finite (swept), "toggled / swept renders are finite");
+        }
+
+        // 3. sample rates and block sizes: the same cut everywhere, no NaN
+        {
+            double cuts[3] {}; int si = 0;
+            for (double fs : { 44100.0, 48000.0, 96000.0 })
+            {
+                const int from = (int) (fs * 3.0);
+                auto off = render (fs, 512, req::Wet, false, 5.0), on = render (fs, 512, req::Wet, true, 5.0);
+                cuts[si++] = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+            }
+            check (std::abs (cuts[0] - cuts[1]) < 0.6 && std::abs (cuts[2] - cuts[1]) < 0.6,
+                   "44.1 / 48 / 96 kHz: same cut (" + juce::String (cuts[0], 2) + " / " + juce::String (cuts[1], 2) + " / " + juce::String (cuts[2], 2) + " dB)");
+            const double fs = 48000.0; const int from = (int) (fs * 3.0);
+            auto off = render (fs, 512, req::Wet, false, 5.0);
+            double worst = 0;
+            for (int block : { 32, 64, 1024, 4096 })
+            {
+                auto on = render (fs, block, req::Wet, true, 5.0);
+                const double c = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+                worst = juce::jmax (worst, std::abs (c - cuts[1]));
+                if (! finite (on)) worst = 99;
+            }
+            check (worst < 0.4, "block sizes 32 / 64 / 1024 / 4096: same cut (worst deviation " + juce::String (worst, 2) + " dB)");
+            // the host changes the rate and the block size while the band is armed
+            auto q = makeProcessor (48000.0, 512);
+            setup (*q, req::Wet, true);
+            auto a = material (48000.0, 1.0, 3); run (*q, a, 512);
+            q->releaseResources(); q->setRateAndBufferSizeDetails (96000.0, 128); q->prepareToPlay (96000.0, 128);
+            auto b = material (96000.0, 2.0, 4); run (*q, b, 128);
+            check (finite (b), "rate / block change 48 kHz 512 -> 96 kHz 128 with Dynamic Cut armed: finite and running");
+        }
+
+        // 4. mono in, stereo out
+        {
+            auto q = std::make_unique<MasterSpaceAudioProcessor>();
+            q->setPlayConfigDetails (1, 2, 48000.0, 512);
+            q->prepareToPlay (48000.0, 512);
+            setup (*q, req::Wet, true);
+            auto buf = material (48000.0, 3.0, 5);
+            run (*q, buf, 512);
+            check (finite (buf), "mono in -> stereo out with Dynamic Cut: finite");
+        }
+
+        // 5. bypass: the band bypassed = Dynamic Cut off (after the 10 ms fade)
+        {
+            auto off = render (48000.0, 512, req::Wet, false, 3.0);
+            auto byp = render (48000.0, 512, req::Wet, true, 3.0, [&] (MasterSpaceAudioProcessor& q, int k) { if (k == 0) setP (q, eqId (req::Wet, 4, eqBypass), 1.0f); });
+            float m = 0;
+            for (int c = 0; c < 2; ++c) for (int i = 4800; i < off.getNumSamples(); ++i) m = juce::jmax (m, std::abs (off.getSample (c, i) - byp.getSample (c, i)));
+            check (m < 1e-4f, "band BYPASS with Dynamic Cut armed sounds like Dynamic Cut off (max diff " + juce::String (m, 7) + ")");
+        }
+
+        // 6. state / presets: the per-band settings come back
+        {
+            auto q = makeProcessor (48000.0, 512);
+            setup (*q, req::Late, true, -40.0f, 4.5f);
+            juce::MemoryBlock mb; q->getStateInformation (mb);
+            auto r2 = makeProcessor (48000.0, 512);
+            r2->setStateInformation (mb.getData(), (int) mb.getSize());
+            pump (60);
+            check (getP (*r2, eqId (req::Late, 4, eqDynOn)) > 0.5f && std::abs (getP (*r2, eqId (req::Late, 4, eqDynThreshold)) + 40.0f) < 0.01f
+                   && std::abs (getP (*r2, eqId (req::Late, 4, eqDynMax)) - 4.5f) < 0.01f, "Dynamic Cut ON, threshold and max reduction restore from the project state");
+            auto fresh = makeProcessor (48000.0, 512);
+            bool allOff = true;
+            for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) allOff = allOff && getP (*fresh, eqId (b, i, eqDynOn)) < 0.5f;
+            check (allOff, "a new instance: Dynamic Cut off on every band");
+        }
+
+        // 7. NaN from upstream: the detector and the cut filters recover
+        {
+            req::ManualDynamicBank dyn; dyn.prepare (48000.0);
+            req::BandParams bands[req::kBands] {};
+            bands[0].used = true; bands[0].dynamic = true; bands[0].freq = 1000.0f; bands[0].q = 3.0f;
+            bands[0].dynamicThresholdDb = -54.0f; bands[0].dynamicMaxDb = 3.0f;
+            dyn.set (bands, true, true);
+            float l[256], r[256];
+            for (int i = 0; i < 256; ++i) l[i] = r[i] = std::numeric_limits<float>::quiet_NaN();
+            dyn.process (l, r, 256);
+            bool ok = true;
+            for (int k = 0; k < 40; ++k)
+            {
+                for (int i = 0; i < 256; ++i) l[i] = r[i] = (float) (0.25 * std::sin (2.0 * pi * 1000.0 * (k * 256 + i) / 48000.0));
+                dyn.process (l, r, 256);
+                if (k > 10) for (int i = 0; i < 256; ++i) ok = ok && std::isfinite (l[i]) && std::isfinite (r[i]);
+            }
+            check (ok && std::isfinite (dyn.reductionDb (0)), "a NaN block: Dynamic Cut recovers within ~60 ms (finite output, finite reduction)");
+            // silence: no denormals stuck, reduction back to 0
+            for (int k = 0; k < 800; ++k) { std::fill (l, l + 256, 0.0f); std::fill (r, r + 256, 0.0f); dyn.process (l, r, 256); }
+            check (dyn.reductionDb (0) < 0.01f, "silence: the reduction returns to 0 dB (" + juce::String (dyn.reductionDb (0), 4) + " dB)");
+        }
+
+        // 8. CPU: 24 armed bands (8 per bank) against none
+        {
+            auto time = [&] (bool all)
+            {
+                auto q = makeProcessor (48000.0, 512);
+                setP (*q, mix, 100.0f); setP (*q, eqOn, 1.0f);
+                if (all) for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i)
+                {
+                    setP (*q, eqId (b, i, eqUsed), 1); setP (*q, eqId (b, i, eqType), (float) req::Bell);
+                    setP (*q, eqId (b, i, eqFreq), 200.0f * (float) (i + 1)); setP (*q, eqId (b, i, eqQ), 3.0f); setP (*q, eqId (b, i, eqDynOn), 1.0f);
+                }
+                pump (60);
+                auto buf = material (48000.0, 10.0, 9);
+                const auto t0 = std::chrono::steady_clock::now();
+                run (*q, buf, 512);
+                return std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
+            };
+            const double t0 = time (false), t1 = time (true);
+            std::printf ("  CPU: 10 s of audio, no dynamic bands %.3f s, 24 armed bands %.3f s (+%.1f %% of real time)\n", t0, t1, (t1 - t0) / 10.0 * 100.0);
+            check (t1 - t0 < 0.5, "24 armed Dynamic Cut bands cost < 5 % of real time on this machine");
+        }
+    }
 #endif
 
     //==========================================================================
@@ -1785,6 +2027,28 @@ int main (int argc, char** argv)
             return m;
         };
 
+       #ifdef MAS_STUDIO_DYN
+        {   // 1.7d: a confirmed marker is held >= 3 s after the resonance stops, marked as held, then released
+            const double fs = 48000.0;
+            auto x = noiseWithPeaks (fs, 4.0);
+            auto plain = pinkish (fs, 6.0, 21);
+            for (int i = 0; i < plain.getNumSamples(); ++i) x.push_back (0.25f * (plain.getSample (0, i) + plain.getSample (1, i)));
+            spec::SpectrumEngine eng;
+            bool at25 = false, heldFlag = false, at45 = true, liveBefore = false;
+            analyse (eng, x, fs, 0.3, 9.6, [&] (double tm)
+            {
+                const auto& mk = eng.detector.markers();
+                for (const auto& p : mk) if (std::abs (p.freq / 1200.0 - 1.0) < 0.015)
+                {
+                    if (tm > 3.5 && tm < 3.9 && ! p.held) liveBefore = true;
+                    if (tm > 6.4 && tm < 6.6) { at25 = true; heldFlag = heldFlag || p.held; }
+                }
+                if (tm > 8.6 && tm < 8.8) at45 = hasNear (mk, 1200.0);
+            });
+            check (liveBefore && at25 && heldFlag, "PEAK DETECT: the 1.2 kHz marker is still there (held) ~2.5 s after the resonance stopped");
+            check (! at45, "PEAK DETECT: and is released afterwards (gone ~4.7 s after the resonance stopped)");
+        }
+       #endif
         for (double fs : { 48000.0, 96000.0 })
         {
             const auto x = noiseWithPeaks (fs, 5.0);

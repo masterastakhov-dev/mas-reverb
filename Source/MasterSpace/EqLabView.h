@@ -210,8 +210,21 @@ struct Model
     }
     void setRaw (int i, int field, float plain) { auto* r = prm[bank][i][field]; r->setValueNotifyingHost (r->convertTo0to1 (plain)); }
     // one complete edit (host undo step / automation gesture)
+#ifdef MAS_STUDIO_DYN
+    // a Dynamic Cut band has no static gain: its gain is the live reduction only
+    bool lockedGain (int i, int field) const { return field == ParamIDs::eqGain && raw (i).used && raw (i).dynamic && raw (i).type == req::Bell; }
+    void set (int i, int field, float plain) { if (lockedGain (i, field)) plain = 0.0f; ensure (i); auto* r = prm[bank][i][field]; r->beginChangeGesture(); r->setValueNotifyingHost (r->convertTo0to1 (plain)); r->endChangeGesture(); refresh(); }
+    void drag (int i, int field, float plain) { if (lockedGain (i, field)) plain = 0.0f; setRaw (i, field, plain); refresh(); }
+    bool anyOtherBandUsed (int bk, int i) const
+    {
+        for (int b = 0; b < req::numBanks; ++b) for (int k = 0; k < req::kBands; ++k)
+            if ((b != bk || k != i) && s.band[b][k].used) return true;
+        return false;
+    }
+#else
     void set (int i, int field, float plain) { ensure (i); auto* r = prm[bank][i][field]; r->beginChangeGesture(); r->setValueNotifyingHost (r->convertTo0to1 (plain)); r->endChangeGesture(); refresh(); }
     void drag (int i, int field, float plain) { setRaw (i, field, plain); refresh(); }
+#endif
     void begin (int i, int field) { ensure (i); prm[bank][i][field]->beginChangeGesture(); }
     void end (int i, int field) { prm[bank][i][field]->endChangeGesture(); }
     void ensure (int i)
@@ -259,7 +272,7 @@ struct Model
         setRaw (i, ParamIDs::eqDynOn, dynamic ? 1.0f : 0.0f);
         setRaw (i, ParamIDs::eqDynThreshold, -36.0f);
         setRaw (i, ParamIDs::eqDynMax, 3.0f);
-        if (dynamic && ! s.on) setOn (true);
+        if (dynamic && ! s.on && ! anyOtherBandUsed (bank, i)) setOn (true);   // never wakes up other, unrelated bands
 #endif
         refresh(); sel = i;
     }
@@ -323,6 +336,10 @@ public:
     void clearPeak() { std::fill (peakA.begin(), peakA.end(), -200.0f); }
     void poke() { tipUntil = juce::Time::getMillisecondCounter() + 2200; }
     const std::vector<spec::Peak>& markers() const { return engA.detector.markers(); }
+#ifdef MAS_STUDIO_DYN
+    float dynShown[req::kBands] = {};
+    mutable std::map<int, float> heldY;
+#endif
 
     // ---- analyzer: FFT of the real signal from the DSP taps (smoothing is for the picture only)
     void tick (double dt)
@@ -422,7 +439,7 @@ public:
                     juce::Path dm; dm.addQuadrilateral (c.x, c.y - 4.5f, c.x + 3.6f, c.y, c.x, c.y + 4.5f, c.x - 3.6f, c.y);
                     g.setColour (juce::Colour (0xff0b0f15)); g.fillPath (dm);
 #ifdef MAS_STUDIO_DYN
-                    g.setColour ((p.fundamental ? col::gold : juce::Colours::white).withAlpha (hov ? 1.0f : 0.85f));
+                    g.setColour ((p.fundamental ? col::gold : juce::Colours::white).withAlpha (hov ? 1.0f : (p.held ? 0.6f : 0.85f)));
 #else
                     g.setColour (juce::Colours::white.withAlpha (hov ? 1.0f : 0.85f));
 #endif
@@ -466,6 +483,55 @@ public:
         g.saveState(); g.reduceClipRegion (juce::Rectangle<float> (x0, y0, x1 - x0, y1 - y0).toNearestInt());
         if (haveSel && ! sb.bypass && tip > 0.0f) { g.setColour (col::gold.withAlpha (0.09f * a * tip)); g.fillPath (selFill); }
         g.setColour (col::gold.withAlpha (a)); g.strokePath (curve, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+#ifdef MAS_STUDIO_DYN
+        // Dynamic Cut at work: the curve as it is right now (amber), measured in the engine
+        {
+            float red[req::kBands] = {};
+            bool any = false;
+            for (int i = 0; i < req::kBands; ++i)
+            {
+                const auto& bd = md.raw (i);
+                if (md.s.on && bd.used && ! bd.bypass && bd.dynamic && bd.type == req::Bell)
+                {
+                    red[i] = md.proc.dynReduction[md.bank][i].load (std::memory_order_relaxed);
+                    any = any || red[i] > 0.05f;
+                }
+            }
+            if (any)
+            {
+                juce::Path live, area;
+                for (int x = 0; x <= n; ++x)
+                {
+                    const double f = juce::jmin ((double) fOf (x0 + (float) x), 0.499 * fs);
+                    double tot = 0.0, dyn = 0.0;
+                    for (int i = 0; i < req::kBands; ++i)
+                    {
+                        tot += req::bandMagnitudeDb (md.raw (i), f, fs);
+                        if (red[i] > 0.0f) { auto vb = md.raw (i); vb.gainDb = -red[i]; dyn += req::bandMagnitudeDb (vb, f, fs); }
+                    }
+                    const float y = yOf ((float) juce::jlimit (-40.0, 40.0, tot + dyn)), ys = yOf ((float) juce::jlimit (-40.0, 40.0, tot));
+                    if (x == 0) { live.startNewSubPath (x0, y); area.startNewSubPath (x0, ys); } else live.lineTo (x0 + (float) x, y);
+                    if (x > 0) area.lineTo (x0 + (float) x, ys);
+                }
+                for (int x = n; x >= 0; --x)
+                {
+                    const double f = juce::jmin ((double) fOf (x0 + (float) x), 0.499 * fs);
+                    double tot = 0.0;
+                    for (int i = 0; i < req::kBands; ++i)
+                    {
+                        tot += req::bandMagnitudeDb (md.raw (i), f, fs);
+                        if (red[i] > 0.0f) { auto vb = md.raw (i); vb.gainDb = -red[i]; tot += req::bandMagnitudeDb (vb, f, fs); }
+                    }
+                    area.lineTo (x0 + (float) x, yOf ((float) juce::jlimit (-40.0, 40.0, tot)));
+                }
+                area.closeSubPath();
+                const juce::Colour amber (0xffffa04c);
+                g.setColour (amber.withAlpha (0.16f)); g.fillPath (area);
+                g.setColour (amber.withAlpha (0.9f)); g.strokePath (live, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+            for (int i = 0; i < req::kBands; ++i) dynShown[i] = red[i];
+        }
+#endif
         g.restoreState();
         for (int i = 0; i < req::kBands; ++i)
         {
@@ -473,6 +539,18 @@ public:
             const auto bd = md.view (i);
             const auto p = pointOf (bd);
             const bool sel = i == md.sel;
+#ifdef MAS_STUDIO_DYN
+            if (bd.used && bd.dynamic && bd.type == req::Bell)
+            {
+                const juce::Colour amber (0xffffa04c);
+                g.setColour (amber.withAlpha (0.85f * a)); g.drawEllipse (p.x - 7.5f, p.y - 7.5f, 15.0f, 15.0f, 1.2f);
+                const float r = dynShown[i];
+                const juce::String txt = r > 0.05f ? "-" + juce::String (r, 1) + " dB" : "DYN";
+                g.setFont (font (9.0f, true, 0.06f));
+                g.setColour (amber.withAlpha ((r > 0.05f ? 1.0f : 0.7f) * a));
+                g.drawText (txt, juce::Rectangle<float> (p.x - 30.0f, p.y + 9.0f, 60.0f, 11.0f), juce::Justification::centred);
+            }
+#endif
             if (sel && ! req::isCut (bd.type))
             {
                 const float h = bwOct (bd.q) * 0.5f, xa = xOf (juce::jlimit (20.0f, 20000.0f, bd.freq * std::pow (2.0f, -h))), xb = xOf (juce::jlimit (20.0f, 20000.0f, bd.freq * std::pow (2.0f, h)));
@@ -494,6 +572,8 @@ public:
                     const char* bn[] = { "WET", "EARLY", "LATE" };
                     t1 << fmtFreq (p.freq) << dot << juce::String (p.levelDb, 1) << " dBFS" << dot << "+" << juce::String (p.promDb, 1) << " dB over neighbours" << dot << "width " << (p.bwHz < 10.0f ? juce::String (p.bwHz, 1) : juce::String (juce::roundToInt (p.bwHz))) << " Hz";
 #ifdef MAS_STUDIO_DYN
+                    if (p.held) t1 << dot << "held (not detected right now)";
+                    if (p.fundamental) t1 << dot << "fundamental";
                     t2 << "click: DYNAMIC CUT or static " << bn[md.bank] << " EQ (no change until selected)";
 #else
                     t2 << "click: prepare a " << bn[md.bank] << " EQ band here (gain stays 0 dB)";
@@ -555,7 +635,12 @@ public:
     {
         const float x = xOf (p.freq);
         const int ix = juce::jlimit (0, juce::jmax (0, (int) dispA.size() - 1), juce::roundToInt (x - padL));
-        const float y = dispA.empty() ? padT + ph() : ySpec (dispA[(size_t) ix]);
+        float y = dispA.empty() ? padT + ph() : ySpec (dispA[(size_t) ix]);
+       #ifdef MAS_STUDIO_DYN
+        // a held marker stays exactly where it was last confirmed: nothing slides away under the mouse
+        if (p.held) { if (auto it = heldY.find (p.id); it != heldY.end()) y = it->second; }
+        else { if (heldY.size() > 64) heldY.clear(); heldY[p.id] = y; }
+       #endif
         return { x, juce::jlimit (padT + 8.0f, padT + ph() - 6.0f, y - 9.0f) };
     }
     int hitMarker (juce::Point<float> p) const
@@ -682,9 +767,11 @@ public:
                 m.addSectionHeader ("DYNAMIC CUT / THRESHOLD");
                 for (int j = 0; j < 5; ++j) m.addItem (50 + j, juce::String (-42 + 6 * j) + " dBFS", true,
                                                         std::abs (b.dynamicThresholdDb - (float) (-42 + 6 * j)) < 0.6f);
+                m.addItem (23, "Threshold...  (" + juce::String (b.dynamicThresholdDb, 1) + " dBFS)");
                 m.addSectionHeader ("MAX REDUCTION");
                 for (int j = 0; j < 4; ++j) m.addItem (60 + j, juce::String (2 + j) + " dB", true,
                                                         std::abs (b.dynamicMaxDb - (float) (2 + j)) < 0.2f);
+                m.addItem (24, "Max reduction...  (" + juce::String (b.dynamicMaxDb, 1) + " dB)");
             }
         }
 #endif
@@ -710,6 +797,7 @@ public:
                     md2.set (i, ParamIDs::eqGain, 0.0f);
                 }
             }
+            else if (r == 23 || r == 24) { safe->openEntry (i, r == 23 ? ParamIDs::eqDynThreshold : ParamIDs::eqDynMax); return; }
             else if (r >= 50 && r < 55) md2.set (i, ParamIDs::eqDynThreshold, (float) (-42 + 6 * (r - 50)));
             else if (r >= 60 && r < 64) md2.set (i, ParamIDs::eqDynMax, (float) (2 + r - 60));
 #endif
@@ -731,7 +819,8 @@ public:
                 // Only a confirmed click can arm dynamic processing. Default untouched.
                 juce::PopupMenu choice;
                 choice.addSectionHeader ("Detected " + fmtFreq (f));
-                choice.addItem (1, "DYNAMIC CUT   Q 3 / max 3 dB");
+                choice.addItem (1, juce::String ("DYNAMIC CUT   Q 3 / -36 dBFS / max 3 dB")
+                                   + (! md.s.on && md.anyOtherBandUsed (md.bank, -1) ? "   (turn REVERB EQ ON to hear it)" : ""));
                 choice.addItem (2, "STATIC EQ   0 dB / adjust by hand");
                 juce::Component::SafePointer<Graph> safe (this);
                 choice.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
@@ -782,6 +871,11 @@ public:
     {
         entryBand = i; entryField = field;
         const auto b = md.view (i);
+       #ifdef MAS_STUDIO_DYN
+        if (field == ParamIDs::eqDynThreshold || field == ParamIDs::eqDynMax)
+            entry.setText (juce::String (field == ParamIDs::eqDynThreshold ? b.dynamicThresholdDb : b.dynamicMaxDb, 1), false);
+        else
+       #endif
         entry.setText (field == ParamIDs::eqFreq ? juce::String (juce::roundToInt (b.freq)) : field == ParamIDs::eqGain ? juce::String (b.gainDb, 1) : juce::String (b.q, 2), false);
         const auto p = pointOf (b);
         entry.setBounds (juce::Rectangle<int> (92, 24).withCentre ({ juce::roundToInt (p.x), juce::roundToInt (p.y) - 30 }).constrainedWithin (getLocalBounds().reduced (4)));
@@ -795,6 +889,10 @@ public:
         float v = t.getFloatValue();
         if (entryField == ParamIDs::eqFreq) md.set (entryBand, entryField, juce::jlimit (20.0f, 20000.0f, v * (t.containsChar ('k') ? 1000.0f : 1.0f)));
         else if (entryField == ParamIDs::eqGain) md.set (entryBand, entryField, juce::jlimit (-18.0f, 18.0f, v));
+       #ifdef MAS_STUDIO_DYN
+        else if (entryField == ParamIDs::eqDynThreshold) md.set (entryBand, entryField, juce::jlimit (-72.0f, -6.0f, v));
+        else if (entryField == ParamIDs::eqDynMax) md.set (entryBand, entryField, juce::jlimit (0.0f, 6.0f, std::abs (v)));
+       #endif
         else md.set (entryBand, entryField, juce::jlimit (0.1f, 18.0f, v));
         poke(); edited();
     }
