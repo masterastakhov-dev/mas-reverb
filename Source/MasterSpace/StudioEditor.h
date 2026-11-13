@@ -68,11 +68,6 @@ private:
     MasterSpaceAudioProcessor& proc;
     LookAndFeel& lnf;
     juce::Image wordmark;
-   #ifdef MAS_STUDIO_18
-   public:
-    static int sloganVariant;        // top-left slogan: 0 = one line (A), 1 = two lines (B) - owner's choice pending
-   private:
-   #endif
    #ifdef MAS_STUDIO_DYN
     juce::Image emblem;                                    // Resources/emblem.png, the original (never modified)
    #endif

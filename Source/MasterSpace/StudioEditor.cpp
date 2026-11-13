@@ -950,10 +950,6 @@ void Panel::drawFrame (juce::Graphics& g, float w, float h, bool top, bool botto
         }
 }
 
-#ifdef MAS_STUDIO_18
-int Panel::sloganVariant = 0;
-#endif
-
 //==============================================================================
 Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
 {
@@ -1273,7 +1269,7 @@ void Panel::renderTop (juce::Graphics& g, int h)
    #ifdef MAS_STUDIO_18
     {
         // 1.8 (owner's decision): the top-left corner carries only the official slogan - no emblem, no wave,
-        // no wordmark. Engraved silver, left-aligned, kept clear of the light slit (x 214).
+        // no wordmark. One line (variant A), engraved silver, left-aligned, kept clear of the light slit (x 214).
         const juce::String l1 = juce::CharPointer_UTF8 ("DON\xe2\x80\x99T ADD REVERB."), l2 ("CREATE SPACE.");
         const auto silver = juce::Colour (0xffc3c9d3);
         auto engrave = [&g] (const juce::String& txt, juce::Rectangle<float> r, juce::Colour c)
@@ -1281,23 +1277,12 @@ void Panel::renderTop (juce::Graphics& g, int h)
             g.setColour (juce::Colours::black.withAlpha (0.75f)); g.drawText (txt, r.translated (0, 1), juce::Justification::centredLeft);
             g.setColour (c);                                     g.drawText (txt, r, juce::Justification::centredLeft);
         };
-        if (sloganVariant == 0)
-        {
-            // A: one line, fitted to the corner
-            const juce::String one = l1 + " " + l2;
-            float fh = 10.5f;
-            while (fh > 7.5f && juce::GlyphArrangement::getStringWidth (inter (fh, true, 0.12f), one) > 166.0f) fh -= 0.25f;
-            g.setFont (inter (fh, true, 0.12f));
-            engrave (one, { 40, 46, 170, 16 }, silver.withAlpha (0.88f));
-        }
-        else
-        {
-            // B: two lines, the second a little stronger (larger, brighter, a hint of the theme gold), no glow
-            g.setFont (inter (10.5f, true, 0.2f));
-            engrave (l1, { 40, 36, 170, 15 }, silver.withAlpha (0.78f));
-            g.setFont (inter (13.5f, true, 0.16f));
-            engrave (l2, { 40, 53, 170, 18 }, mix (juce::Colour (0xffe4e8ee), t.gold, 0.18f));
-        }
+        // owner's choice A: one line, fitted to the corner
+        const juce::String one = l1 + " " + l2;
+        float fh = 10.5f;
+        while (fh > 7.5f && juce::GlyphArrangement::getStringWidth (inter (fh, true, 0.12f), one) > 166.0f) fh -= 0.25f;
+        g.setFont (inter (fh, true, 0.12f));
+        engrave (one, { 40, 46, 170, 16 }, silver.withAlpha (0.88f));
     }
    #else
     {

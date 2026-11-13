@@ -256,9 +256,6 @@ static int studioSnapshots (const juce::File& dir)
     set (ParamIDs::algorithm, 2.0f); set (ParamIDs::decay, 2.8f); set (ParamIDs::mix, 32.0f); set (ParamIDs::depth, 42.0f);
     set (ParamIDs::erLevel, -3.0f); set (ParamIDs::lateLevel, -1.5f); set (ParamIDs::preDelay, 18.0f); set (ParamIDs::rgOn, 1.0f);
     pump (100);
-   #ifdef MAS_STUDIO_18
-    if (auto* sv = std::getenv ("MAS_SLOGAN")) studio::Panel::sloganVariant = juce::String (sv).getIntValue();
-   #endif
     std::unique_ptr<juce::AudioProcessorEditor> edp (p->createEditor());
     auto* ed = dynamic_cast<studio::Editor*> (edp.get());
     if (ed == nullptr) { std::printf ("not a studio editor\n"); return 1; }

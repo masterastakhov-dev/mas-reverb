@@ -103,7 +103,7 @@ flowchart LR
 
 ## 4. Интерфейс 1.8
 
-- **Шапка:** слева только слоган **DON’T ADD REVERB. CREATE SPACE.** (вариант A или B — выбор владельца); эмблема, волна и MASTERASTAKHOVSOUND убраны. MASTER SPACE по центру без изменений.
+- **Шапка:** слева только слоган **DON’T ADD REVERB. CREATE SPACE.** (вариант A, одна строка — выбор владельца); эмблема, волна и MASTERASTAKHOVSOUND убраны. MASTER SPACE по центру без изменений.
 - **Верхняя полоса:** `‹ ИМЯ ПРЕСЕТА ›` (290 px, без категории — она в подсказке и браузере), затем STUDIO ROOM / CHAMBER / HALL / ATMOS TAIL, справа MAIN / REVERB EQ и MIX / PRO.
 - **Нижняя полоса MAIN:** ★ SAVE SAVE AS │ A B A→B UNDO MATCH │ INSERT AUX IR │ SMART DUCKER, RESONANCE GUARD, HARMONIC COLOR (+ SATURATION MIX), **M/S COMP**.
 - **На других страницах** инструменты пресета стоят рядом с именем, как раньше. Кнопки не теряются; их действия, параметры и автоматизация не меняются.
