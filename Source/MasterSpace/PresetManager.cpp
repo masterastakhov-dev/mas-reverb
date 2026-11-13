@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #if defined (MAS_STUDIO_DYN)
+   #if defined (MAS_STUDIO_18)
+    const char* product = "MASTER SPACE 1.8 STUDIO";        // 1.8: its own library, 1.6 / 1.7d untouched
+   #elif defined (MAS_STUDIO_DYN)
     const char* product = "MASTER SPACE 1.7d DYNAMIC TEST"; // 1.7d: its own library, 1.6 untouched
    #elif defined (MAS_STUDIO)
     const char* product = "MASTER SPACE STUDIO TEST"; // studio test build: its own library, 1.5 untouched

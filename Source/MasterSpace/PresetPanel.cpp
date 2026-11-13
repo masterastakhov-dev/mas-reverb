@@ -426,7 +426,15 @@ void PresetBar::refresh()
     shownName = name.isNotEmpty() ? name : juce::String ("No preset");
     shownCategory = idx >= 0 ? presets.getPresets()[(size_t) idx].category.toUpperCase() : juce::String ("PRESET");
     shownModified = presets.isCurrentModified();
+   #ifdef MAS_STUDIO_18
+    {
+        juce::String tip = shownName + "\n" + shownCategory;
+        if (idx >= 0 && presets.getPresets()[(size_t) idx].description.isNotEmpty()) tip << "\n" << presets.getPresets()[(size_t) idx].description;
+        nameButton.setTooltip (tip + "\nClick: all presets");
+    }
+   #else
     nameButton.setTooltip (idx >= 0 ? presets.getPresets()[(size_t) idx].description : juce::String());
+   #endif
 
     const bool fav = idx >= 0 && presets.isFavorite (presets.getCurrentKey());
     favButton.setToggleState (fav, juce::dontSendNotification);
@@ -476,6 +484,12 @@ void PresetBar::paint (juce::Graphics& g)
         }
         else
         {
+           #ifdef MAS_STUDIO_18
+            // the preset NAME is what matters: large and readable; the category lives in the tooltip and the browser
+            g.setColour (juce::Colour (0xffeef2f8));
+            g.setFont (studio::inter (13.5f, true, 0.02f));
+            g.drawFittedText (shownName + (shownModified ? " *" : ""), t.withTrimmedRight (18), juce::Justification::centredLeft, 1, 0.92f);
+           #else
             const auto cf = studio::inter (9.0f, true, 0.16f);
             g.setFont (cf);
             g.setColour (th.gold.withAlpha (0.85f));
@@ -484,6 +498,7 @@ void PresetBar::paint (juce::Graphics& g)
             g.setColour (juce::Colour (0xffe8eef6));
             g.setFont (studio::inter (12.5f));
             g.drawFittedText (shownName + (shownModified ? " *" : ""), t.withTrimmedRight (16), juce::Justification::centredLeft, 1);
+           #endif
         }
         juce::Path chev;
         const float ax = r.getRight() - 13.0f, ay = r.getCentreY();
@@ -530,11 +545,39 @@ void PresetBar::paint (juce::Graphics& g)
         g.fillRect ((float) b->getX() - 9.0f, 6.0f, 1.0f, (float) getHeight() - 12.0f);
 }
 
+#ifdef MAS_STUDIO_18
+static constexpr int kNameW18 = 290;
+static const int kToolW18[]   = { 26, 48, 62, 26, 26, 40, 50, 54 };
+static const int kToolGap18[] = { 4, 4, 12, 4, 4, 4, 4, 0 };
+
+int PresetBar::toolsWidth() const
+{
+    int w = 0;
+    for (int i = 0; i < 8; ++i) w += kToolW18[i] + kToolGap18[i];
+    return w;
+}
+
+void PresetBar::placeTools (juce::Component& host, int x, int y, int h)
+{
+    juce::TextButton* tools[] = { &favButton, &saveButton, &saveAsButton, &slotA, &slotB, &copyButton, &undoButton, &matchButton };
+    for (int i = 0; i < 8; ++i)
+    {
+        if (tools[i]->getParentComponent() != &host) host.addAndMakeVisible (*tools[i]);
+        tools[i]->setBounds (x, y, kToolW18[i], h);
+        x += kToolW18[i] + kToolGap18[i];
+    }
+}
+#endif
+
 void PresetBar::resized()
 {
     auto r = getLocalBounds();
     const int h = r.getHeight();
     auto take = [&r, h] (int w, int gap = 6) { auto b = r.removeFromLeft (w).withHeight (h); r.removeFromLeft (gap); return b; };
+   #ifdef MAS_STUDIO_18
+    prevButton.setBounds (take (28, 4)); nameButton.setBounds (take (kNameW18, 4)); nextButton.setBounds (take (28, 0));
+    return;
+   #endif
    #ifdef MAS_STUDIO
     prevButton.setBounds (take (28, 4)); nameButton.setBounds (take (200, 4)); nextButton.setBounds (take (28, 8));
     favButton.setBounds (take (28)); saveButton.setBounds (take (54)); saveAsButton.setBounds (take (66, 14));

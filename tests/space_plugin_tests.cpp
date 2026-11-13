@@ -256,6 +256,9 @@ static int studioSnapshots (const juce::File& dir)
     set (ParamIDs::algorithm, 2.0f); set (ParamIDs::decay, 2.8f); set (ParamIDs::mix, 32.0f); set (ParamIDs::depth, 42.0f);
     set (ParamIDs::erLevel, -3.0f); set (ParamIDs::lateLevel, -1.5f); set (ParamIDs::preDelay, 18.0f); set (ParamIDs::rgOn, 1.0f);
     pump (100);
+   #ifdef MAS_STUDIO_18
+    if (auto* sv = std::getenv ("MAS_SLOGAN")) studio::Panel::sloganVariant = juce::String (sv).getIntValue();
+   #endif
     std::unique_ptr<juce::AudioProcessorEditor> edp (p->createEditor());
     auto* ed = dynamic_cast<studio::Editor*> (edp.get());
     if (ed == nullptr) { std::printf ("not a studio editor\n"); return 1; }
@@ -295,10 +298,14 @@ static int studioSnapshots (const juce::File& dir)
             for (int x = 36; x < 196; ++x)
             {
                 const auto c = img.getPixelAt (x, y);
-                if (c.getRed() > 120 && c.getRed() > c.getGreen() + 50 && c.getRed() > c.getBlue() + 40) ++red;
+                if (c.getRed() > 80 && c.getRed() > c.getGreen() + 35 && c.getRed() > c.getBlue() + 35) ++red;   // muted red disc
                 if (c.getBlue() > 170 && c.getGreen() > 140 && c.getRed() < 120) ++cyan;
             }
-        const bool ok = red > 60 && cyan == 0;
+       #ifdef MAS_STUDIO_18
+        const bool ok = red == 0 && cyan == 0;        // 1.8: the corner carries only the slogan
+       #else
+        const bool ok = red > 40 && cyan == 0;
+       #endif
         std::printf ("  [%s] header: brand emblem above the wordmark (red %d px), no wave (cyan %d px)\n", ok ? " ok " : "FAIL", red, cyan);
         if (! ok) return 1;
     }
@@ -1718,6 +1725,24 @@ int main (int argc, char** argv)
             auto quiet = silence (48000.0, 12.0);
             run (*a, quiet, 512);
             check (std::isfinite (a->ioMeters.rmsDb[0][0].load()) && a->ioMeters.rmsDb[0][0].load() <= -119.9f, "a NaN sample cannot freeze the meter (recovers to the floor)");
+        }
+
+        // ---- no stale peak: MAIN shown -> peak near 0 dBFS -> MAIN hidden -> silence -> MAIN shown again
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto hot = sineBuf (48000.0, 0.5, -0.3f, -0.3f);
+            run (*pr, hot, 512);                          // a red peak is waiting in the atomics, nobody takes it
+            pr->ioMeters.wanted = false;
+            auto quiet = silence (48000.0, 1.0);
+            run (*pr, quiet, 512);
+            pr->ioMeters.wanted = true;
+            auto quiet2 = silence (48000.0, 0.05);
+            run (*pr, quiet2, 512);
+            const float pin = pk (*pr, 0, 0), pout = pk (*pr, 1, 0);
+            check (pin < -199.0f && pout < -12.0f && rms (*pr, 0, 0) <= -119.9f,
+                   "MAIN hidden during a -0.3 dBFS peak, shown again in silence: INPUT no stale peak; OUTPUT only the real tail ("
+                   + juce::String (pout, 1) + " dBFS)");
         }
 
         // ---- cost: measurement overhead per 512-sample block

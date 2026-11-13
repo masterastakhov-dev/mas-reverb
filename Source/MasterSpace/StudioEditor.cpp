@@ -352,6 +352,18 @@ public:
         lampL.setBounds (36 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
         lampR.setBounds (1042 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
         for (auto* l : { &lampL, &lampR }) l->toBack();
+       #ifdef MAS_STUDIO_18
+        // 1.8 bottom strip: [preset tools, placed by the panel] [INSERT AUX IR] [SMART DUCKER RESONANCE GUARD
+        // HARMONIC COLOR M/S COMP]; the space types moved up next to the preset name. Same buttons, same actions.
+        route[0]->setBounds (428, 340, 58, 32); route[1]->setBounds (490, 340, 46, 32);
+        irKey.setBounds (540, 340, 40, 32);
+        mods[0]->setBounds (594, 340, 116, 32); mods[1]->setBounds (714, 340, 134, 32); mods[2]->setBounds (852, 340, 126, 32);
+        makeKey (*this, compKey, false, true);
+        compKey.setClickingTogglesState (true);
+        compKey.setBounds (982, 340, 76, 32);
+        compKey.setTooltip ("M/S OUTPUT COMPRESSOR on / off. Settings: PRO > COMP");
+        satMix.setBounds (852, 375, 126, 16);
+       #endif
         railTimer.onTick = [this] { tickRails(); };
         railTimer.startTimerHz (60);
        #endif
@@ -370,6 +382,15 @@ public:
         if (proc.ioMeters.wanted.load (std::memory_order_relaxed) != show) proc.ioMeters.wanted.store (show);
         if (! show) { railLastMs = 0.0; return; }
         const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        if (railLastMs <= 0.0)
+        {
+            // MAIN shown again: start from a clean state - nothing held from before (the peak hold only runs
+            // while the rails are on screen); peaks collected while hidden are dropped
+            for (auto& io : railBal) for (auto& b : io) b = mas::RailBallistics {};
+            for (int io = 0; io < 2; ++io) for (int c = 0; c < 2; ++c) proc.ioMeters.takePeak (io == 0 ? mas::IOMeters::input : mas::IOMeters::output, c);
+            railBlocks = proc.ioMeters.blocks.load (std::memory_order_relaxed);
+            railStale = 0.0f;
+        }
         const float dt = railLastMs > 0.0 ? (float) juce::jlimit (0.0, 0.1, (nowMs - railLastMs) * 0.001) : 1.0f / 60.0f;
         railLastMs = nowMs;
         // a host that stops calling the plugin (transport stopped, track removed) reads as silence, not a frozen level
@@ -394,6 +415,19 @@ public:
     }
    #endif
 
+   #ifdef MAS_STUDIO_18
+    // the space-type keys (STUDIO ROOM, CHAMBER, HALL, ATMOS TAIL) live in the top strip, next to the preset name
+    void placeAlgoKeys (juce::Component& host, bool show)
+    {
+        const int x[] = { 404, 510, 596, 664 }, w[] = { 100, 80, 62, 98 };
+        for (int i = 0; i < algo.size(); ++i)
+        {
+            if (algo[i]->getParentComponent() != &host) host.addAndMakeVisible (*algo[i]);
+            algo[i]->setBounds (x[i], 108, w[i], 28);
+            algo[i]->setVisible (show);
+        }
+    }
+   #endif
    #ifdef MAS_STUDIO_DYN
     void setLampHeat (float h, float c) { lampL.setHeat (h, c); lampR.setHeat (h, c); }
     float lampHeat() const { return lampL.getHeat(); }
@@ -483,6 +517,9 @@ private:
     float railStale = 0.0f, railWarm = 0.0f;
     FineSlider satMix;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> satAtt;
+   #ifdef MAS_STUDIO_18
+    juce::TextButton compKey { "M/S COMP" };
+   #endif
    #endif
 };
 
@@ -913,6 +950,10 @@ void Panel::drawFrame (juce::Graphics& g, float w, float h, bool top, bool botto
         }
 }
 
+#ifdef MAS_STUDIO_18
+int Panel::sloganVariant = 0;
+#endif
+
 //==============================================================================
 Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
 {
@@ -941,7 +982,12 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
     mixKey.setTooltip ("MIX: MAIN and REVERB EQ");
     proKey.setTooltip ("PRO: every page");
     makeKey (*this, navMain); makeKey (*this, navEq);
+   #ifdef MAS_STUDIO_18
+    navMain.setBounds (778, 108, 76, 28); navEq.setBounds (860, 108, 94, 28);
+    mixKey.setBounds (970, 108, 46, 28); proKey.setBounds (1018, 108, 46, 28);
+   #else
     navMain.setBounds (754, 108, 84, 28); navEq.setBounds (844, 108, 100, 28);
+   #endif
     navMain.onClick = [this] { setPage (0); };
     navEq.onClick = [this] { setPage (12); };
 
@@ -956,7 +1002,11 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
         addChildComponent (b);
     }
 
+   #ifdef MAS_STUDIO_18
+    if (auto* pb = classic->getPresetBar()) { addAndMakeVisible (*pb); pb->setBounds (36, 108, 354, 28); }
+   #else
     if (auto* pb = classic->getPresetBar()) { addAndMakeVisible (*pb); pb->setBounds (36, 108, 706, 28); }
+   #endif
 
     main = std::make_unique<MainPage> (*this, proc);
     addAndMakeVisible (*main);
@@ -1157,6 +1207,18 @@ void Panel::timerCallback()
 
 void Panel::resized()
 {
+   #ifdef MAS_STUDIO_18
+    // MAIN: space types next to the name, preset tools in the bottom strip; other pages: preset tools next to the name
+    if (main != nullptr)
+    {
+        main->placeAlgoKeys (*this, page == 0);
+        if (auto* pb = classic->getPresetBar())
+        {
+            if (page == 0) pb->placeTools (*main, 46, 340, 32);
+            else           pb->placeTools (*this, 404, 108, 28);
+        }
+    }
+   #endif
     const int cy = contentY();
     for (int i = 0; i < tabs.size(); ++i)
         tabs[i]->setBounds (juce::roundToInt (30.0f + (float) i * 74.3f), 148, 74, 36);
@@ -1208,6 +1270,36 @@ void Panel::renderTop (juce::Graphics& g, int h)
         g.setGradientFill (tg);
         g.drawText ("MASTER SPACE", tr, juce::Justification::centred);
     }
+   #ifdef MAS_STUDIO_18
+    {
+        // 1.8 (owner's decision): the top-left corner carries only the official slogan - no emblem, no wave,
+        // no wordmark. Engraved silver, left-aligned, kept clear of the light slit (x 214).
+        const juce::String l1 = juce::CharPointer_UTF8 ("DON\xe2\x80\x99T ADD REVERB."), l2 ("CREATE SPACE.");
+        const auto silver = juce::Colour (0xffc3c9d3);
+        auto engrave = [&g] (const juce::String& txt, juce::Rectangle<float> r, juce::Colour c)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.75f)); g.drawText (txt, r.translated (0, 1), juce::Justification::centredLeft);
+            g.setColour (c);                                     g.drawText (txt, r, juce::Justification::centredLeft);
+        };
+        if (sloganVariant == 0)
+        {
+            // A: one line, fitted to the corner
+            const juce::String one = l1 + " " + l2;
+            float fh = 10.5f;
+            while (fh > 7.5f && juce::GlyphArrangement::getStringWidth (inter (fh, true, 0.12f), one) > 166.0f) fh -= 0.25f;
+            g.setFont (inter (fh, true, 0.12f));
+            engrave (one, { 40, 46, 170, 16 }, silver.withAlpha (0.88f));
+        }
+        else
+        {
+            // B: two lines, the second a little stronger (larger, brighter, a hint of the theme gold), no glow
+            g.setFont (inter (10.5f, true, 0.2f));
+            engrave (l1, { 40, 36, 170, 15 }, silver.withAlpha (0.78f));
+            g.setFont (inter (13.5f, true, 0.16f));
+            engrave (l2, { 40, 53, 170, 18 }, mix (juce::Colour (0xffe4e8ee), t.gold, 0.18f));
+        }
+    }
+   #else
     {
        #ifdef MAS_STUDIO_DYN
         // 1.7d: the original brand emblem above the wordmark, in place of the decorative wave. A quiet premium
@@ -1215,7 +1307,12 @@ void Panel::renderTop (juce::Graphics& g, int h)
         // layer at the physical pixel size (progressive down-scaling, so the small dots and the profile stay clean).
         if (emblem.isValid())
         {
-            const float eh = 35.0f, ew = eh * (float) emblem.getWidth() / (float) emblem.getHeight();
+           #ifdef MAS_STUDIO_18
+            const float eh = 31.0f, muteToGrey = 0.38f, brightness = 0.82f, opacity = 0.72f;   // 1.8: a little more delicate
+           #else
+            const float eh = 35.0f, muteToGrey = 0.28f, brightness = 0.86f, opacity = 0.82f;
+           #endif
+            const float ew = eh * (float) emblem.getWidth() / (float) emblem.getHeight();
             const float cx = 40.0f + 75.0f;                     // centre of the wordmark (x 40, width 150)
             const juce::Rectangle<float> er (cx - ew * 0.5f, 61.0f - eh, ew, eh);
             const float sc = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
@@ -1235,10 +1332,10 @@ void Panel::renderTop (juce::Graphics& g, int h)
                         if (a <= 0.0f) continue;
                         const float lum = 0.2126f * c.getFloatRed() + 0.7152f * c.getFloatGreen() + 0.0722f * c.getFloatBlue();
                         const auto grey = juce::Colour::fromFloatRGBA (lum, lum, lum, a);
-                        bd.setPixelColour (x, y, c.interpolatedWith (grey, 0.28f).withMultipliedBrightness (0.86f).withAlpha (a));
+                        bd.setPixelColour (x, y, c.interpolatedWith (grey, muteToGrey).withMultipliedBrightness (brightness).withAlpha (a));
                     }
             }
-            g.setOpacity (0.82f);
+            g.setOpacity (opacity);
             g.drawImage (img, er, juce::RectanglePlacement::centred);
             g.setOpacity (1.0f);
         }
@@ -1258,6 +1355,7 @@ void Panel::renderTop (juce::Graphics& g, int h)
             g.drawImage (wordmark, { 40, 64, ww, wh }, juce::RectanglePlacement::centred, true);
         }
     }
+   #endif
     // command strip (+ PRO tabs)
     recess (g, { 26, 102, W - 52, 40 }, 12.0f, mix (t.tint, juce::Colours::black, 0.55f));
     if (pro) recess (g, { 26, 148, W - 52, 34 }, 10.0f, mix (t.tint, juce::Colours::black, 0.5f));
