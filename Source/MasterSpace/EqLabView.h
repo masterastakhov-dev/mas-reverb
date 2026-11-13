@@ -226,14 +226,14 @@ struct Model
     {
         ensure (i);
         setRaw (i, ParamIDs::eqType, (float) type); setRaw (i, ParamIDs::eqQ, typeQ (type));
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         if (type != req::Bell) setRaw (i, ParamIDs::eqDynOn, 0.0f);
 #endif
         if (req::isCut (type)) setRaw (i, ParamIDs::eqGain, 0.0f);
         refresh();
     }
     void resetBand (int i) {
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         setRaw (i, ParamIDs::eqDynOn, 0.0f);
 #endif
         setRaw (i, ParamIDs::eqUsed, 0.0f); setRaw (i, ParamIDs::eqBypass, 0.0f); refresh(); }   // main band: back home and out of the signal; free band: removed
@@ -247,7 +247,7 @@ struct Model
     }
     void assignPeak (int i, float freq, float q, bool dynamic = false)
     {
-#ifndef MAS_STUDIO
+#ifndef MAS_STUDIO_DYN
         juce::ignoreUnused (dynamic);
 #endif
         undoBank = bank; undoBand = i; undoValid = true;
@@ -255,7 +255,7 @@ struct Model
         setRaw (i, ParamIDs::eqType, (float) req::Bell); setRaw (i, ParamIDs::eqFreq, juce::jlimit (20.0f, 20000.0f, freq));
         setRaw (i, ParamIDs::eqQ, juce::jlimit (0.1f, 18.0f, q)); setRaw (i, ParamIDs::eqGain, 0.0f);
         setRaw (i, ParamIDs::eqBypass, 0.0f); setRaw (i, ParamIDs::eqSlope, 1.0f); setRaw (i, ParamIDs::eqUsed, 1.0f);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         setRaw (i, ParamIDs::eqDynOn, dynamic ? 1.0f : 0.0f);
         setRaw (i, ParamIDs::eqDynThreshold, -36.0f);
         setRaw (i, ParamIDs::eqDynMax, 3.0f);
@@ -421,7 +421,11 @@ public:
                     const bool hov = p.id == hoverMarker;
                     juce::Path dm; dm.addQuadrilateral (c.x, c.y - 4.5f, c.x + 3.6f, c.y, c.x, c.y + 4.5f, c.x - 3.6f, c.y);
                     g.setColour (juce::Colour (0xff0b0f15)); g.fillPath (dm);
+#ifdef MAS_STUDIO_DYN
                     g.setColour ((p.fundamental ? col::gold : juce::Colours::white).withAlpha (hov ? 1.0f : 0.85f));
+#else
+                    g.setColour (juce::Colours::white.withAlpha (hov ? 1.0f : 0.85f));
+#endif
                     g.strokePath (dm, juce::PathStrokeType (hov ? 1.6f : 1.1f));
                     g.setColour (juce::Colours::white.withAlpha (0.18f)); g.fillRect (c.x - 0.5f, c.y + 6.0f, 1.0f, juce::jmax (0.0f, y1 - c.y - 6.0f));
                 }
@@ -489,7 +493,7 @@ public:
                 {
                     const char* bn[] = { "WET", "EARLY", "LATE" };
                     t1 << fmtFreq (p.freq) << dot << juce::String (p.levelDb, 1) << " dBFS" << dot << "+" << juce::String (p.promDb, 1) << " dB over neighbours" << dot << "width " << (p.bwHz < 10.0f ? juce::String (p.bwHz, 1) : juce::String (juce::roundToInt (p.bwHz))) << " Hz";
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
                     t2 << "click: DYNAMIC CUT or static " << bn[md.bank] << " EQ (no change until selected)";
 #else
                     t2 << "click: prepare a " << bn[md.bank] << " EQ band here (gain stays 0 dB)";
@@ -501,7 +505,7 @@ public:
             t1 << Model::roleName (md.sel) << dot;
             if (req::isCut (sb.type)) t1 << typeName (sb.type) << dot << fmtFreq (sb.freq) << dot << req::slopeDb (sb.slope) << " dB/oct";
             else t1 << fmtFreq (sb.freq) << dot << fmtGain (sb.gainDb) << dot << "Q " << juce::String (sb.q, 2);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
             if (sb.dynamic) t1 << dot << "DYNAMIC CUT (max " << juce::String (sb.dynamicMaxDb, 1) << " dB)";
 #endif
             if (sb.bypass) t1 << dot << "bypass";
@@ -668,7 +672,7 @@ public:
         m.addItem (20, "Frequency...");
         if (! req::isCut (b.type)) { m.addItem (21, "Gain..."); m.addItem (22, "Q..."); }
         m.addSeparator();
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
         if (! req::isCut (b.type))
         {
             m.addItem (40, b.dynamic ? "Dynamic Cut: ON (click for static)" : "Convert to Dynamic Cut");
@@ -695,7 +699,7 @@ public:
             else if (r == 2) md2.setType (i, i == 0 ? req::LowCut : req::HighCut);
             else if (r >= 10 && r < 14) md2.set (i, ParamIDs::eqSlope, (float) (r - 10));
             else if (r >= 20 && r <= 22) { safe->openEntry (i, r == 20 ? ParamIDs::eqFreq : r == 21 ? ParamIDs::eqGain : ParamIDs::eqQ); return; }
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
             else if (r == 40)
             {
                 md2.ensure (i);
@@ -723,7 +727,7 @@ public:
             if (p.id == markerId)
             {
                 const float f = p.freq, q = spec::suggestQ (p);
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
                 // Only a confirmed click can arm dynamic processing. Default untouched.
                 juce::PopupMenu choice;
                 choice.addSectionHeader ("Detected " + fmtFreq (f));
