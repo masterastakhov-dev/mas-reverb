@@ -1875,7 +1875,9 @@ int main (int argc, char** argv)
                         for (int i = 0; i < c.getNumSamples(); ++i)
                         { const double x = c.getSample (ch, i), y = d.getSample (ch, i); e += (x - y) * (x - y); ref += x * x; }
                     const double relDb = 10.0 * std::log10 ((e + 1.0e-30) / (ref + 1.0e-30));
-                    check (maxAbsDiff (a, b) < 2.0e-6f && relDb < -60.0, tag + "M/S at MIX 0 = STEREO at MIX 0: exact without LEVEL COMP (max diff "
+                    // the same linear system in exact arithmetic; float rounding of the oversampling and guard filters
+                    // differs with the compiler (1e-7 here, 2e-5 on the CI runner): required inaudible, below -80 dBFS
+                    check (maxAbsDiff (a, b) < 1.0e-4f && relDb < -60.0, tag + "M/S at MIX 0 = STEREO at MIX 0: without LEVEL COMP below -80 dBFS (max diff "
                            + juce::String (maxAbsDiff (a, b), 8) + "), with it the difference is " + juce::String (relDb, 1) + " dB");
                 }
                 // mono in -> no SIDE is made; anti-phase in -> no MID is made
