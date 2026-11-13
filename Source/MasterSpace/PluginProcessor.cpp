@@ -748,6 +748,13 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     const int n = buffer.getNumSamples();
     if (n == 0) return;
 
+   #ifdef MAS_STUDIO_DYN
+    // SIGNAL RAILS, INPUT: the plugin input before any processing (mono input: the same signal on L and R)
+    const bool ioOn = ioMeters.beginBlock();
+    if (ioOn && numIn > 0)
+        ioMeters.measure (mas::IOMeters::input, buffer.getReadPointer (0), numIn > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+   #endif
+
     takePendingIR();
 
     // Parameters of this block. They are read BEFORE the transition counters: the message thread
@@ -923,7 +930,34 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         }
         curTrim = std::abs (g - tTrim) < 1.0e-5f ? tTrim : g;
     }
+
+   #ifdef MAS_STUDIO_DYN
+    // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
+    if (ioOn && numOut > 0)
+    {
+        ioMeters.measure (mas::IOMeters::output, buffer.getReadPointer (0), numOut > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+        ioMeters.endBlock();
+    }
+   #endif
 }
+
+#ifdef MAS_STUDIO_DYN
+void MasterSpaceAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    const int n = buffer.getNumSamples();
+    const int numIn = getMainBusNumInputChannels(), numOut = getTotalNumOutputChannels();
+    const bool ioOn = n > 0 && ioMeters.beginBlock();
+    if (ioOn && numIn > 0)
+        ioMeters.measure (mas::IOMeters::input, buffer.getReadPointer (0), numIn > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+    AudioProcessor::processBlockBypassed (buffer, midi);
+    if (ioOn && numOut > 0)
+    {
+        // JUCE's bypass leaves a mono input on channel 0 only: the output reads what the host really receives
+        ioMeters.measure (mas::IOMeters::output, buffer.getReadPointer (0), numOut > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+        ioMeters.endBlock();
+    }
+}
+#endif
 
 #ifdef MAS_RI
 // As below, with the host sidechain; with a latency (STUDIO HQ) the ALGO / IR cross-fade on the output uses the

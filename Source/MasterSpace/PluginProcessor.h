@@ -5,6 +5,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include "MSEngine.h"
 #include "legacy/MSEngine11.h"
+#include "IOMeters.h"
 #include <map>
 
 namespace mspreset { class PresetManager; }
@@ -230,6 +231,11 @@ public:
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+   #ifdef MAS_STUDIO_DYN
+    // host bypass: the audio is JUCE's default bypass, unchanged; only the SIGNAL RAILS see it
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlockBypassed;
+   #endif
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -314,6 +320,7 @@ public:
     std::atomic<bool> spaceLevelsWanted { false };
    #ifdef MAS_STUDIO_DYN
     std::atomic<float> dynReduction[3][8] {};     // Dynamic Cut: current reduction per bank / band, dB (>= 0)
+    mas::IOMeters ioMeters;                       // SIGNAL RAILS: INPUT (before processing) / OUTPUT (after everything)
    #endif
     std::atomic<int> spaceVisual { 0 };                          // 0 FULL, 1 ECO, 2 OFF (a view setting, not a parameter)
     req::Settings readEq() const;                                // current EQ settings (any thread)

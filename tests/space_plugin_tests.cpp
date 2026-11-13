@@ -287,6 +287,71 @@ static int studioSnapshots (const juce::File& dir)
     feed (20);
     shot ("01_MAIN");
 #ifdef MAS_STUDIO_DYN
+    {
+        // SIGNAL RAILS with real audio through the plugin: silence, a medium programme, peaks near 0 dBFS.
+        // The rails are found in the 1x picture and checked: dark in silence, lit without red at a medium level,
+        // red peak markers (>= -3 dBFS) right after the peaks.
+        int railFails = 0;
+        int seed = 500;
+        float lastOutPeak = 0.0f;
+        auto feedLevel = [&] (float rmsDb, float transientDb, double secs)
+        {
+            for (int k = 0; k < (int) (secs / 0.05); ++k)
+            {
+                auto sig = pinkish (48000, 0.05, ++seed);
+                double e = 0.0;
+                for (int i = 0; i < sig.getNumSamples(); ++i) e += (double) sig.getSample (0, i) * sig.getSample (0, i);
+                const float rms = (float) std::sqrt (e / sig.getNumSamples());
+                sig.applyGain (rmsDb <= -119.0f || rms <= 0.0f ? 0.0f : juce::Decibels::decibelsToGain (rmsDb) / rms);
+                if (transientDb > -119.0f && k % 4 == 0)          // a 2 ms, 1 kHz burst: a real transient, not one sample
+                    for (int c = 0; c < 2; ++c)
+                        for (int i = 0; i < 96; ++i)
+                            sig.setSample (c, 777 + i, juce::Decibels::decibelsToGain (transientDb) * (float) std::sin (2.0 * 3.141592653589793 * (i + 12) / 48.0));
+                run (*p, sig, 512); pump (34);
+                if (k == 0) lastOutPeak = 0.0f;
+                if (k >= (int) (secs / 0.05) - 14) lastOutPeak = juce::jmax (lastOutPeak, peak (sig));   // within the 0.8 s hold
+            }
+        };
+        auto railStats = [&] (const juce::Image& img, int x0, bool gold, int& lit, int& red)
+        {
+            lit = red = 0;
+            const int y0 = panel.getY() + 152 + 248 + 16;     // MAIN page y + rail y + slot y (1x)
+            for (int y = y0 + 2; y < y0 + 15; ++y)
+                for (int x = x0 + 9; x < x0 + 168; ++x)
+                {
+                    const auto c = img.getPixelAt (x, y);
+                    const int r = c.getRed(), g = c.getGreen(), b = c.getBlue();
+                    if (r > 200 && g < 120 && b < 110) ++red;
+                    else if (gold ? (r > 150 && g > 80 && b < 120 && r > b + 70) : (b > 150 && b > r + 60)) ++lit;
+                }
+        };
+        auto railShot = [&] (const juce::String& name, int wantLit, bool wantInRed)
+        {
+            // OUTPUT is red exactly when what leaves the plugin peaked at / above -3 dBFS within the hold
+            const bool wantOutRed = juce::Decibels::gainToDecibels (lastOutPeak, -120.0f) >= mas::RailBallistics::kOverDb;
+            shot (name);
+            const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            int li, ri, lo, ro;
+            railStats (img, 72, false, li, ri);
+            railStats (img, 852, true, lo, ro);
+            const bool ok = (wantLit == 0 ? li == 0 && lo == 0 : li > wantLit && lo > wantLit) && ((ri > 0) == wantInRed) && ((ro > 0) == wantOutRed);
+            std::printf ("  [%s] %s: INPUT lit %d red %d, OUTPUT lit %d red %d (output peak %.1f dBFS)\n", ok ? " ok " : "FAIL", name.toRawUTF8(), li, ri, lo, ro,
+                         juce::Decibels::gainToDecibels (lastOutPeak, -120.0f));
+            if (! ok) ++railFails;
+        };
+        feedLevel (-120.0f, -120.0f, 4.0);  railShot ("R1_RAILS_SILENCE", 0, false);
+        feedLevel (-22.0f, -120.0f, 2.0);   railShot ("R2_RAILS_MEDIUM", 200, false);
+        feedLevel (-12.0f, -0.5f, 1.0);     railShot ("R3_RAILS_PEAKS", 400, true);
+        // the plugin OUTPUT pushed +6 dB: what leaves the plugin reaches the red zone as well
+        set (ParamIDs::output, 6.0f);
+        feedLevel (-12.0f, -0.5f, 1.5);     railShot ("R4_RAILS_OUTPUT_OVER", 400, true);
+        set (ParamIDs::output, 0.0f);
+        feedLevel (-120.0f, -120.0f, 2.0);
+        if (std::getenv ("RAILS_ONLY")) return railFails;
+        if (railFails > 0) return railFails;
+    }
+#endif
+#ifdef MAS_STUDIO_DYN
     // The lamp is UI-only: photograph identical grille geometry when off and when warmed up.
     set (ParamIDs::hcOn, 0.0f);
     feed (70);
@@ -1453,6 +1518,239 @@ int main (int argc, char** argv)
 
    #ifdef MAS_EQ
 #ifdef MAS_STUDIO_DYN
+    //==========================================================================
+    section ("1.7d SIGNAL RAILS: INPUT / OUTPUT meters (measurement only)");
+    {
+        constexpr double kPi = 3.141592653589793;
+        auto sineBuf = [&] (double fs, double secs, float db, float rightDb, double hz = 1000.0)
+        {
+            juce::AudioBuffer<float> b (2, (int) (fs * secs));
+            const float a = juce::Decibels::decibelsToGain (db, -200.0f), ar = juce::Decibels::decibelsToGain (rightDb, -200.0f);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const float v = (float) std::sin (2.0 * kPi * hz * i / fs);
+                b.setSample (0, i, a * v); b.setSample (1, i, ar * v);
+            }
+            return b;
+        };
+        auto setP = [] (MasterSpaceAudioProcessor& pp, const juce::String& id, float plain)
+        { if (auto* r = pp.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto rms = [] (MasterSpaceAudioProcessor& pp, int io, int c) { return pp.ioMeters.rmsDb[io][c].load(); };
+        auto pk = [] (MasterSpaceAudioProcessor& pp, int io, int c)
+        { return juce::Decibels::gainToDecibels (pp.ioMeters.takePeak ((mas::IOMeters::Io) io, c), -200.0f); };
+        // the independent reference: the same 300 ms averaging done offline on the real samples
+        auto refRmsDb = [] (const juce::AudioBuffer<float>& b, int c, double fs, int block)
+        {
+            double m = 0.0;
+            for (int pos = 0; pos < b.getNumSamples(); pos += block)
+            {
+                const int n = juce::jmin (block, b.getNumSamples() - pos);
+                double e = 0.0;
+                for (int i = 0; i < n; ++i) e += (double) b.getSample (c, pos + i) * b.getSample (c, pos + i);
+                m += (1.0 - std::exp (-(double) n / (0.3 * fs))) * (e / n - m);
+            }
+            return m > 1.0e-14 ? 10.0 * std::log10 (m) : -120.0;
+        };
+
+        // ---- -18 dBFS sine at 44.1 / 48 / 96 kHz: RMS -21.0 dBFS, sample peak -18.0 dBFS, both channels, both sides
+        for (double fs : { 44100.0, 48000.0, 96000.0 })
+        {
+            auto pr = makeProcessor (fs, 512);
+            setP (*pr, ParamIDs::mix, 0.0f);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (fs, 3.0, -18.0f, -18.0f, 997.0);
+            run (*pr, b, 512);
+            const float ri = rms (*pr, 0, 0), ri2 = rms (*pr, 0, 1), pi = pk (*pr, 0, 0);
+            check (std::abs (ri + 21.03f) < 0.1f && std::abs (ri2 - ri) < 0.01f && std::abs (pi + 18.0f) < 0.05f,
+                   juce::String (fs / 1000.0, 1) + " kHz: -18 dBFS sine -> INPUT RMS " + juce::String (ri, 2) + " / " + juce::String (ri2, 2)
+                   + " dBFS, sample peak " + juce::String (pi, 2) + " dBFS");
+            const double refL = refRmsDb (b, 0, fs, 512), refR = refRmsDb (b, 1, fs, 512);
+            const float ro = rms (*pr, 1, 0), ro2 = rms (*pr, 1, 1);
+            check (std::abs (ro - (float) refL) < 0.05f && std::abs (ro2 - (float) refR) < 0.05f && std::abs (pk (*pr, 1, 0) - juce::Decibels::gainToDecibels (b.getMagnitude (0, 0, b.getNumSamples()))) < 0.05f,
+                   "  OUTPUT reads what really leaves the plugin: RMS " + juce::String (ro, 2) + " (offline " + juce::String (refL, 2) + "), peak matches");
+        }
+
+        // ---- the result does not depend on the host block size; mono / stereo; channels are independent
+        {
+            float r64 = 0, r4096 = 0;
+            for (int blk : { 64, 4096 })
+            {
+                auto pr = makeProcessor (48000.0, blk);
+                pr->ioMeters.wanted = true;
+                auto b = sineBuf (48000.0, 3.0, -18.0f, -30.0f);
+                run (*pr, b, blk);
+                (blk == 64 ? r64 : r4096) = rms (*pr, 0, 0);
+                if (blk == 64)
+                    check (std::abs (rms (*pr, 0, 1) + 33.03f) < 0.1f && std::abs (pk (*pr, 0, 1) + 30.0f) < 0.05f && std::abs (pk (*pr, 0, 0) + 18.0f) < 0.05f,
+                           "stereo: L -18 / R -30 dBFS sine read separately (R RMS " + juce::String (rms (*pr, 0, 1), 2) + ")");
+            }
+            check (std::abs (r64 - r4096) < 0.1f, "same reading with 64- and 4096-sample blocks (" + juce::String (r64, 2) + " / " + juce::String (r4096, 2) + ")");
+
+            auto pr = std::make_unique<MasterSpaceAudioProcessor>();
+            auto mono = pr->getBusesLayout();
+            mono.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
+            const bool monoOk = pr->setBusesLayout (mono) && pr->getMainBusNumInputChannels() == 1;
+            pr->setRateAndBufferSizeDetails (48000.0, 512);
+            pr->prepareToPlay (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (48000.0, 3.0, -18.0f, -18.0f);
+            b.clear (1, 0, b.getNumSamples());          // channel 1 is output only with a mono input
+            run (*pr, b, 512);
+            check (monoOk && std::abs (rms (*pr, 0, 0) + 21.03f) < 0.1f && std::abs (rms (*pr, 0, 1) - rms (*pr, 0, 0)) < 0.001f,
+                   "mono input: INPUT shows the one channel on L and R (" + juce::String (rms (*pr, 0, 1), 2) + " dBFS)");
+            check (std::abs (rms (*pr, 1, 1) - (float) refRmsDb (b, 1, 48000.0, 512)) < 0.05f && rms (*pr, 1, 1) > -60.0f,
+                   "mono input: OUTPUT R is the real right output (" + juce::String (rms (*pr, 1, 1), 2) + " dBFS)");
+        }
+
+        // ---- the host changes sample rate and block size on a running instance: still exact
+        {
+            auto pr = makeProcessor (44100.0, 256);
+            pr->ioMeters.wanted = true;
+            auto a = sineBuf (44100.0, 2.0, -12.0f, -12.0f);
+            run (*pr, a, 256);
+            pr->releaseResources();
+            pr->setRateAndBufferSizeDetails (96000.0, 1024);
+            pr->prepareToPlay (96000.0, 1024);
+            auto b = sineBuf (96000.0, 3.0, -18.0f, -18.0f);
+            pk (*pr, 0, 0);
+            run (*pr, b, 1024);
+            check (std::abs (rms (*pr, 0, 0) + 21.03f) < 0.1f && std::abs (pk (*pr, 0, 0) + 18.0f) < 0.05f,
+                   "44.1 kHz / 256 -> 96 kHz / 1024 on the same instance: " + juce::String (rms (*pr, 0, 0), 2) + " dBFS RMS");
+        }
+
+        // ---- transients: one sample at -6 dBFS is caught exactly, wherever it sits in the block
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            bool all = true;
+            for (int pos : { 0, 1, 255, 511, 3001 })
+            {
+                auto b = silence (48000.0, 0.2);
+                b.setSample (0, pos, -0.5f);
+                b.setSample (1, pos, 0.25f);
+                pk (*pr, 0, 0); pk (*pr, 0, 1);
+                run (*pr, b, 512);
+                all = all && std::abs (pk (*pr, 0, 0) + 6.02f) < 0.01f && std::abs (pk (*pr, 0, 1) + 12.04f) < 0.01f;
+            }
+            check (all, "a single-sample transient (-6 / -12 dBFS) is caught exactly at any position in the block");
+            check (rms (*pr, 0, 0) < -40.0f, "  and barely moves the RMS body (" + juce::String (rms (*pr, 0, 0), 1) + " dBFS)");
+        }
+
+        // ---- silence: exact floor, no denormals; a full-scale sine reads 0 dBFS peak (overload)
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto loud = sineBuf (48000.0, 1.0, 0.0f, 0.0f);
+            run (*pr, loud, 512);
+            check (std::abs (pk (*pr, 0, 0)) < 0.01f && rms (*pr, 0, 0) > -3.2f, "full-scale sine: INPUT peak 0.00 dBFS, RMS -3.0 dBFS");
+            auto sil = silence (48000.0, 12.0);
+            run (*pr, sil, 512);
+            check (rms (*pr, 0, 0) <= -119.9f && pk (*pr, 0, 0) < -199.0f, "after silence: INPUT exactly at the floor, no peak");
+            check (rms (*pr, 1, 0) < -60.0f, "after silence: OUTPUT below the scale (reverb tail decayed: " + juce::String (rms (*pr, 1, 0), 1) + " dBFS)");
+        }
+
+        // ---- HARMONIC COLOR on / off, MIX 100 %: OUTPUT always matches the real output, INPUT never changes
+        {
+            for (int hc = 0; hc < 2; ++hc)
+            {
+                auto pr = makeProcessor (48000.0, 512);
+                setP (*pr, ParamIDs::mix, 100.0f);
+                setP (*pr, ParamIDs::hcOn, (float) hc);
+                setP (*pr, ParamIDs::hcMix, 100.0f);
+                setP (*pr, ParamIDs::hcDrive, 80.0f);
+                pr->ioMeters.wanted = true;
+                auto b = pinkish (48000.0, 4.0, 77);
+                auto in = b;
+                run (*pr, b, 512);
+                check (std::abs (rms (*pr, 1, 0) - (float) refRmsDb (b, 0, 48000.0, 512)) < 0.05f
+                       && std::abs (rms (*pr, 0, 0) - (float) refRmsDb (in, 0, 48000.0, 512)) < 0.05f
+                       && std::abs (pk (*pr, 1, 0) - juce::Decibels::gainToDecibels (b.getMagnitude (0, 0, b.getNumSamples()))) < 0.05f,
+                       juce::String ("HARMONIC COLOR ") + (hc ? "ON" : "OFF") + ": OUTPUT " + juce::String (rms (*pr, 1, 0), 2)
+                       + " dBFS = real output, INPUT " + juce::String (rms (*pr, 0, 0), 2) + " dBFS = real input");
+            }
+        }
+
+        // ---- host bypass: the audio is JUCE's default bypass; INPUT and OUTPUT both read the passing signal
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (48000.0, 2.0, -18.0f, -24.0f);
+            const auto orig = b;
+            juce::MidiBuffer midi;
+            for (int pos = 0; pos < b.getNumSamples(); pos += 512)
+            {
+                juce::AudioBuffer<float> view (b.getArrayOfWritePointers(), 2, pos, juce::jmin (512, b.getNumSamples() - pos));
+                pr->processBlockBypassed (view, midi);
+            }
+            check (maxAbsDiff (b, orig) == 0.0f, "bypass: audio passes untouched");
+            check (std::abs (rms (*pr, 0, 0) - rms (*pr, 1, 0)) < 0.001f && std::abs (rms (*pr, 0, 1) - rms (*pr, 1, 1)) < 0.001f && std::abs (rms (*pr, 1, 1) + 27.03f) < 0.1f,
+                   "bypass: INPUT = OUTPUT (L " + juce::String (rms (*pr, 1, 0), 2) + ", R " + juce::String (rms (*pr, 1, 1), 2) + " dBFS)");
+        }
+
+        // ---- measurement never touches the audio; nothing is measured while no display asks
+        {
+            auto a = makeProcessor (48000.0, 512), b2 = makeProcessor (48000.0, 512);
+            setP (*a, ParamIDs::hcOn, 1.0f); setP (*b2, ParamIDs::hcOn, 1.0f);
+            a->ioMeters.wanted = true;
+            auto x = pinkish (48000.0, 3.0, 5), y = x;
+            run (*a, x, 512); run (*b2, y, 512);
+            check (maxAbsDiff (x, y) == 0.0f, "meters on / off: output bit-identical");
+            check (b2->ioMeters.blocks.load() == 0 && b2->ioMeters.rmsDb[0][0].load() <= -119.9f, "meters not wanted: nothing measured");
+            auto nanBuf = silence (48000.0, 0.1);
+            nanBuf.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+            juce::MidiBuffer midi;
+            a->processBlockBypassed (nanBuf, midi);
+            auto quiet = silence (48000.0, 12.0);
+            run (*a, quiet, 512);
+            check (std::isfinite (a->ioMeters.rmsDb[0][0].load()) && a->ioMeters.rmsDb[0][0].load() <= -119.9f, "a NaN sample cannot freeze the meter (recovers to the floor)");
+        }
+
+        // ---- cost: measurement overhead per 512-sample block
+        {
+            auto on = makeProcessor (48000.0, 512), off = makeProcessor (48000.0, 512);
+            on->ioMeters.wanted = true;
+            auto xo = pinkish (48000.0, 20.0, 9), xf = xo;
+            double t0 = nowMs(); run (*off, xf, 512); const double tOff = nowMs() - t0;
+            t0 = nowMs(); run (*on, xo, 512); const double tOn = nowMs() - t0;
+            mas::IOMeters m; m.wanted = true;
+            auto z = pinkish (48000.0, 20.0, 10);
+            t0 = nowMs();
+            for (int pos = 0; pos + 512 <= z.getNumSamples(); pos += 512)
+            {
+                m.beginBlock();
+                m.measure (mas::IOMeters::input, z.getReadPointer (0, pos), z.getReadPointer (1, pos), 512, 48000.0);
+                m.measure (mas::IOMeters::output, z.getReadPointer (0, pos), z.getReadPointer (1, pos), 512, 48000.0);
+                m.endBlock();
+            }
+            const double tM = nowMs() - t0;
+            std::printf ("     20 s of audio: plugin %.1f ms (meters on %.1f ms); the meters alone %.2f ms = %.4f %% of real time\n", tOff, tOn, tM, tM / 200.0);
+            check (tM < 0.01 * 20000.0, "meter cost < 1 % of real time even in this unoptimised check");
+        }
+
+        // ---- UI ballistics: instant attack, 0.8 s hold, smooth return, overload from -3 dBFS
+        {
+            mas::RailBallistics r;
+            const float dt = 1.0f / 60.0f;
+            r.tick (-20.0f, juce::Decibels::decibelsToGain (-1.0f), dt);
+            const bool attack = std::abs (r.peakDb + 1.0f) < 1.0e-4f && r.over();
+            float t = dt, heldUntil = 0.0f;
+            while (t < 3.0f) { r.tick (-20.0f, juce::Decibels::decibelsToGain (-12.0f), dt); t += dt; if (r.peakDb > -1.001f) heldUntil = t; }
+            check (attack, "peak marker: jumps to a new peak at once, red at -1 dBFS");
+            check (heldUntil > 0.78f && heldUntil < 0.84f, "peak marker: held " + juce::String (heldUntil, 3) + " s (0.8 s)");
+            check (std::abs (r.peakDb + 12.0f) < 0.01f && ! r.over(), "peak marker: returns smoothly to the running peak (-12 dBFS), not red");
+            mas::RailBallistics s;
+            s.tick (-20.0f, juce::Decibels::decibelsToGain (-3.0f), dt);
+            mas::RailBallistics u;
+            u.tick (-20.0f, juce::Decibels::decibelsToGain (-3.1f), dt);
+            check (s.over() && ! u.over(), "overload: red from -3.0 dBFS, not at -3.1 dBFS");
+            mas::RailBallistics f;
+            f.tick (-6.0f, 0.5f, dt);
+            float maxStep = 0.0f, prev = f.peakDb;
+            for (int i = 0; i < 300; ++i) { f.tick (-120.0f, 0.0f, dt); maxStep = juce::jmax (maxStep, prev - f.peakDb); prev = f.peakDb; }
+            check (maxStep < 0.5f && f.peakDb <= -69.9f && f.rmsDb < -69.0f, "return to silence is smooth (largest step " + juce::String (maxStep, 2) + " dB per frame at 60 Hz)");
+        }
+    }
+
     //==========================================================================
     section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
     {
