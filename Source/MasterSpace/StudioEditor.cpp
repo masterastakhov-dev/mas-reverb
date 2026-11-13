@@ -361,7 +361,11 @@ public:
         makeKey (*this, compKey, false, true);
         compKey.setClickingTogglesState (true);
         compKey.setBounds (982, 340, 76, 32);
-        compKey.setTooltip ("M/S OUTPUT COMPRESSOR on / off. Settings: PRO > COMP");
+        compKey.setTooltip ("M/S OUTPUT COMPRESSOR on / off. Right click: its settings (PRO > COMP)");
+        compAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, ParamIDs::cpOn, compKey);
+        compKey.addMouseListener (this, false);
+        addAndMakeVisible (compGr);
+        compGr.setBounds (986, 376, 68, 14);
         satMix.setBounds (852, 375, 126, 16);
        #endif
         railTimer.onTick = [this] { tickRails(); };
@@ -372,6 +376,12 @@ public:
 
    #ifdef MAS_STUDIO_DYN
     ~MainPage() override { railTimer.stopTimer(); proc.ioMeters.wanted.store (false); }
+   #ifdef MAS_STUDIO_18
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.eventComponent == &compKey && e.mods.isPopupMenu()) { panel.setPro (true); panel.setPage (14); }
+    }
+   #endif
 
     // SIGNAL RAILS: the audio thread measures (atomics), this only animates. 60 Hz while MAIN is on screen;
     // nothing is measured while it is hidden or the editor is closed.
@@ -412,6 +422,14 @@ public:
         auto lv = [this] (int io, int c) { return EnergyRail::Level { railBal[io][c].rmsDb, railBal[io][c].peakDb }; };
         railIn.setLevels (lv (0, 0), lv (0, 1));
         railOut.setLevels (lv (1, 0), lv (1, 1), railWarm);
+       #ifdef MAS_STUDIO_18
+        for (int b = 0; b < 2; ++b)
+        {
+            const float t = proc.compGrDb (b == 1);
+            compShown[b] = t > compShown[b] ? t : compShown[b] + (1.0f - std::exp (-dt / 0.25f)) * (t - compShown[b]);
+        }
+        compGr.set (compShown[0], compShown[1], proc.compActive());
+       #endif
     }
    #endif
 
@@ -519,6 +537,35 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> satAtt;
    #ifdef MAS_STUDIO_18
     juce::TextButton compKey { "M/S COMP" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> compAtt;
+    // under M/S COMP: the gain reduction of MID (upper, cool) and SIDE (lower, warm), 0 .. 12 dB
+    struct CompGr : juce::Component
+    {
+        float gr[2] = { 0.0f, 0.0f }; bool on = false;
+        CompGr() { setInterceptsMouseClicks (false, false); }
+        void set (float m, float sd, bool isOn)
+        {
+            if (std::abs (m - gr[0]) < 0.03f && std::abs (sd - gr[1]) < 0.03f && isOn == on) return;
+            gr[0] = m; gr[1] = sd; on = isOn; repaint();
+        }
+        void paint (juce::Graphics& g) override
+        {
+            const juce::Colour c[2] = { juce::Colour (0xff3cc4e6), juce::Colour (0xffe2a44a) };
+            for (int b = 0; b < 2; ++b)
+            {
+                const juce::Rectangle<float> slot (0.0f, 1.0f + (float) b * 7.0f, (float) getWidth(), 5.0f);
+                g.setColour (juce::Colour (0xff07090c)); g.fillRoundedRectangle (slot, 2.0f);
+                g.setColour (c[b].withAlpha (0.16f)); g.drawRoundedRectangle (slot.reduced (0.5f), 2.0f, 0.8f);
+                const float f = juce::jlimit (0.0f, 1.0f, gr[b] / 12.0f);
+                if (f > 0.004f)
+                {
+                    g.setColour (c[b].withAlpha (on ? 0.9f : 0.35f));
+                    g.fillRoundedRectangle (slot.withX (slot.getRight() - slot.getWidth() * f).withWidth (slot.getWidth() * f), 2.0f);  // GR grows leftwards
+                }
+            }
+        }
+    } compGr;
+    float compShown[2] = { 0.0f, 0.0f };
    #endif
    #endif
 };
@@ -987,8 +1034,13 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
     navMain.onClick = [this] { setPage (0); };
     navEq.onClick = [this] { setPage (12); };
 
+   #ifdef MAS_STUDIO_18
+    const juce::StringArray names { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MOD", "STEREO", "ADVANCED", "ATMOS",
+                                    "DUCKER", "GUARD", "COLOR", "REVERB EQ", "PRESETS", "COMP" };
+   #else
     const juce::StringArray names { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MOD", "STEREO", "ADVANCED", "ATMOS",
                                     "DUCKER", "GUARD", "COLOR", "REVERB EQ", "PRESETS" };
+   #endif
     for (int i = 0; i < names.size(); ++i)
     {
         auto* b = tabs.add (new juce::TextButton (names[i]));
@@ -1216,8 +1268,17 @@ void Panel::resized()
     }
    #endif
     const int cy = contentY();
+   #ifdef MAS_STUDIO_18
+    {
+        // 15 tabs; COMP (index 14) is shown between COLOR and REVERB EQ
+        static const int order[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 12, 13 };
+        for (int k = 0; k < 15 && k < tabs.size(); ++k)
+            tabs[order[k]]->setBounds (juce::roundToInt (30.0f + (float) k * 69.4f), 148, 69, 36);
+    }
+   #else
     for (int i = 0; i < tabs.size(); ++i)
         tabs[i]->setBounds (juce::roundToInt (30.0f + (float) i * 74.3f), 148, 74, 36);
+   #endif
     main->setBounds (0, cy, kW, kContentH);
     classic->setBounds (36, cy + 8, kW - 72, kPageH - 16);
     bar->setBounds (0, barY(), kW, kBarH);

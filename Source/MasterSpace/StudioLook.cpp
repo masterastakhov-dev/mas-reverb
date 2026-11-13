@@ -601,7 +601,9 @@ void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int 
     g.setOpacity (1.0f);
     g.drawImage (base, juce::Rectangle<float> (c.x - S * 0.5f, c.y - S * 0.5f, S, S), juce::RectanglePlacement::stretchToFit);
 
-    const auto ind = t.ind, indHi = mix (t.ind, juce::Colours::white, 0.15f);
+    // optional per-knob accent ("arc" = ARGB), e.g. MID / SIDE blocks of the 1.8 compressor; otherwise the theme
+    const auto ind = slider.getProperties().contains ("arc") ? juce::Colour ((juce::uint32) (juce::int64) slider.getProperties()["arc"]) : t.ind;
+    const auto indHi = mix (ind, juce::Colours::white, 0.15f);
     if (kind == KnobKind::big)
     {
         const float tick0 = .393f * S, tick1 = .440f * S;

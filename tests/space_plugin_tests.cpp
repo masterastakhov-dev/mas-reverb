@@ -425,6 +425,19 @@ static int studioSnapshots (const juce::File& dir)
     shot ("04_MAIN_PRO");
     const char* names[] = { "MAIN", "SPACE", "EARLY", "LATE", "DECAY_EQ", "MOD", "STEREO", "ADVANCED", "ATMOS", "DUCKER", "GUARD", "COLOR", "REVERB_EQ", "PRESETS" };
     for (int i = 1; i < 14; ++i) { panel.setPage (i); feed (3); shot (juce::String ("05_PRO_") + juce::String (i).paddedLeft ('0', 2) + "_" + names[i]); }
+   #ifdef MAS_STUDIO_18
+    {
+        // 1.8: the compressor working (GR on both meters), COLOR in M/S, MAIN with M/S COMP on
+        set (ParamIDs::cpOn, 1.0f); set (ParamIDs::cpMidThr, -52.0f); set (ParamIDs::cpSideThr, -56.0f);
+        set (ParamIDs::cpMidRatio, 4.0f); set (ParamIDs::cpSideRatio, 3.0f);
+        set (ParamIDs::hcOn, 1.0f); set (ParamIDs::hcMode, 1.0f); set (ParamIDs::hcMidDrive, 60.0f); set (ParamIDs::hcSideMix, 45.0f);
+        panel.setPage (14); feed (12); shot ("05_PRO_14_COMP");
+        panel.setPage (11); feed (3); shot ("05_PRO_11_COLOR_MS");
+        panel.setPro (false); panel.setPage (0); feed (8); shot ("08_MAIN_COMP_ON");
+        set (ParamIDs::cpOn, 0.0f); set (ParamIDs::hcOn, 0.0f); set (ParamIDs::hcMode, 0.0f);
+        feed (4);
+    }
+   #endif
     panel.setPro (false); panel.setPage (0);
     for (int th = 1; th < studio::kNumThemes; ++th) { panel.setTheme (th); shot (juce::String ("06_THEME_") + studio::theme (th).name); }
     panel.setTheme (0);
@@ -2203,6 +2216,8 @@ int main (int argc, char** argv)
             pump (300);
             // the IR loads in the background: wait until the audio thread really has it (not a fixed time)
             for (int k = 0; k < 400 && kind == 2 && ! q->isIRActiveOnAudio(); ++k) { auto w0 = silence (48000.0, 0.01); run (*q, w0, 256); pump (20); }
+            // juce::dsp::Convolution swaps the IR on its own thread and cross-fades to it: let that finish too
+            for (int k = 0; k < 60 && kind == 2; ++k) { auto w1 = silence (48000.0, 0.01); run (*q, w1, 256); pump (15); }
             auto w = silence (48000.0, 0.3); run (*q, w, 256); pump (100);
             return q;
         };
@@ -2218,8 +2233,12 @@ int main (int argc, char** argv)
                 pump (50);
                 auto x = pinkish (48000.0, 2.0, 5), y = x;
                 run (*a, x, 256); run (*b, y, 256);
-                check (defOff && maxAbsDiff (x, y) == 0.0f, juce::String (kinds[kind]) + (routing ? " AUX" : " INSERT")
-                       + ": COMP OFF by default; ON at 1:1 (WET ONLY) = bit-identical to OFF");
+                // IR: JUCE's convolution is reproducible between two instances only to the last float bit (-144 dB,
+                // with or without the compressor), so IR is checked to -120 dB; the algorithmic paths bit for bit
+                const float tolOff = kind == 2 ? 1.0e-6f : 0.0f;
+                check (defOff && maxAbsDiff (x, y) <= tolOff, juce::String (kinds[kind]) + (routing ? " AUX" : " INSERT")
+                       + ": COMP OFF by default; ON at 1:1 (WET ONLY) = " + (kind == 2 ? "OFF to -120 dB" : "bit-identical to OFF")
+                       + " (diff " + juce::String (maxAbsDiff (x, y), 9) + ")");
             }
 
         // WET ONLY never touches the dry: INSERT with the reverb MIX at 0 % -> identical to OFF; FULL OUTPUT does compress it
