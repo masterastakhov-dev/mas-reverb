@@ -970,11 +970,20 @@ public:
         reset();
     }
 
+#ifdef MAS_STUDIO_18
+    // 1.8 M/S OUTPUT COMPRESSOR, WET ONLY: while set, process() also writes the wet part of its output (the
+    // same gains as in the mix) to these buffers. The output itself is not changed in any way.
+    void setWetTap (float* l, float* r) { tapL = l; tapR = r; }
+#endif
     void process (float* left, float* right, int numSamples)
     {
         for (int pos = 0; pos < numSamples; pos += kChunk)
         {
             const int n = std::min (kChunk, numSamples - pos);
+#ifdef MAS_STUDIO_18
+            chunkTapL = tapL != nullptr ? tapL + pos : nullptr;
+            chunkTapR = tapR != nullptr ? tapR + pos : nullptr;
+#endif
             processChunk (left + pos, right + pos, n);
         }
     }
@@ -1076,6 +1085,9 @@ private:
         curTone += 0.25f * (targetTone - curTone);
         if (force) curTone = targetTone;
         for (int c = 0; c < 2; ++c) toneShelf[c].set (2500.0, curTone * curTone, fs, true);
+#ifdef MAS_STUDIO_18
+        for (int c = 0; c < 2; ++c) toneShelfTap[c].set (2500.0, curTone * curTone, fs, true);
+#endif
 
         // ---- Level lock: keep the output energy of the reference depth
         targetMakeup = 1.0f;
@@ -1206,6 +1218,14 @@ private:
             float orr = (dr * dryAmt + wr * wetAmt) * g;
             if (params.lockTone || std::abs (curTone - 1.0f) > 1e-3f) { ol = toneShelf[0].process (ol); orr = toneShelf[1].process (orr); }
             left[i] = ol; right[i] = orr;
+#ifdef MAS_STUDIO_18
+            if (chunkTapL != nullptr)
+            {
+                float tl = wl * wetAmt * g, tr = wr * wetAmt * g;
+                if (params.lockTone || std::abs (curTone - 1.0f) > 1e-3f) { tl = toneShelfTap[0].process (tl); tr = toneShelfTap[1].process (tr); }
+                chunkTapL[i] = tl; chunkTapR[i] = tr;
+            }
+#endif
         }
     }
 
@@ -1214,6 +1234,10 @@ private:
     DelayLine preDelay[2];
     Biquad lowCut[2], highCut[2];
     Shelf directAir[2], toneShelf[2];
+#ifdef MAS_STUDIO_18
+    Shelf toneShelfTap[2];
+    float* tapL = nullptr; float* tapR = nullptr; float* chunkTapL = nullptr; float* chunkTapR = nullptr;
+#endif
     SpatialEarly er;
     LateReverb late;
     std::vector<float> scratch;
