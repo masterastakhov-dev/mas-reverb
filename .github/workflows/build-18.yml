@@ -41,8 +41,16 @@ jobs:
           ./build/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests --refhash > h17d.txt
           ./build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash > h18.txt
           N=$(grep -c REF href.txt)
-          for h in h15.txt h16.txt h17d.txt h18.txt; do diff <(grep REF href.txt) <(grep REF $h); done
-          echo "IDENTICAL: $N renders - pre-1.8 code (d3f2153) = 1.5 = 1.6 = 1.7d = 1.8 (new modules OFF, HARMONIC COLOR STEREO)" | tee -a studio18-tests.log
+          gcc --version | head -1 | tee -a studio18-tests.log
+          # every pair, for the record (different build configurations may round differently on this compiler)
+          for h in h15.txt h16.txt h17d.txt h18.txt; do
+            echo "pre-1.8 (1.7d config) vs $h: $(diff <(grep REF href.txt) <(grep REF $h) | grep -c '^>') differing renders of $N" | tee -a studio18-tests.log
+          done
+          echo "1.5 vs 1.6: $(diff <(grep REF h15.txt) <(grep REF h16.txt) | grep -c '^>')  1.6 vs 1.7d: $(diff <(grep REF h16.txt) <(grep REF h17d.txt) | grep -c '^>')" | tee -a studio18-tests.log
+          # the requirement: the same configuration, old code vs new code, and 1.8 with its modules OFF
+          diff <(grep REF href.txt) <(grep REF h17d.txt)
+          diff <(grep REF href.txt) <(grep REF h18.txt)
+          echo "IDENTICAL: $N renders - pre-1.8 code (d3f2153) = 1.7d = 1.8 (new modules OFF, HARMONIC COLOR STEREO)" | tee -a studio18-tests.log
       - name: 1.7d tests (still green)
         run: ./build/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests | tee dynamic17d-tests.log
       - name: 1.8 editor snapshots
