@@ -816,6 +816,26 @@ void Panel::loadIRFile (const juce::File& f)
 void Panel::timerCallback()
 {
     main->sync();
+#ifdef MAS_STUDIO_DYN
+    // Musical 'tube warm-up': ~0.3 s light-up and ~0.8 s cool-down.
+    // This is only visual and samples the real HARMONIC COLOR parameters.
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    const double dt = lampLastMs > 0.0 ? juce::jlimit (0.0, 0.1, (nowMs - lampLastMs) * 0.001) : 0.03;
+    lampLastMs = nowMs;
+    const bool harmonicOn = plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f;
+    const bool algoMode = plainOf (proc.apvts, ParamIDs::mode) < 0.5f;
+    const float drive = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcDrive) / 100.0f);
+    const float goal = harmonicOn && algoMode ? 0.25f + 0.70f * std::sqrt (drive) : 0.0f;
+    const double tau = goal > lampHeat ? 0.28 : 0.72;
+    lampHeat += (1.0f - (float) std::exp (-dt / tau)) * (goal - lampHeat);
+    if (std::abs (lampHeat) < 0.002f && goal == 0.0f) lampHeat = 0.0f;
+    const int nextStep = juce::jlimit (0, 24, juce::roundToInt (lampHeat * 24.0f));
+    if (nextStep != lampStep)
+    {
+        lampStep = nextStep;
+        if (page == 0) repaint();
+    }
+#endif
     const bool wantLevels = page == 0 && drawerT > 0.0f && isVisible();
     if (proc.spaceLevelsWanted.load() != wantLevels) proc.spaceLevelsWanted.store (wantLevels);
     if (room != nullptr && page == 0 && drawerT > 0.0f) room->tick();
@@ -840,7 +860,11 @@ void Panel::paint (juce::Graphics& g)
 {
     const int h = page == 0 ? barY() : contentY() + kPageH;
     const auto& t = theme (themeIndex);
-    drawCached (g, topCache, juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x"), kW, h, [this, h] (juce::Graphics& gg) { renderTop (gg, h); });
+    juce::String cacheKey = juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x");
+#ifdef MAS_STUDIO_DYN
+    if (page == 0) cacheKey += "lamp" + juce::String (lampStep);
+#endif
+    drawCached (g, topCache, cacheKey, kW, h, [this, h] (juce::Graphics& gg) { renderTop (gg, h); });
 }
 
 void Panel::renderTop (juce::Graphics& g, int h)
@@ -899,8 +923,13 @@ void Panel::renderTop (juce::Graphics& g, int h)
         plate (g, { 26, y, 236, 316 }, 16.0f, t);
         plate (g, { 270, y, 560, 316 }, 18.0f, t);
         plate (g, { 838, y, 236, 316 }, 16.0f, t);
+#ifdef MAS_STUDIO_DYN
+        glowingGrille (g, { 36, y + 52, 22, 212 }, t, (float) lampStep / 24.0f);
+        glowingGrille (g, { 1042, y + 52, 22, 212 }, t, (float) lampStep / 24.0f);
+#else
         grille (g, { 36, y + 52, 22, 212 }, t);
         grille (g, { 1042, y + 52, 22, 212 }, t);
+#endif
         goldLine (g, 476, y + 30, y + 290, t);
         goldLine (g, 624, y + 30, y + 290, t);
         plate (g, { 26, y + 324, W - 52, 56 }, 14.0f, t, 0.035f, false);
