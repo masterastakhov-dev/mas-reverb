@@ -1361,7 +1361,7 @@ int main (int argc, char** argv)
    #ifdef MAS_EQ
 #ifdef MAS_STUDIO
     //==========================================================================
-    section ("STUDIO: opt-in manual dynamic cuts and transparent bypass");
+    section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
     {
         req::ManualDynamicBank dyn;
         constexpr double fs = 48000.0;
