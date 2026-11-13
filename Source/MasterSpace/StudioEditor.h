@@ -44,7 +44,12 @@ public:
 
     // geometry (logical units)
     int contentY() const { return 152 + (pro ? 36 : 0); }
-    int barY() const { return contentY() + 388; }
+   #ifdef MAS_STUDIO_DYN
+    static constexpr int kContentHeight = 396;      // 1.7d: room for the SATURATION mix fader under HARMONIC COLOR
+   #else
+    static constexpr int kContentHeight = 380;
+   #endif
+    int barY() const { return contentY() + kContentHeight + 8; }
 
     struct Cache { juce::Image img; juce::String key; };
     static void drawCached (juce::Graphics&, Cache&, const juce::String& key, int w, int h, const std::function<void (juce::Graphics&)>& render);
@@ -63,6 +68,9 @@ private:
     MasterSpaceAudioProcessor& proc;
     LookAndFeel& lnf;
     juce::Image wordmark;
+   #ifdef MAS_STUDIO_DYN
+    juce::Image emblem;                                    // Resources/emblem.png, the original (never modified)
+   #endif
 
     int page = 0;
     bool pro = false, drawerOpen = false;
@@ -79,6 +87,10 @@ private:
     juce::OwnedArray<juce::TextButton> tabs;
     Cache topCache;
     int themeIndex = 0;
+#ifdef MAS_STUDIO_DYN
+    float lampHeat = 0.12f, lampLoad = 0.0f, lampColour = 0.0f;
+    double lampLastMs = 0.0;
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Panel)
 };

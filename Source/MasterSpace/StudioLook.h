@@ -55,6 +55,23 @@ private:
 };
 
 //==============================================================================
+// Linear slider with the same fine control: relative drag (no jump to the click), Shift = 1/7 speed.
+class FineSlider : public juce::Slider
+{
+public:
+    FineSlider() { setSliderSnapsToMousePosition (false); setScrollWheelEnabled (true); }
+    void mouseDown (const juce::MouseEvent& e) override { last = virt = e.position; Slider::mouseDown (e); }
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        const auto d = e.position - last; last = e.position;
+        virt += d * (e.mods.isShiftDown() ? 0.15f : 1.0f);
+        Slider::mouseDrag (e.withNewPosition (virt));
+    }
+private:
+    juce::Point<float> last, virt;
+};
+
+//==============================================================================
 class LookAndFeel : public MASLookAndFeel
 {
 public:

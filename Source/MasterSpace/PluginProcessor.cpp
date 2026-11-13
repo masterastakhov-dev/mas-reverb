@@ -286,6 +286,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
                 p.push_back (std::make_unique<juce::AudioParameterChoice> (pid (eqSlope), nm + "Slope",
                                  juce::StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 1,
                                  juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+#ifdef MAS_STUDIO_DYN
+                // Manual dynamic cuts are OFF by default; 1.5 and earlier builds never see these IDs.
+                p.push_back (std::make_unique<juce::AudioParameterBool> (pid (eqDynOn), nm + "Dynamic Cut", false));
+                p.push_back (std::make_unique<APF> (pid (eqDynThreshold), nm + "Dynamic Threshold",
+                                 juce::NormalisableRange<float> (-72.0f, -6.0f), -36.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dBFS"; })));
+                p.push_back (std::make_unique<APF> (pid (eqDynMax), nm + "Dynamic Max Cut",
+                                 juce::NormalisableRange<float> (0.0f, 6.0f), 3.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dB"; })));
+#endif
             }
     }
    #endif
@@ -357,6 +367,11 @@ static req::Settings eqFrom (Get&& value, bool on)
             d.gainDb = juce::jlimit (-18.0f, 18.0f, value (b, i, eqGain));
             d.q      = juce::jlimit (0.1f, 18.0f, value (b, i, eqQ));
             d.slope  = juce::jlimit (0, 3, juce::roundToInt (value (b, i, eqSlope)));
+#ifdef MAS_STUDIO_DYN
+            d.dynamic = value (b, i, eqDynOn) > 0.5f;
+            d.dynamicThresholdDb = juce::jlimit (-72.0f, -6.0f, value (b, i, eqDynThreshold));
+            d.dynamicMaxDb = juce::jlimit (0.0f, 6.0f, value (b, i, eqDynMax));
+#endif
         }
     return s;
 }
@@ -733,6 +748,13 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     const int n = buffer.getNumSamples();
     if (n == 0) return;
 
+   #ifdef MAS_STUDIO_DYN
+    // SIGNAL RAILS, INPUT: the plugin input before any processing (mono input: the same signal on L and R)
+    const bool ioOn = ioMeters.beginBlock();
+    if (ioOn && numIn > 0)
+        ioMeters.measure (mas::IOMeters::input, buffer.getReadPointer (0), numIn > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+   #endif
+
     takePendingIR();
 
     // Parameters of this block. They are read BEFORE the transition counters: the message thread
@@ -861,6 +883,11 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         e.setLevelsOn (want);
         const bool on = want && algoRunning && ! curLegacy && get (ParamIDs::mode) < 0.5f;
         for (int k = 0; k < 5; ++k) spaceLevel[k].store (on ? e.levelDb (k) : -140.0f, std::memory_order_relaxed);
+       #ifdef MAS_STUDIO_DYN
+        for (int b = 0; b < req::numBanks; ++b)       // Dynamic Cut: the live reduction of each band, for the EQ graph
+            for (int i = 0; i < req::kBands; ++i)
+                dynReduction[b][i].store (e.dynReductionDb (b, i), std::memory_order_relaxed);
+       #endif
     }
    #endif
    #else
@@ -903,7 +930,34 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         }
         curTrim = std::abs (g - tTrim) < 1.0e-5f ? tTrim : g;
     }
+
+   #ifdef MAS_STUDIO_DYN
+    // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
+    if (ioOn && numOut > 0)
+    {
+        ioMeters.measure (mas::IOMeters::output, buffer.getReadPointer (0), numOut > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+        ioMeters.endBlock();
+    }
+   #endif
 }
+
+#ifdef MAS_STUDIO_DYN
+void MasterSpaceAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    const int n = buffer.getNumSamples();
+    const int numIn = getMainBusNumInputChannels(), numOut = getTotalNumOutputChannels();
+    const bool ioOn = n > 0 && ioMeters.beginBlock();
+    if (ioOn && numIn > 0)
+        ioMeters.measure (mas::IOMeters::input, buffer.getReadPointer (0), numIn > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+    AudioProcessor::processBlockBypassed (buffer, midi);
+    if (ioOn && numOut > 0)
+    {
+        // JUCE's bypass leaves a mono input on channel 0 only: the output reads what the host really receives
+        ioMeters.measure (mas::IOMeters::output, buffer.getReadPointer (0), numOut > 1 ? buffer.getReadPointer (1) : nullptr, n, sampleRateHz);
+        ioMeters.endBlock();
+    }
+}
+#endif
 
 #ifdef MAS_RI
 // As below, with the host sidechain; with a latency (STUDIO HQ) the ALGO / IR cross-fade on the output uses the
@@ -1760,7 +1814,12 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
         auto field = [&m] (int b, int i, int f)
         {
             const auto it = m.find (ParamIDs::eqId (b, i, f));
-            return it != m.end() ? it->second : (f == ParamIDs::eqFreq ? 1000.0f : f == ParamIDs::eqQ ? 1.0f : f == ParamIDs::eqSlope ? 1.0f : 0.0f);
+            if (it != m.end()) return it->second;
+#ifdef MAS_STUDIO_DYN
+            if (f == ParamIDs::eqDynThreshold) return -36.0f;
+            if (f == ParamIDs::eqDynMax) return 3.0f;
+#endif
+            return f == ParamIDs::eqFreq ? 1000.0f : f == ParamIDs::eqQ ? 1.0f : f == ParamIDs::eqSlope ? 1.0f : 0.0f;
         };
         p.eq = eqFrom (field, getter (ParamIDs::eqOn) > 0.5f);
     }

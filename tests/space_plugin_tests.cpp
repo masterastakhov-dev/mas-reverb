@@ -286,6 +286,104 @@ static int studioSnapshots (const juce::File& dir)
     };
     feed (20);
     shot ("01_MAIN");
+#ifdef MAS_STUDIO_DYN
+    {
+        // brand emblem in place of the old wave: red disc above the wordmark, no cyan wave line left there
+        const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        int red = 0, cyan = 0;
+        for (int y = 24; y < 62; ++y)
+            for (int x = 36; x < 196; ++x)
+            {
+                const auto c = img.getPixelAt (x, y);
+                if (c.getRed() > 120 && c.getRed() > c.getGreen() + 50 && c.getRed() > c.getBlue() + 40) ++red;
+                if (c.getBlue() > 170 && c.getGreen() > 140 && c.getRed() < 120) ++cyan;
+            }
+        const bool ok = red > 60 && cyan == 0;
+        std::printf ("  [%s] header: brand emblem above the wordmark (red %d px), no wave (cyan %d px)\n", ok ? " ok " : "FAIL", red, cyan);
+        if (! ok) return 1;
+    }
+    {
+        // SIGNAL RAILS with real audio through the plugin: silence, a medium programme, peaks near 0 dBFS.
+        // The rails are found in the 1x picture and checked: dark in silence, lit without red at a medium level,
+        // red peak markers (>= -3 dBFS) right after the peaks.
+        int railFails = 0;
+        int seed = 500;
+        float lastOutPeak = 0.0f;
+        auto feedLevel = [&] (float rmsDb, float transientDb, double secs)
+        {
+            for (int k = 0; k < (int) (secs / 0.05); ++k)
+            {
+                auto sig = pinkish (48000, 0.05, ++seed);
+                double e = 0.0;
+                for (int i = 0; i < sig.getNumSamples(); ++i) e += (double) sig.getSample (0, i) * sig.getSample (0, i);
+                const float rms = (float) std::sqrt (e / sig.getNumSamples());
+                sig.applyGain (rmsDb <= -119.0f || rms <= 0.0f ? 0.0f : juce::Decibels::decibelsToGain (rmsDb) / rms);
+                if (transientDb > -119.0f && k % 4 == 0)          // a 2 ms, 1 kHz burst: a real transient, not one sample
+                    for (int c = 0; c < 2; ++c)
+                        for (int i = 0; i < 96; ++i)
+                            sig.setSample (c, 777 + i, juce::Decibels::decibelsToGain (transientDb) * (float) std::sin (2.0 * 3.141592653589793 * (i + 12) / 48.0));
+                run (*p, sig, 512); pump (34);
+                if (k == 0) lastOutPeak = 0.0f;
+                if (k >= (int) (secs / 0.05) - 14) lastOutPeak = juce::jmax (lastOutPeak, peak (sig));   // within the 0.8 s hold
+            }
+        };
+        auto railStats = [&] (const juce::Image& img, int x0, bool gold, int& lit, int& red)
+        {
+            lit = red = 0;
+            const int y0 = panel.getY() + 152 + 248 + 16;     // MAIN page y + rail y + slot y (1x)
+            for (int y = y0 + 2; y < y0 + 15; ++y)
+                for (int x = x0 + 9; x < x0 + 168; ++x)
+                {
+                    const auto c = img.getPixelAt (x, y);
+                    const int r = c.getRed(), g = c.getGreen(), b = c.getBlue();
+                    if (r > 200 && g < 120 && b < 110) ++red;
+                    else if (gold ? (r > 150 && g > 80 && b < 120 && r > b + 70) : (b > 150 && b > r + 60)) ++lit;
+                }
+        };
+        auto railShot = [&] (const juce::String& name, int wantLit, bool wantInRed)
+        {
+            // OUTPUT is red exactly when what leaves the plugin peaked at / above -3 dBFS within the hold
+            const bool wantOutRed = juce::Decibels::gainToDecibels (lastOutPeak, -120.0f) >= mas::RailBallistics::kOverDb;
+            shot (name);
+            const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            int li, ri, lo, ro;
+            railStats (img, 72, false, li, ri);
+            railStats (img, 852, true, lo, ro);
+            const bool ok = (wantLit == 0 ? li == 0 && lo == 0 : li > wantLit && lo > wantLit) && ((ri > 0) == wantInRed) && ((ro > 0) == wantOutRed);
+            std::printf ("  [%s] %s: INPUT lit %d red %d, OUTPUT lit %d red %d (output peak %.1f dBFS)\n", ok ? " ok " : "FAIL", name.toRawUTF8(), li, ri, lo, ro,
+                         juce::Decibels::gainToDecibels (lastOutPeak, -120.0f));
+            if (! ok) ++railFails;
+        };
+        feedLevel (-120.0f, -120.0f, 4.0);  railShot ("R1_RAILS_SILENCE", 0, false);
+        feedLevel (-22.0f, -120.0f, 2.0);   railShot ("R2_RAILS_MEDIUM", 200, false);
+        feedLevel (-12.0f, -0.5f, 1.0);     railShot ("R3_RAILS_PEAKS", 400, true);
+        // the plugin OUTPUT pushed +6 dB: what leaves the plugin reaches the red zone as well
+        set (ParamIDs::output, 6.0f);
+        feedLevel (-12.0f, -0.5f, 1.5);     railShot ("R4_RAILS_OUTPUT_OVER", 400, true);
+        set (ParamIDs::output, 0.0f);
+        feedLevel (-120.0f, -120.0f, 2.0);
+        if (std::getenv ("RAILS_ONLY")) return railFails;
+        if (railFails > 0) return railFails;
+    }
+#endif
+#ifdef MAS_STUDIO_DYN
+    // The lamp is UI-only: photograph identical grille geometry when off and when warmed up.
+    set (ParamIDs::hcOn, 0.0f);
+    feed (70);
+    shot ("01a_ANALOG_GRILLES_LAMP_OFF");
+    set (ParamIDs::hcDrive, 50.0f);
+    set (ParamIDs::hcMix, 0.0f);
+    set (ParamIDs::hcOn, 1.0f);
+    feed (25);
+    shot ("01b0_ANALOG_GRILLES_LAMP_ON_MIX0");
+    set (ParamIDs::hcMix, 35.0f);
+    feed (25);
+    shot ("01b_ANALOG_GRILLES_LAMP_ON_MIX35");
+    set (ParamIDs::hcMix, 100.0f);
+    feed (25);
+    shot ("01c_ANALOG_GRILLES_LAMP_ON_MIX100");
+    set (ParamIDs::hcOn, 0.0f);
+#endif
     panel.setDrawer (true, false);
     feed (30);
     shot ("02_MAIN_DEPTH_VIEW");
@@ -301,6 +399,11 @@ static int studioSnapshots (const juce::File& dir)
         band (0, 0, req::LowShelf, 100, 2, 0.71f); band (0, 1, req::Bell, 350, -3, 1.2f);
         band (0, 2, req::Bell, 2600, 3, 0.8f); band (0, 3, req::HighShelf, 9000, -2.5f, 0.71f);
         panel.setPage (12);
+       #ifdef MAS_STUDIO_DYN
+        band (0, 4, req::Bell, 1200, 0, 3.0f);
+        set (ParamIDs::eqId (0, 4, ParamIDs::eqDynThreshold), -60.0f); set (ParamIDs::eqId (0, 4, ParamIDs::eqDynMax), 4.0f);
+        set (ParamIDs::eqId (0, 4, ParamIDs::eqDynOn), 1.0f);
+       #endif
         req::BandParams rb[8];
         const float rf[3] = { 387.0f, 1200.0f, 4800.0f };
         for (int i = 0; i < 3; ++i) { rb[i].used = true; rb[i].freq = rf[i]; rb[i].gainDb = 18.0f; rb[i].q = 18.0f; }
@@ -324,6 +427,73 @@ static int studioSnapshots (const juce::File& dir)
     ed->setSize (770, juce::roundToInt (770.0f * (float) panel.logicalHeight() / 1100.0f));
     shot ("07_MAIN_DEPTH_VIEW_70pct");
     edp.reset();
+    return 0;
+}
+#endif
+
+#ifdef MAS_STUDIO_DYN
+// --dyn-renders <dir>: listening material for Dynamic Cut. A reverb with a ringing 1.2 kHz resonance
+// (a narrow +9 dB WET bell stands in for a room / instrument resonance), rendered with Dynamic Cut OFF and ON.
+static int dynRenders (const juce::File& dir)
+{
+    dir.createDirectory();
+    const double fs = 48000.0, pi = juce::MathConstants<double>::pi;
+    const int n = (int) (fs * 12.0);
+    // source: plucked notes (A minor arpeggio, harmonics) and short noise hits
+    juce::AudioBuffer<float> src (2, n); src.clear();
+    juce::Random rnd (3);
+    const double notes[] = { 220.0, 261.63, 329.63, 440.0, 392.0, 329.63, 293.66, 246.94 };
+    for (int k = 0; k < 24; ++k)
+    {
+        const int start = (int) (k * 0.45 * fs);
+        const double f = notes[k % 8] * (k % 3 == 2 ? 2.0 : 1.0);
+        for (int i = 0; i < (int) (fs * 1.2) && start + i < n; ++i)
+        {
+            const double tt = i / fs, env = std::exp (-tt * 4.0);
+            double v = 0; for (int h = 1; h <= 8; ++h) v += std::sin (2 * pi * f * h * tt) / (h * h);
+            for (int c = 0; c < 2; ++c) src.addSample (c, start + i, (float) (0.25 * env * v));
+        }
+        if (k % 4 == 0) for (int i = 0; i < 2400 && start + i < n; ++i)
+            for (int c = 0; c < 2; ++c) src.addSample (c, start + i, (float) (0.3 * std::exp (-i / 400.0) * (rnd.nextFloat() * 2 - 1)));
+    }
+    auto renderWith = [&] (bool dyn, const char* name)
+    {
+        auto p = std::make_unique<MasterSpaceAudioProcessor>();
+        p->setRateAndBufferSizeDetails (fs, 512); p->prepareToPlay (fs, 512);
+        auto set = [&] (const juce::String& id, float v) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (v)); };
+        using namespace ParamIDs;
+        set (mix, 35.0f); set (decay, 2.6f); set (algorithm, 2.0f); set (eqOn, 1.0f);
+        auto band = [&] (int i, float f, float g, float q, bool d)
+        {
+            set (eqId (0, i, eqUsed), 1); set (eqId (0, i, eqType), (float) req::Bell); set (eqId (0, i, eqFreq), f);
+            set (eqId (0, i, eqGain), g); set (eqId (0, i, eqQ), q); set (eqId (0, i, eqDynOn), d ? 1.0f : 0.0f);
+            set (eqId (0, i, eqDynThreshold), -36.0f); set (eqId (0, i, eqDynMax), 3.0f);
+        };
+        band (1, 1200.0f, 9.0f, 8.0f, false);             // the resonance
+        if (dyn) band (4, 1200.0f, 0.0f, 3.0f, true);     // Dynamic Cut on it, default settings
+        pump (60);
+        auto buf = src;
+        juce::MidiBuffer midi;
+        for (int pos = 0; pos < n; pos += 512)
+        {
+            juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), 2, pos, juce::jmin (512, n - pos));
+            p->processBlock (view, midi);
+        }
+        auto f = dir.getChildFile (name);
+        f.deleteFile();
+        std::unique_ptr<juce::AudioFormatWriter> w (juce::WavAudioFormat().createWriterFor (new juce::FileOutputStream (f), fs, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (buf, 0, n);
+        std::printf ("  wrote %s\n", name);
+        return buf;
+    };
+    auto off = renderWith (false, "1_dynamic_cut_OFF.wav");
+    auto on = renderWith (true, "2_dynamic_cut_ON.wav");
+    juce::AudioBuffer<float> diff (2, n);
+    for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) diff.setSample (c, i, off.getSample (c, i) - on.getSample (c, i));
+    auto f = dir.getChildFile ("3_difference_what_was_removed.wav");
+    f.deleteFile();
+    std::unique_ptr<juce::AudioFormatWriter> w (juce::WavAudioFormat().createWriterFor (new juce::FileOutputStream (f), fs, 2, 24, {}, 0));
+    w->writeFromAudioSampleBuffer (diff, 0, n);
     return 0;
 }
 #endif
@@ -399,6 +569,9 @@ int main (int argc, char** argv)
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
     }
+   #endif
+   #ifdef MAS_STUDIO_DYN
+    if (argc > 2 && juce::String (argv[1]) == "--dyn-renders") return dynRenders (juce::File (juce::String (argv[2])));
    #endif
    #ifdef MAS_STUDIO
     if (argc > 2 && juce::String (argv[1]) == "--studio-snapshot")
@@ -1359,6 +1532,527 @@ int main (int argc, char** argv)
    #endif
 
    #ifdef MAS_EQ
+#ifdef MAS_STUDIO_DYN
+    //==========================================================================
+    section ("1.7d SIGNAL RAILS: INPUT / OUTPUT meters (measurement only)");
+    {
+        constexpr double kPi = 3.141592653589793;
+        auto sineBuf = [&] (double fs, double secs, float db, float rightDb, double hz = 1000.0)
+        {
+            juce::AudioBuffer<float> b (2, (int) (fs * secs));
+            const float a = juce::Decibels::decibelsToGain (db, -200.0f), ar = juce::Decibels::decibelsToGain (rightDb, -200.0f);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const float v = (float) std::sin (2.0 * kPi * hz * i / fs);
+                b.setSample (0, i, a * v); b.setSample (1, i, ar * v);
+            }
+            return b;
+        };
+        auto setP = [] (MasterSpaceAudioProcessor& pp, const juce::String& id, float plain)
+        { if (auto* r = pp.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto rms = [] (MasterSpaceAudioProcessor& pp, int io, int c) { return pp.ioMeters.rmsDb[io][c].load(); };
+        auto pk = [] (MasterSpaceAudioProcessor& pp, int io, int c)
+        { return juce::Decibels::gainToDecibels (pp.ioMeters.takePeak ((mas::IOMeters::Io) io, c), -200.0f); };
+        // the independent reference: the same 300 ms averaging done offline on the real samples
+        auto refRmsDb = [] (const juce::AudioBuffer<float>& b, int c, double fs, int block)
+        {
+            double m = 0.0;
+            for (int pos = 0; pos < b.getNumSamples(); pos += block)
+            {
+                const int n = juce::jmin (block, b.getNumSamples() - pos);
+                double e = 0.0;
+                for (int i = 0; i < n; ++i) e += (double) b.getSample (c, pos + i) * b.getSample (c, pos + i);
+                m += (1.0 - std::exp (-(double) n / (0.3 * fs))) * (e / n - m);
+            }
+            return m > 1.0e-14 ? 10.0 * std::log10 (m) : -120.0;
+        };
+
+        // ---- -18 dBFS sine at 44.1 / 48 / 96 kHz: RMS -21.0 dBFS, sample peak -18.0 dBFS, both channels, both sides
+        for (double fs : { 44100.0, 48000.0, 96000.0 })
+        {
+            auto pr = makeProcessor (fs, 512);
+            setP (*pr, ParamIDs::mix, 0.0f);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (fs, 3.0, -18.0f, -18.0f, 997.0);
+            run (*pr, b, 512);
+            const float ri = rms (*pr, 0, 0), ri2 = rms (*pr, 0, 1), pi = pk (*pr, 0, 0);
+            check (std::abs (ri + 21.03f) < 0.1f && std::abs (ri2 - ri) < 0.01f && std::abs (pi + 18.0f) < 0.05f,
+                   juce::String (fs / 1000.0, 1) + " kHz: -18 dBFS sine -> INPUT RMS " + juce::String (ri, 2) + " / " + juce::String (ri2, 2)
+                   + " dBFS, sample peak " + juce::String (pi, 2) + " dBFS");
+            const double refL = refRmsDb (b, 0, fs, 512), refR = refRmsDb (b, 1, fs, 512);
+            const float ro = rms (*pr, 1, 0), ro2 = rms (*pr, 1, 1);
+            check (std::abs (ro - (float) refL) < 0.05f && std::abs (ro2 - (float) refR) < 0.05f && std::abs (pk (*pr, 1, 0) - juce::Decibels::gainToDecibels (b.getMagnitude (0, 0, b.getNumSamples()))) < 0.05f,
+                   "  OUTPUT reads what really leaves the plugin: RMS " + juce::String (ro, 2) + " (offline " + juce::String (refL, 2) + "), peak matches");
+        }
+
+        // ---- the result does not depend on the host block size; mono / stereo; channels are independent
+        {
+            float r64 = 0, r4096 = 0;
+            for (int blk : { 64, 4096 })
+            {
+                auto pr = makeProcessor (48000.0, blk);
+                pr->ioMeters.wanted = true;
+                auto b = sineBuf (48000.0, 3.0, -18.0f, -30.0f);
+                run (*pr, b, blk);
+                (blk == 64 ? r64 : r4096) = rms (*pr, 0, 0);
+                if (blk == 64)
+                    check (std::abs (rms (*pr, 0, 1) + 33.03f) < 0.1f && std::abs (pk (*pr, 0, 1) + 30.0f) < 0.05f && std::abs (pk (*pr, 0, 0) + 18.0f) < 0.05f,
+                           "stereo: L -18 / R -30 dBFS sine read separately (R RMS " + juce::String (rms (*pr, 0, 1), 2) + ")");
+            }
+            check (std::abs (r64 - r4096) < 0.1f, "same reading with 64- and 4096-sample blocks (" + juce::String (r64, 2) + " / " + juce::String (r4096, 2) + ")");
+
+            auto pr = std::make_unique<MasterSpaceAudioProcessor>();
+            auto mono = pr->getBusesLayout();
+            mono.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
+            const bool monoOk = pr->setBusesLayout (mono) && pr->getMainBusNumInputChannels() == 1;
+            pr->setRateAndBufferSizeDetails (48000.0, 512);
+            pr->prepareToPlay (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (48000.0, 3.0, -18.0f, -18.0f);
+            b.clear (1, 0, b.getNumSamples());          // channel 1 is output only with a mono input
+            run (*pr, b, 512);
+            check (monoOk && std::abs (rms (*pr, 0, 0) + 21.03f) < 0.1f && std::abs (rms (*pr, 0, 1) - rms (*pr, 0, 0)) < 0.001f,
+                   "mono input: INPUT shows the one channel on L and R (" + juce::String (rms (*pr, 0, 1), 2) + " dBFS)");
+            check (std::abs (rms (*pr, 1, 1) - (float) refRmsDb (b, 1, 48000.0, 512)) < 0.05f && rms (*pr, 1, 1) > -60.0f,
+                   "mono input: OUTPUT R is the real right output (" + juce::String (rms (*pr, 1, 1), 2) + " dBFS)");
+        }
+
+        // ---- the host changes sample rate and block size on a running instance: still exact
+        {
+            auto pr = makeProcessor (44100.0, 256);
+            pr->ioMeters.wanted = true;
+            auto a = sineBuf (44100.0, 2.0, -12.0f, -12.0f);
+            run (*pr, a, 256);
+            pr->releaseResources();
+            pr->setRateAndBufferSizeDetails (96000.0, 1024);
+            pr->prepareToPlay (96000.0, 1024);
+            auto b = sineBuf (96000.0, 3.0, -18.0f, -18.0f);
+            pk (*pr, 0, 0);
+            run (*pr, b, 1024);
+            check (std::abs (rms (*pr, 0, 0) + 21.03f) < 0.1f && std::abs (pk (*pr, 0, 0) + 18.0f) < 0.05f,
+                   "44.1 kHz / 256 -> 96 kHz / 1024 on the same instance: " + juce::String (rms (*pr, 0, 0), 2) + " dBFS RMS");
+        }
+
+        // ---- transients: one sample at -6 dBFS is caught exactly, wherever it sits in the block
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            bool all = true;
+            for (int pos : { 0, 1, 255, 511, 3001 })
+            {
+                auto b = silence (48000.0, 0.2);
+                b.setSample (0, pos, -0.5f);
+                b.setSample (1, pos, 0.25f);
+                pk (*pr, 0, 0); pk (*pr, 0, 1);
+                run (*pr, b, 512);
+                all = all && std::abs (pk (*pr, 0, 0) + 6.02f) < 0.01f && std::abs (pk (*pr, 0, 1) + 12.04f) < 0.01f;
+            }
+            check (all, "a single-sample transient (-6 / -12 dBFS) is caught exactly at any position in the block");
+            check (rms (*pr, 0, 0) < -40.0f, "  and barely moves the RMS body (" + juce::String (rms (*pr, 0, 0), 1) + " dBFS)");
+        }
+
+        // ---- silence: exact floor, no denormals; a full-scale sine reads 0 dBFS peak (overload)
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto loud = sineBuf (48000.0, 1.0, 0.0f, 0.0f);
+            run (*pr, loud, 512);
+            check (std::abs (pk (*pr, 0, 0)) < 0.01f && rms (*pr, 0, 0) > -3.2f, "full-scale sine: INPUT peak 0.00 dBFS, RMS -3.0 dBFS");
+            auto sil = silence (48000.0, 12.0);
+            run (*pr, sil, 512);
+            check (rms (*pr, 0, 0) <= -119.9f && pk (*pr, 0, 0) < -199.0f, "after silence: INPUT exactly at the floor, no peak");
+            check (rms (*pr, 1, 0) < -60.0f, "after silence: OUTPUT below the scale (reverb tail decayed: " + juce::String (rms (*pr, 1, 0), 1) + " dBFS)");
+        }
+
+        // ---- HARMONIC COLOR on / off, MIX 100 %: OUTPUT always matches the real output, INPUT never changes
+        {
+            for (int hc = 0; hc < 2; ++hc)
+            {
+                auto pr = makeProcessor (48000.0, 512);
+                setP (*pr, ParamIDs::mix, 100.0f);
+                setP (*pr, ParamIDs::hcOn, (float) hc);
+                setP (*pr, ParamIDs::hcMix, 100.0f);
+                setP (*pr, ParamIDs::hcDrive, 80.0f);
+                pr->ioMeters.wanted = true;
+                auto b = pinkish (48000.0, 4.0, 77);
+                auto in = b;
+                run (*pr, b, 512);
+                check (std::abs (rms (*pr, 1, 0) - (float) refRmsDb (b, 0, 48000.0, 512)) < 0.05f
+                       && std::abs (rms (*pr, 0, 0) - (float) refRmsDb (in, 0, 48000.0, 512)) < 0.05f
+                       && std::abs (pk (*pr, 1, 0) - juce::Decibels::gainToDecibels (b.getMagnitude (0, 0, b.getNumSamples()))) < 0.05f,
+                       juce::String ("HARMONIC COLOR ") + (hc ? "ON" : "OFF") + ": OUTPUT " + juce::String (rms (*pr, 1, 0), 2)
+                       + " dBFS = real output, INPUT " + juce::String (rms (*pr, 0, 0), 2) + " dBFS = real input");
+            }
+        }
+
+        // ---- host bypass: the audio is JUCE's default bypass; INPUT and OUTPUT both read the passing signal
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto b = sineBuf (48000.0, 2.0, -18.0f, -24.0f);
+            const auto orig = b;
+            juce::MidiBuffer midi;
+            for (int pos = 0; pos < b.getNumSamples(); pos += 512)
+            {
+                juce::AudioBuffer<float> view (b.getArrayOfWritePointers(), 2, pos, juce::jmin (512, b.getNumSamples() - pos));
+                pr->processBlockBypassed (view, midi);
+            }
+            check (maxAbsDiff (b, orig) == 0.0f, "bypass: audio passes untouched");
+            check (std::abs (rms (*pr, 0, 0) - rms (*pr, 1, 0)) < 0.001f && std::abs (rms (*pr, 0, 1) - rms (*pr, 1, 1)) < 0.001f && std::abs (rms (*pr, 1, 1) + 27.03f) < 0.1f,
+                   "bypass: INPUT = OUTPUT (L " + juce::String (rms (*pr, 1, 0), 2) + ", R " + juce::String (rms (*pr, 1, 1), 2) + " dBFS)");
+        }
+
+        // ---- measurement never touches the audio; nothing is measured while no display asks
+        {
+            auto a = makeProcessor (48000.0, 512), b2 = makeProcessor (48000.0, 512);
+            setP (*a, ParamIDs::hcOn, 1.0f); setP (*b2, ParamIDs::hcOn, 1.0f);
+            a->ioMeters.wanted = true;
+            auto x = pinkish (48000.0, 3.0, 5), y = x;
+            run (*a, x, 512); run (*b2, y, 512);
+            check (maxAbsDiff (x, y) == 0.0f, "meters on / off: output bit-identical");
+            check (b2->ioMeters.blocks.load() == 0 && b2->ioMeters.rmsDb[0][0].load() <= -119.9f, "meters not wanted: nothing measured");
+            auto nanBuf = silence (48000.0, 0.1);
+            nanBuf.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+            juce::MidiBuffer midi;
+            a->processBlockBypassed (nanBuf, midi);
+            auto quiet = silence (48000.0, 12.0);
+            run (*a, quiet, 512);
+            check (std::isfinite (a->ioMeters.rmsDb[0][0].load()) && a->ioMeters.rmsDb[0][0].load() <= -119.9f, "a NaN sample cannot freeze the meter (recovers to the floor)");
+        }
+
+        // ---- cost: measurement overhead per 512-sample block
+        {
+            auto on = makeProcessor (48000.0, 512), off = makeProcessor (48000.0, 512);
+            on->ioMeters.wanted = true;
+            auto xo = pinkish (48000.0, 20.0, 9), xf = xo;
+            double t0 = nowMs(); run (*off, xf, 512); const double tOff = nowMs() - t0;
+            t0 = nowMs(); run (*on, xo, 512); const double tOn = nowMs() - t0;
+            mas::IOMeters m; m.wanted = true;
+            auto z = pinkish (48000.0, 20.0, 10);
+            t0 = nowMs();
+            for (int pos = 0; pos + 512 <= z.getNumSamples(); pos += 512)
+            {
+                m.beginBlock();
+                m.measure (mas::IOMeters::input, z.getReadPointer (0, pos), z.getReadPointer (1, pos), 512, 48000.0);
+                m.measure (mas::IOMeters::output, z.getReadPointer (0, pos), z.getReadPointer (1, pos), 512, 48000.0);
+                m.endBlock();
+            }
+            const double tM = nowMs() - t0;
+            std::printf ("     20 s of audio: plugin %.1f ms (meters on %.1f ms); the meters alone %.2f ms = %.4f %% of real time\n", tOff, tOn, tM, tM / 200.0);
+            check (tM < 0.01 * 20000.0, "meter cost < 1 % of real time even in this unoptimised check");
+        }
+
+        // ---- UI ballistics: instant attack, 0.8 s hold, smooth return, overload from -3 dBFS
+        {
+            mas::RailBallistics r;
+            const float dt = 1.0f / 60.0f;
+            r.tick (-20.0f, juce::Decibels::decibelsToGain (-1.0f), dt);
+            const bool attack = std::abs (r.peakDb + 1.0f) < 1.0e-4f && r.over();
+            float t = dt, heldUntil = 0.0f;
+            while (t < 3.0f) { r.tick (-20.0f, juce::Decibels::decibelsToGain (-12.0f), dt); t += dt; if (r.peakDb > -1.001f) heldUntil = t; }
+            check (attack, "peak marker: jumps to a new peak at once, red at -1 dBFS");
+            check (heldUntil > 0.78f && heldUntil < 0.84f, "peak marker: held " + juce::String (heldUntil, 3) + " s (0.8 s)");
+            check (std::abs (r.peakDb + 12.0f) < 0.01f && ! r.over(), "peak marker: returns smoothly to the running peak (-12 dBFS), not red");
+            mas::RailBallistics s;
+            s.tick (-20.0f, juce::Decibels::decibelsToGain (-3.0f), dt);
+            mas::RailBallistics u;
+            u.tick (-20.0f, juce::Decibels::decibelsToGain (-3.1f), dt);
+            check (s.over() && ! u.over(), "overload: red from -3.0 dBFS, not at -3.1 dBFS");
+            mas::RailBallistics f;
+            f.tick (-6.0f, 0.5f, dt);
+            float maxStep = 0.0f, prev = f.peakDb;
+            for (int i = 0; i < 300; ++i) { f.tick (-120.0f, 0.0f, dt); maxStep = juce::jmax (maxStep, prev - f.peakDb); prev = f.peakDb; }
+            check (maxStep < 0.5f && f.peakDb <= -69.9f && f.rmsDb < -69.0f, "return to silence is smooth (largest step " + juce::String (maxStep, 2) + " dB per frame at 60 Hz)");
+        }
+    }
+
+    //==========================================================================
+    section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
+    {
+        req::ManualDynamicBank dyn;
+        constexpr double fs = 48000.0;
+        constexpr int count = 256;
+        dyn.prepare (fs);
+        float l[count] {}, r[count] {};
+        for (int i = 0; i < count; ++i) l[i] = r[i] = 0.25f * (float) std::sin (2.0 * 3.141592653589793 * 1000.0 * i / fs);
+        auto original = l[0];
+        dyn.process (l, r, count);
+        check (l[0] == original && ! dyn.isActive(), "manual dynamic EQ disabled: bit-exact and inactive");
+
+        req::BandParams bands[req::kBands] {};
+        bands[0].used = true;
+        bands[0].dynamic = true;
+        bands[0].freq = 1000.0f;
+        bands[0].q = 3.0f;
+        bands[0].dynamicThresholdDb = -54.0f;
+        bands[0].dynamicMaxDb = 3.0f;
+        dyn.set (bands, true, true);
+        auto testLevel = [&] (double amplitude, int blocks)
+        {
+            double inEnergy = 0.0, outEnergy = 0.0;
+            for (int b = 0; b < blocks; ++b)
+            {
+                for (int i = 0; i < count; ++i)
+                    l[i] = r[i] = (float) (amplitude * std::sin (2.0 * 3.141592653589793 * 1000.0 * (b * count + i) / fs));
+                dyn.process (l, r, count);
+                if (b > blocks - 7)
+                    for (int i = 0; i < count; ++i)
+                    {
+                        const double x = amplitude * std::sin (2.0 * 3.141592653589793 * 1000.0 * (b * count + i) / fs);
+                        inEnergy += x * x;
+                        outEnergy += (double) l[i] * l[i];
+                    }
+            }
+            return 10.0 * std::log10 ((outEnergy + 1e-30) / (inEnergy + 1e-30));
+        };
+        const double cutDb = testLevel (0.25, 150);
+        check (cutDb < -1.0 && cutDb > -4.0, "approved 1 kHz resonance: dynamic cut is active and <= 3 dB (measured " + juce::String (cutDb, 2) + " dB)");
+        const double restoredDb = testLevel (0.00001, 750);
+        check (std::abs (restoredDb) < 0.5, "quiet resonance: gain returns to unity after release (" + juce::String (restoredDb, 2) + " dB)");
+        bands[0].dynamic = false;
+        dyn.set (bands, true);
+        const double bypassDb = testLevel (0.25, 200);
+        check (std::abs (bypassDb) < 0.0001, "disarmed manual dynamic band bypasses without affecting audio");
+    }
+
+    //==========================================================================
+    section ("1.7d DYNAMIC CUT in the plugin: cut, clicks, sample rates, blocks, mono, state, NaN, CPU");
+    {
+        using namespace ParamIDs;
+        const double pi = juce::MathConstants<double>::pi;
+        auto setP = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        { if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto getP = [] (MasterSpaceAudioProcessor& q, const juce::String& id) { return q.apvts.getRawParameterValue (id)->load(); };
+        // material: pink noise bursts + a sustained 1.2 kHz tone that rings in the reverb; 100 % wet
+        auto material = [pi] (double fs, double secs, int seed)
+        {
+            auto b = pinkish (fs, secs, seed);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const double tt = i / fs;
+                const float gate = std::fmod (tt, 0.5) < 0.12 ? 0.5f : 0.02f;
+                const float tone = (float) (0.18 * std::sin (2.0 * pi * 1200.0 * tt));
+                for (int c = 0; c < 2; ++c) b.setSample (c, i, b.getSample (c, i) * gate + tone);
+            }
+            return b;
+        };
+        auto setup = [&] (MasterSpaceAudioProcessor& q, int bank, bool dyn, float thr = -48.0f, float mx = 3.0f)
+        {
+            setP (q, mix, 100.0f); setP (q, decay, 3.0f); setP (q, eqOn, 1.0f);
+            setP (q, erOn, bank == req::Late ? 0.0f : 1.0f);      // EARLY / LATE banks: listen to that bus alone
+            setP (q, lateOn, bank == req::Early ? 0.0f : 1.0f);
+            const int i = 4;
+            setP (q, eqId (bank, i, eqUsed), 1); setP (q, eqId (bank, i, eqBypass), 0); setP (q, eqId (bank, i, eqType), (float) req::Bell);
+            setP (q, eqId (bank, i, eqFreq), 1200.0f); setP (q, eqId (bank, i, eqGain), 0.0f); setP (q, eqId (bank, i, eqQ), 3.0f);
+            setP (q, eqId (bank, i, eqDynThreshold), thr); setP (q, eqId (bank, i, eqDynMax), mx);
+            setP (q, eqId (bank, i, eqDynOn), dyn ? 1.0f : 0.0f);
+        };
+        auto goertzelDb = [pi] (const juce::AudioBuffer<float>& b, double fs, double f, int from)
+        {
+            double e = 0.0;
+            for (int c = 0; c < 2; ++c)
+            {
+                const double w = 2.0 * pi * f / fs, k = 2.0 * std::cos (w);
+                double s1 = 0, s2 = 0;
+                for (int i = from; i < b.getNumSamples(); ++i) { const double s0 = b.getSample (c, i) + k * s1 - s2; s2 = s1; s1 = s0; }
+                e += s1 * s1 + s2 * s2 - k * s1 * s2;
+            }
+            return 10.0 * std::log10 (e + 1e-30);
+        };
+        auto bandDb = [] (const juce::AudioBuffer<float>& b, double fs, double f0, double f1, int from)
+        {   // energy of a band by a 2nd-order band-pass, both channels
+            const double fc = std::sqrt (f0 * f1), q = fc / (f1 - f0), w = juce::MathConstants<double>::twoPi * fc / fs, al = std::sin (w) / (2 * q), a0 = 1 + al;
+            const double b0 = al / a0, a1 = -2 * std::cos (w) / a0, a2 = (1 - al) / a0;
+            double e = 0;
+            for (int c = 0; c < 2; ++c)
+            {
+                double z[4][2] = {};
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                {
+                    double y = b.getSample (c, i);
+                    for (auto& s : z) { const double x = y; y = b0 * x + s[0]; s[0] = -a1 * y + s[1]; s[1] = -b0 * x - a2 * y; }   // 8th order: the test tone cannot leak in
+                    if (i >= from) e += y * y;
+                }
+            }
+            return 10.0 * std::log10 (e + 1e-30);
+        };
+        auto finite = [] (const juce::AudioBuffer<float>& b)
+        { for (int c = 0; c < b.getNumChannels(); ++c) for (int i = 0; i < b.getNumSamples(); ++i) if (! std::isfinite (b.getSample (c, i))) return false; return true; };
+        auto maxD2 = [] (const juce::AudioBuffer<float>& b, int from, int to)
+        {   // the largest second difference: a click shows up here long before it is audible elsewhere
+            float m = 0;
+            for (int c = 0; c < 2; ++c)
+                for (int i = juce::jmax (2, from); i < juce::jmin (to, b.getNumSamples()); ++i)
+                    m = juce::jmax (m, std::abs (b.getSample (c, i) - 2 * b.getSample (c, i - 1) + b.getSample (c, i - 2)));
+            return m;
+        };
+        auto render = [&] (double fs, int block, int bank, bool dyn, double secs, std::function<void (MasterSpaceAudioProcessor&, int)> perBlock = nullptr, float thr = -48.0f)
+        {
+            auto q = makeProcessor (fs, block);
+            setup (*q, bank, dyn, thr);
+            pump (60);
+            auto buf = material (fs, secs, 7);
+            juce::MidiBuffer midi;
+            int k = 0;
+            for (int pos = 0; pos < buf.getNumSamples(); pos += block, ++k)
+            {
+                if (perBlock) perBlock (*q, k);
+                const int n = juce::jmin (block, buf.getNumSamples() - pos);
+                juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), 2, pos, n);
+                q->processBlock (view, midi);
+            }
+            return buf;
+        };
+
+        // 1. the cut: at the resonance, within the max, and nothing else moves
+        for (int bank : { (int) req::Wet, (int) req::Early, (int) req::Late })
+        {
+            const char* bn[] = { "WET", "EARLY", "LATE" };
+            const double fs = 48000.0;
+            const int from = (int) (fs * 3.0);
+            auto off = render (fs, 512, bank, false, 6.0), on = render (fs, 512, bank, true, 6.0);
+            if (std::getenv ("DYN_DEBUG"))
+            {
+                auto off2 = render (fs, 512, bank, false, 6.0);
+                auto onHi = render (fs, 512, bank, true, 6.0, nullptr, -6.0f);
+                std::printf ("    DEBUG off2-off lo %.2f  onHi-off lo %.2f  tone %.2f\n", bandDb (off2, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from),
+                             bandDb (onHi, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from), goertzelDb (onHi, fs, 1200, from) - goertzelDb (off, fs, 1200, from));
+            }
+            const double cut = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+            const double lo = bandDb (on, fs, 200, 400, from) - bandDb (off, fs, 200, 400, from);
+            const double hi = bandDb (on, fs, 6000, 9000, from) - bandDb (off, fs, 6000, 9000, from);
+            check (finite (on) && cut < -0.8 && cut > -3.3, juce::String (bn[bank]) + " bank: the 1.2 kHz resonance is cut by " + juce::String (cut, 2) + " dB (max 3 dB)");
+            check (std::abs (lo) < 0.25 && std::abs (hi) < 0.25, juce::String (bn[bank]) + " bank: 200-400 Hz and 6-9 kHz stay put (" + juce::String (lo, 2) + " / " + juce::String (hi, 2) + " dB)");
+        }
+
+        // 2. no clicks: switching Dynamic Cut on / off and sweeping the threshold while the reverb rings
+        {
+            const double fs = 48000.0; const int block = 256, n = (int) (fs * 6.0);
+            auto steady = render (fs, block, req::Wet, true, 6.0);
+            auto toggled = render (fs, block, req::Wet, true, 6.0, [&] (MasterSpaceAudioProcessor& q, int k)
+            { if (k % 90 == 45) setP (q, eqId (req::Wet, 4, eqDynOn), (k / 90) % 2 == 0 ? 0.0f : 1.0f); });
+            auto swept = render (fs, block, req::Wet, true, 6.0, [&] (MasterSpaceAudioProcessor& q, int k)
+            { setP (q, eqId (req::Wet, 4, eqDynThreshold), -60.0f + 40.0f * (float) (0.5 + 0.5 * std::sin (k * 0.05))); });
+            const float base = maxD2 (steady, (int) fs, n);
+            check (maxD2 (toggled, (int) fs, n) <= base * 1.2f + 1e-4f, "Dynamic Cut ON / OFF while the tail rings: no click (2nd difference " + juce::String (maxD2 (toggled, (int) fs, n), 4) + " vs " + juce::String (base, 4) + ")");
+            check (maxD2 (swept, (int) fs, n) <= base * 1.2f + 1e-4f, "threshold automated across -60..-20 dBFS: no zipper / click");
+            check (finite (toggled) && finite (swept), "toggled / swept renders are finite");
+        }
+
+        // 3. sample rates and block sizes: the same cut everywhere, no NaN
+        {
+            double cuts[3] {}; int si = 0;
+            for (double fs : { 44100.0, 48000.0, 96000.0 })
+            {
+                const int from = (int) (fs * 3.0);
+                auto off = render (fs, 512, req::Wet, false, 5.0), on = render (fs, 512, req::Wet, true, 5.0);
+                cuts[si++] = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+            }
+            check (std::abs (cuts[0] - cuts[1]) < 0.6 && std::abs (cuts[2] - cuts[1]) < 0.6,
+                   "44.1 / 48 / 96 kHz: same cut (" + juce::String (cuts[0], 2) + " / " + juce::String (cuts[1], 2) + " / " + juce::String (cuts[2], 2) + " dB)");
+            const double fs = 48000.0; const int from = (int) (fs * 3.0);
+            auto off = render (fs, 512, req::Wet, false, 5.0);
+            double worst = 0;
+            for (int block : { 32, 64, 1024, 4096 })
+            {
+                auto on = render (fs, block, req::Wet, true, 5.0);
+                const double c = goertzelDb (on, fs, 1200.0, from) - goertzelDb (off, fs, 1200.0, from);
+                worst = juce::jmax (worst, std::abs (c - cuts[1]));
+                if (! finite (on)) worst = 99;
+            }
+            check (worst < 0.4, "block sizes 32 / 64 / 1024 / 4096: same cut (worst deviation " + juce::String (worst, 2) + " dB)");
+            // the host changes the rate and the block size while the band is armed
+            auto q = makeProcessor (48000.0, 512);
+            setup (*q, req::Wet, true);
+            auto a = material (48000.0, 1.0, 3); run (*q, a, 512);
+            q->releaseResources(); q->setRateAndBufferSizeDetails (96000.0, 128); q->prepareToPlay (96000.0, 128);
+            auto b = material (96000.0, 2.0, 4); run (*q, b, 128);
+            check (finite (b), "rate / block change 48 kHz 512 -> 96 kHz 128 with Dynamic Cut armed: finite and running");
+        }
+
+        // 4. mono in, stereo out
+        {
+            auto q = std::make_unique<MasterSpaceAudioProcessor>();
+            q->setPlayConfigDetails (1, 2, 48000.0, 512);
+            q->prepareToPlay (48000.0, 512);
+            setup (*q, req::Wet, true);
+            auto buf = material (48000.0, 3.0, 5);
+            run (*q, buf, 512);
+            check (finite (buf), "mono in -> stereo out with Dynamic Cut: finite");
+        }
+
+        // 5. bypass: the band bypassed = Dynamic Cut off (after the 10 ms fade)
+        {
+            auto off = render (48000.0, 512, req::Wet, false, 3.0);
+            auto byp = render (48000.0, 512, req::Wet, true, 3.0, [&] (MasterSpaceAudioProcessor& q, int k) { if (k == 0) setP (q, eqId (req::Wet, 4, eqBypass), 1.0f); });
+            float m = 0;
+            for (int c = 0; c < 2; ++c) for (int i = 4800; i < off.getNumSamples(); ++i) m = juce::jmax (m, std::abs (off.getSample (c, i) - byp.getSample (c, i)));
+            check (m < 1e-4f, "band BYPASS with Dynamic Cut armed sounds like Dynamic Cut off (max diff " + juce::String (m, 7) + ")");
+        }
+
+        // 6. state / presets: the per-band settings come back
+        {
+            auto q = makeProcessor (48000.0, 512);
+            setup (*q, req::Late, true, -40.0f, 4.5f);
+            juce::MemoryBlock mb; q->getStateInformation (mb);
+            auto r2 = makeProcessor (48000.0, 512);
+            r2->setStateInformation (mb.getData(), (int) mb.getSize());
+            pump (60);
+            check (getP (*r2, eqId (req::Late, 4, eqDynOn)) > 0.5f && std::abs (getP (*r2, eqId (req::Late, 4, eqDynThreshold)) + 40.0f) < 0.01f
+                   && std::abs (getP (*r2, eqId (req::Late, 4, eqDynMax)) - 4.5f) < 0.01f, "Dynamic Cut ON, threshold and max reduction restore from the project state");
+            auto fresh = makeProcessor (48000.0, 512);
+            bool allOff = true;
+            for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) allOff = allOff && getP (*fresh, eqId (b, i, eqDynOn)) < 0.5f;
+            check (allOff, "a new instance: Dynamic Cut off on every band");
+        }
+
+        // 7. NaN from upstream: the detector and the cut filters recover
+        {
+            req::ManualDynamicBank dyn; dyn.prepare (48000.0);
+            req::BandParams bands[req::kBands] {};
+            bands[0].used = true; bands[0].dynamic = true; bands[0].freq = 1000.0f; bands[0].q = 3.0f;
+            bands[0].dynamicThresholdDb = -54.0f; bands[0].dynamicMaxDb = 3.0f;
+            dyn.set (bands, true, true);
+            float l[256], r[256];
+            for (int i = 0; i < 256; ++i) l[i] = r[i] = std::numeric_limits<float>::quiet_NaN();
+            dyn.process (l, r, 256);
+            bool ok = true;
+            for (int k = 0; k < 40; ++k)
+            {
+                for (int i = 0; i < 256; ++i) l[i] = r[i] = (float) (0.25 * std::sin (2.0 * pi * 1000.0 * (k * 256 + i) / 48000.0));
+                dyn.process (l, r, 256);
+                if (k > 10) for (int i = 0; i < 256; ++i) ok = ok && std::isfinite (l[i]) && std::isfinite (r[i]);
+            }
+            check (ok && std::isfinite (dyn.reductionDb (0)), "a NaN block: Dynamic Cut recovers within ~60 ms (finite output, finite reduction)");
+            // silence: no denormals stuck, reduction back to 0
+            for (int k = 0; k < 800; ++k) { std::fill (l, l + 256, 0.0f); std::fill (r, r + 256, 0.0f); dyn.process (l, r, 256); }
+            check (dyn.reductionDb (0) < 0.01f, "silence: the reduction returns to 0 dB (" + juce::String (dyn.reductionDb (0), 4) + " dB)");
+        }
+
+        // 8. CPU: 24 armed bands (8 per bank) against none
+        {
+            auto time = [&] (bool all)
+            {
+                auto q = makeProcessor (48000.0, 512);
+                setP (*q, mix, 100.0f); setP (*q, eqOn, 1.0f);
+                if (all) for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i)
+                {
+                    setP (*q, eqId (b, i, eqUsed), 1); setP (*q, eqId (b, i, eqType), (float) req::Bell);
+                    setP (*q, eqId (b, i, eqFreq), 200.0f * (float) (i + 1)); setP (*q, eqId (b, i, eqQ), 3.0f); setP (*q, eqId (b, i, eqDynOn), 1.0f);
+                }
+                pump (60);
+                auto buf = material (48000.0, 10.0, 9);
+                const auto t0 = std::chrono::steady_clock::now();
+                run (*q, buf, 512);
+                return std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
+            };
+            const double t0 = time (false), t1 = time (true);
+            std::printf ("  CPU: 10 s of audio, no dynamic bands %.3f s, 24 armed bands %.3f s (+%.1f %% of real time)\n", t0, t1, (t1 - t0) / 10.0 * 100.0);
+            check (t1 - t0 < 0.5, "24 armed Dynamic Cut bands cost < 5 % of real time on this machine");
+        }
+    }
+#endif
+
     //==========================================================================
     section ("1.5 REVERB EQ and analyzer");
     {
@@ -1410,7 +2104,7 @@ int main (int argc, char** argv)
             pump (200);
             anyUsed = false;
             for (int b = 0; b < 3; ++b) for (int i = 0; i < 8; ++i) anyUsed = anyUsed || getP (*q, eqId (b, i, eqUsed)) > 0.5f;
-            check (drop.size() == 169 && getP (*q, eqOn) < 0.5f && ! anyUsed, "a 1.4 project (no EQ parameters) loads with REVERB EQ off and no band in use");
+            check (drop.size() == 1 + 3 * req::kBands * ParamIDs::eqNumFields && getP (*q, eqOn) < 0.5f && ! anyUsed, "a 1.4 project (no EQ parameters) loads with REVERB EQ off and no band in use");
 
             // factory presets carry no EQ: loading one turns the EQ off
             setP (*q, eqOn, 1); band (*q, 0, 0, req::Bell, 500, 12, 2);
@@ -1723,6 +2417,58 @@ int main (int argc, char** argv)
             return m;
         };
 
+       #ifdef MAS_STUDIO_DYN
+        {   // 1.7d: a confirmed marker is held >= 5 s after the resonance stops, marked as held, then released
+            const double fs = 48000.0;
+            auto x = noiseWithPeaks (fs, 4.0);
+            auto plain = pinkish (fs, 9.0, 21);
+            for (int i = 0; i < plain.getNumSamples(); ++i) x.push_back (0.25f * (plain.getSample (0, i) + plain.getSample (1, i)));
+            spec::SpectrumEngine eng;
+            bool at25 = false, heldFlag = false, at45 = true, liveBefore = false;
+            analyse (eng, x, fs, 0.3, 12.6, [&] (double tm)
+            {
+                const auto& mk = eng.detector.markers();
+                for (const auto& p : mk) if (std::abs (p.freq / 1200.0 - 1.0) < 0.015)
+                {
+                    if (tm > 3.5 && tm < 3.9 && ! p.held) liveBefore = true;
+                    if (tm > 8.4 && tm < 8.6) { at25 = true; heldFlag = heldFlag || p.held; }
+                }
+                if (tm > 10.6 && tm < 10.8) at45 = hasNear (mk, 1200.0);
+            });
+            check (liveBefore && at25 && heldFlag, "PEAK DETECT: the 1.2 kHz marker is still there (held) ~4.5 s after the resonance stopped");
+            check (! at45, "PEAK DETECT: and is released afterwards (gone ~6.7 s after the resonance stopped)");
+        }
+        {   // 1.7d: a fast-changing spectrum: six strong resonances, then three weaker new ones while the six are held.
+            // The live ones must get places among the six markers; the held ones keep the remaining places.
+            const double fs = 48000.0;
+            auto withPeaks = [&] (std::initializer_list<float> fr, float gain, double seconds, int seed)
+            {
+                auto buf = pinkish (fs, seconds, seed);
+                req::BandParams bp[8]; int k = 0;
+                for (float f : fr) { bp[k].used = true; bp[k].type = req::Bell; bp[k].freq = f; bp[k].gainDb = gain; bp[k].q = 18.0f; ++k; }
+                req::Bank bank; bank.prepare (fs); bank.set (bp, true, true);
+                bank.process (buf.getWritePointer (0), buf.getWritePointer (1), buf.getNumSamples());
+                std::vector<float> m ((size_t) buf.getNumSamples());
+                for (int i = 0; i < buf.getNumSamples(); ++i) m[(size_t) i] = 0.25f * (buf.getSample (0, i) + buf.getSample (1, i));
+                return m;
+            };
+            auto x = withPeaks ({ 250.0f, 450.0f, 800.0f, 1500.0f, 3000.0f, 6000.0f }, 18.0f, 3.0, 31);
+            const auto b = withPeaks ({ 600.0f, 2200.0f, 4300.0f }, 13.0f, 4.0, 32);
+            x.insert (x.end(), b.begin(), b.end());
+            spec::SpectrumEngine eng;
+            int liveShown = 0, heldShown = 0, total = 0;
+            analyse (eng, x, fs, 0.3, 5.8, [&] (double tm)
+            {
+                if (tm < 5.6) return;
+                const auto& mk = eng.detector.markers();
+                liveShown = 0; heldShown = 0; total = (int) mk.size();
+                for (const auto& p : mk) if (p.held) ++heldShown;
+                liveShown = (hasNear (mk, 600.0) ? 1 : 0) + (hasNear (mk, 2200.0) ? 1 : 0) + (hasNear (mk, 4300.0) ? 1 : 0);
+            });
+            check (liveShown == 3, "PEAK DETECT, fast-changing spectrum: all 3 new (weaker) resonances are shown (" + juce::String (liveShown) + " / 3)");
+            check (total <= 6 && heldShown >= 1, "  and the held markers of the previous six still fill the free places (" + juce::String (heldShown) + " held, " + juce::String (total) + " shown)");
+        }
+       #endif
         for (double fs : { 48000.0, 96000.0 })
         {
             const auto x = noiseWithPeaks (fs, 5.0);

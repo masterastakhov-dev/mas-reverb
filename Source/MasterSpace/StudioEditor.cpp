@@ -6,7 +6,7 @@ namespace studio
 namespace
 {
     constexpr float kTau = juce::MathConstants<float>::twoPi;
-    constexpr int kBarH = 52, kBodyH = 300, kBezelH = 24, kContentH = 380, kPageH = 440;
+    constexpr int kBarH = 52, kBodyH = 300, kBezelH = 24, kContentH = Panel::kContentHeight, kPageH = 440;
 
     juce::Colour rgb (int r, int g, int b) { return juce::Colour ((juce::uint8) r, (juce::uint8) g, (juce::uint8) b); }
     float easeInOut (float t) { return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow (-2.0f * t + 2.0f, 3.0f) * 0.5f; }
@@ -47,6 +47,222 @@ namespace
         juce::String text; float height; juce::Colour col { 0xff9aa6b8 };
     };
 }
+
+#ifdef MAS_STUDIO_DYN
+//==============================================================================
+// 1.7d SIGNAL RAILS: INPUT / OUTPUT energy rails. Two thin stereo bars (L / R) in a recessed glass slot:
+// BODY = RMS (~300 ms), a soft glowing fill; PEAK = sample peak, a thin bright marker with a short hold.
+// Scale -60 .. 0 dBFS, linear in dB. INPUT is cold (blue / turquoise), OUTPUT warm (gold / amber);
+// the OUTPUT peak turns red only from -3 dBFS (real level, nothing to do with saturation).
+class EnergyRail : public juce::Component
+{
+public:
+    enum Kind { input, output };
+    explicit EnergyRail (Kind k) : kind (k) { setInterceptsMouseClicks (false, false); }
+
+    struct Level { float rmsDb = -120.0f, peakDb = -120.0f; };
+    void setLevels (Level l, Level r, float warmth = 0.0f)
+    {
+        auto moved = [] (float a, float b) { return std::abs (juce::jmax (a, -61.0f) - juce::jmax (b, -61.0f)) > 0.04f; };
+        bool change = std::abs (warmth - warm) > 0.003f;
+        for (int c = 0; c < 2; ++c)
+        {
+            const Level& n = c == 0 ? l : r;
+            change = change || moved (n.rmsDb, ch[c].rmsDb) || moved (n.peakDb, ch[c].peakDb)
+                            || ((n.peakDb >= mas::RailBallistics::kOverDb) != (ch[c].peakDb >= mas::RailBallistics::kOverDb));
+        }
+        ch[0] = l; ch[1] = r; warm = warmth;
+        if (change) repaint();
+    }
+    Level level (int c) const { return ch[c]; }
+
+    static float xOf (float db, float x0, float x1) { return x0 + (x1 - x0) * juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = themeOf (*this);
+        const float W = (float) getWidth();
+        const juce::Rectangle<float> slot (4.0f, 16.0f, W - 8.0f, 17.0f);
+        const float x0 = slot.getX() + 5.0f, x1 = slot.getRight() - 5.0f;
+        // label + scale (engraved)
+        engraved (g, kind == input ? "INPUT" : "OUTPUT", { 4.0f, 0.0f, 80.0f, 12.0f }, inter (9.0f, true, 0.22f),
+                  juce::Colour (0xff9aa6b8), juce::Justification::centredLeft);
+        // the slot is cached (static), the light is live
+        Panel::drawCached (g, cache, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+        {
+            recess (gg, slot, 5.0f, rgb (4, 5, 8));
+            gg.setFont (inter (7.5f, true, 0.06f));
+            for (int db : { -48, -36, -24, -18, -12, -6, -3, 0 })
+            {
+                const float x = xOf ((float) db, x0, x1);
+                gg.setColour (rgb (150, 165, 185).withAlpha (db >= -6 ? 0.55f : 0.35f));
+                gg.fillRect (x - 0.5f, slot.getBottom() + 2.0f, 1.0f, db % 12 == 0 || db == -6 ? 4.0f : 2.5f);
+                if (db == -48 || db == -24 || db == -12 || db == -6 || db == 0)
+                    gg.drawText (juce::String (std::abs (db)), juce::Rectangle<float> (x - 12.0f, slot.getBottom() + 6.0f, 24.0f, 9.0f), juce::Justification::centred);
+            }
+            gg.setColour (juce::Colour (0xffff4a3a).withAlpha (0.35f));      // the red zone on the scale, -3 .. 0
+            gg.fillRect (xOf (-3.0f, x0, x1), slot.getBottom() + 2.0f, x1 - xOf (-3.0f, x0, x1), 1.0f);
+        });
+        // palette
+        const juce::Colour lo  = kind == input ? juce::Colour (0xff1f5fd6) : juce::Colour (0xffb8651a);
+        const juce::Colour mid = kind == input ? juce::Colour (0xff38c6e8) : juce::Colour (0xffe8a446);
+        const juce::Colour hi  = kind == input ? juce::Colour (0xff9ff3ff) : juce::Colour (0xffffdc96);
+        const juce::Colour rim = kind == input ? t.ind : studio::mix (t.gold, juce::Colour (0xffff8a3c), warm * 0.6f);
+        {
+        juce::Graphics::ScopedSaveState s (g);
+        juce::Path clip; clip.addRoundedRectangle (slot.reduced (1.5f), 4.0f);
+        g.reduceClipRegion (clip);
+        for (int c = 0; c < 2; ++c)
+        {
+            const float y = slot.getY() + 3.5f + (float) c * 5.5f, h = 4.0f;
+            const float xb = xOf (ch[c].rmsDb, x0, x1);
+            if (xb > x0 + 0.5f)
+            {
+                juce::ColourGradient body (lo.withAlpha (0.55f), x0, 0, hi, xb, 0, false);
+                body.addColour (0.7, mid);
+                for (int k = 3; k >= 1; --k) { g.setColour (mid.withAlpha (0.07f)); g.fillRoundedRectangle (x0, y - (float) k, xb - x0, h + 2.0f * (float) k, 2.0f); }
+                g.setGradientFill (body);
+                g.fillRoundedRectangle (x0, y, xb - x0, h, 1.5f);
+            }
+            if (ch[c].peakDb > -59.5f)
+            {
+                const float xp = xOf (ch[c].peakDb, x0, x1);
+                const bool over = ch[c].peakDb >= mas::RailBallistics::kOverDb;
+                const auto pc = over ? juce::Colour (0xffff4a3a) : hi;
+                g.setColour (pc.withAlpha (0.35f)); g.fillRect (xp - 2.5f, y - 1.0f, 5.0f, h + 2.0f);
+                g.setColour (pc); g.fillRect (xp - 0.75f, y - 0.5f, 1.5f, h + 1.0f);
+            }
+        }
+        }
+        // a thin light edge on the slot, tinted by the rail (warmer OUTPUT frame with more saturation: decoration only)
+        g.setColour (rim.withAlpha (0.22f));
+        g.drawRoundedRectangle (slot.reduced (0.5f), 5.0f, 0.8f);
+        engraved (g, "L", { slot.getX() - 1.0f, slot.getY() + 1.0f, 0.0f, 8.0f }, inter (6.5f, true), juce::Colour (0xff6c7686), juce::Justification::centredRight);
+    }
+
+private:
+    Kind kind;
+    Level ch[2];
+    float warm = 0.0f;
+    Panel::Cache cache;
+};
+#endif
+
+#ifdef MAS_STUDIO_DYN
+//==============================================================================
+// 1.7d: warm valve light behind a side grille. Three cached layers (recess, light at full heat, metal mesh)
+// rendered once per size / scale / theme; a heat change only redraws this small component with a different
+// light opacity, so warming up and cooling down cost almost nothing. UI only: the audio thread is not involved.
+class LampGrille : public juce::Component
+{
+public:
+    static constexpr int kPad = 22;     // room around the grille for the light spilling onto the plate
+    LampGrille() { setInterceptsMouseClicks (false, false); }
+
+    // heat: brightness 0..1; colour: 0 = soft amber .. 1 = deep red-orange (the saturation amount)
+    void setHeat (float h, float c = 0.0f)
+    {
+        h = juce::jlimit (0.0f, 1.0f, h); c = juce::jlimit (0.0f, 1.0f, c);
+        if (std::abs (h - heat) < 0.002f && std::abs (c - colour) < 0.004f && ! (h == 0.0f && heat != 0.0f)) return;
+        heat = h; colour = c;
+        repaint();
+    }
+    float getHeat() const { return heat; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = themeOf (*this);
+        const float W = (float) getWidth(), H = (float) getHeight();
+        const juce::Rectangle<float> r ((float) kPad, (float) kPad, W - 2.0f * kPad, H - 2.0f * kPad);
+        // warm light reflected on the brushed plate around the grille (subtle, only when lit)
+        const juce::Colour warm = juce::Colour (0xffffa04c).interpolatedWith (juce::Colour (0xffe0401c), colour);
+        if (heat > 0.001f)
+        {
+            juce::ColourGradient spill (warm.withAlpha (0.16f * heat), r.getCentreX(), r.getCentreY(),
+                                        warm.withAlpha (0.0f), r.getCentreX() + (float) kPad + r.getWidth() * 0.5f, r.getCentreY(), true);
+            g.setGradientFill (spill);
+            g.fillEllipse (r.expanded ((float) kPad - 2.0f, (float) kPad * 0.6f));
+        }
+        Panel::drawCached (g, base, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+        {
+            recess (gg, r.expanded (3.0f), 7.0f, rgb (3, 4, 6));
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            gg.reduceClipRegion (clip);
+            gg.setColour (rgb (5, 5, 7)); gg.fillRect (r);
+        });
+        if (heat > 0.001f)
+        {
+            auto lightLayer = [&] (Panel::Cache& cache, const char* key, juce::Colour ember, juce::Colour amber, juce::Colour core, float opacity)
+            {
+                if (opacity <= 0.001f) return;
+                juce::Graphics::ScopedSaveState s (g);
+                g.setOpacity (opacity);
+                Panel::drawCached (g, cache, juce::String (t.name) + key, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+                {
+                    juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+                    gg.reduceClipRegion (clip);
+                    juce::ColourGradient bg (ember.withAlpha (0.45f), r.getCentreX(), r.getY(), ember.withAlpha (0.4f), r.getCentreX(), r.getBottom(), false);
+                    bg.addColour (0.5, amber.withAlpha (0.7f));
+                    gg.setGradientFill (bg); gg.fillRect (r);
+                    for (int n = 0; n < 3; ++n)   // three hidden valves, slightly uneven
+                    {
+                        const float cy = r.getY() + r.getHeight() * (0.2f + 0.3f * (float) n), cx = r.getCentreX() + (n == 1 ? -3.0f : 2.0f);
+                        juce::ColourGradient glow (core, cx, cy, amber.withAlpha (0.0f), cx + 30.0f, cy + 44.0f, true);
+                        glow.addColour (0.35, amber.interpolatedWith (core, 0.4f).withAlpha (0.8f));
+                        gg.setGradientFill (glow);
+                        gg.fillEllipse (cx - 30.0f, cy - 46.0f, 60.0f, 92.0f);
+                    }
+                });
+            };
+            // soft amber light, and over it the fiery / deep red light of a hard-driven valve as the amount rises
+            lightLayer (light, "a", juce::Colour (0xff76280d), juce::Colour (0xffffa04c), juce::Colour (0xffffce83), heat);
+            lightLayer (lightRed, "r", juce::Colour (0xff4a0803), juce::Colour (0xffc22a14), juce::Colour (0xffff5a30), heat * colour);
+        }
+        Panel::drawCached (g, mesh, t.name, getWidth(), getHeight(), [&] (juce::Graphics& gg)
+        {
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            gg.reduceClipRegion (clip);
+            juce::Path web; web.addRectangle (r);
+            const float cr = 3.1f, dx = cr * 1.8f, dy = cr * 1.56f, ir = cr * 0.78f;
+            int j = 0;
+            for (float y = r.getY() - 2.0f; y < r.getBottom() + 4.0f; y += dy, ++j)
+                for (float x = r.getX() - 2.0f + ((j & 1) ? dx * 0.5f : 0.0f); x < r.getRight() + 4.0f; x += dx)
+                {
+                    juce::Path h;
+                    for (int k = 0; k < 6; ++k)
+                    {
+                        const float a = juce::MathConstants<float>::pi * (1.0f / 6.0f + (float) k / 3.0f);
+                        if (k == 0) h.startNewSubPath (x + std::cos (a) * ir, y + std::sin (a) * ir); else h.lineTo (x + std::cos (a) * ir, y + std::sin (a) * ir);
+                    }
+                    h.closeSubPath(); web.addPath (h);
+                }
+            web.setUsingNonZeroWinding (false);
+            gg.setColour (rgb (21, 23, 27)); gg.fillPath (web);
+            // the inner edges of the cells catch a little light: drawn once, faded with the light below
+        });
+        if (heat > 0.001f)
+        {
+            // light scattered in front of the mesh (the cells glow a little, like a real lamp behind a grille)
+            juce::Graphics::ScopedSaveState s (g);
+            juce::Path clip; clip.addRoundedRectangle (r, 5.0f);
+            g.reduceClipRegion (clip);
+            for (int n = 0; n < 3; ++n)
+            {
+                const float cy = r.getY() + r.getHeight() * (0.2f + 0.3f * (float) n), cx = r.getCentreX() + (n == 1 ? -3.0f : 2.0f);
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xffffc275).interpolatedWith (juce::Colour (0xffff6a3a), colour).withAlpha (0.28f * heat), cx, cy,
+                                                         warm.withAlpha (0.0f), cx + 22.0f, cy + 34.0f, true));
+                g.fillEllipse (cx - 22.0f, cy - 34.0f, 44.0f, 68.0f);
+            }
+            g.setColour (warm.withAlpha (0.22f * heat));      // warm rim on the inner metal
+            g.drawRoundedRectangle (r.reduced (0.9f), 4.2f, 0.75f);
+        }
+    }
+
+private:
+    float heat = 0.0f, colour = 0.0f;
+    Panel::Cache base, light, lightRed, mesh;
+};
+#endif
 
 //==============================================================================
 // MAIN: DEPTH in the centre, DECAY and MIX on the sides, EARLY / LATE / PRE-DELAY / BLOOM, the module rail
@@ -118,8 +334,70 @@ public:
             b->setBounds (640 + i * 142, 340, 136, 32);
             modAtt.add (new juce::AudioProcessorValueTreeState::ButtonAttachment (proc.apvts, modIds[i], *b));
         }
+       #ifdef MAS_STUDIO_DYN
+        satMix.setSliderStyle (juce::Slider::LinearHorizontal);
+        satMix.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 16);
+        satMix.getProperties().set ("hfader", true);
+        satMix.setBounds (930, 375, 128, 16);
+        satMix.setTooltip ("SATURATION MIX: how much HARMONIC COLOR is mixed in (the real HARMONIC COLOR Mix). Shift = fine, double click = default");
+        addAndMakeVisible (satMix);
+        satAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ParamIDs::hcMix, satMix);
+        if (auto* p = proc.apvts.getParameter (ParamIDs::hcMix)) satMix.setDoubleClickReturnValue (true, (double) p->convertFrom0to1 (p->getDefaultValue()));
+        satMix.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt (v)) + " %"; };
+        satMix.updateText();
+        addAndMakeVisible (railIn); addAndMakeVisible (railOut);
+        railIn.setBounds (72, 248, 176, 52);       // left plate, under DECAY
+        railOut.setBounds (852, 248, 176, 52);     // right plate, under MIX
+        for (auto* l : { &lampL, &lampR }) addAndMakeVisible (*l);
+        lampL.setBounds (36 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
+        lampR.setBounds (1042 - LampGrille::kPad, 52 - LampGrille::kPad, 22 + 2 * LampGrille::kPad, 212 + 2 * LampGrille::kPad);
+        for (auto* l : { &lampL, &lampR }) l->toBack();
+        railTimer.onTick = [this] { tickRails(); };
+        railTimer.startTimerHz (60);
+       #endif
         sync();
     }
+
+   #ifdef MAS_STUDIO_DYN
+    ~MainPage() override { railTimer.stopTimer(); proc.ioMeters.wanted.store (false); }
+
+    // SIGNAL RAILS: the audio thread measures (atomics), this only animates. 60 Hz while MAIN is on screen;
+    // nothing is measured while it is hidden or the editor is closed.
+    void tickRails()
+    {
+        bool show = true;           // the whole chain visible (isShowing() also needs a desktop window, which tests have not)
+        for (auto* c = static_cast<juce::Component*> (this); c != nullptr && show; c = c->getParentComponent()) show = c->isVisible();
+        if (proc.ioMeters.wanted.load (std::memory_order_relaxed) != show) proc.ioMeters.wanted.store (show);
+        if (! show) { railLastMs = 0.0; return; }
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const float dt = railLastMs > 0.0 ? (float) juce::jlimit (0.0, 0.1, (nowMs - railLastMs) * 0.001) : 1.0f / 60.0f;
+        railLastMs = nowMs;
+        // a host that stops calling the plugin (transport stopped, track removed) reads as silence, not a frozen level
+        const auto blocks = proc.ioMeters.blocks.load (std::memory_order_relaxed);
+        if (blocks != railBlocks) { railBlocks = blocks; railStale = 0.0f; } else railStale += dt;
+        const bool live = railStale < 0.5f;
+        for (int io = 0; io < 2; ++io)
+            for (int c = 0; c < 2; ++c)
+            {
+                const auto side = io == 0 ? mas::IOMeters::input : mas::IOMeters::output;
+                const float pk = proc.ioMeters.takePeak (side, c);
+                railBal[io][c].tick (live ? proc.ioMeters.rmsDb[io][c].load (std::memory_order_relaxed) : mas::IOMeters::kFloorDb,
+                                     live ? pk : 0.0f, dt);
+            }
+        // decoration only: the OUTPUT frame warms up with SATURATION MIX while HARMONIC COLOR is running
+        const bool hc = plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f && plainOf (proc.apvts, ParamIDs::mode) < 0.5f;
+        const float warmGoal = hc ? juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcMix) / 100.0f) : 0.0f;
+        railWarm += (1.0f - std::exp (-dt / 0.3f)) * (warmGoal - railWarm);
+        auto lv = [this] (int io, int c) { return EnergyRail::Level { railBal[io][c].rmsDb, railBal[io][c].peakDb }; };
+        railIn.setLevels (lv (0, 0), lv (0, 1));
+        railOut.setLevels (lv (1, 0), lv (1, 1), railWarm);
+    }
+   #endif
+
+   #ifdef MAS_STUDIO_DYN
+    void setLampHeat (float h, float c) { lampL.setHeat (h, c); lampR.setHeat (h, c); }
+    float lampHeat() const { return lampL.getHeat(); }
+   #endif
 
     const Theme& th() const { return themeOf (panel); }
 
@@ -146,6 +424,9 @@ public:
         const bool dimBloom = ! atmos;
         if ((bool) bl->getProperties()["dim"] != dimBloom) { bl->getProperties().set ("dim", dimBloom); bl->repaint(); }
         bloomNote.setVisible (dimBloom && ! ir);
+       #ifdef MAS_STUDIO_DYN
+        satMix.setAlpha (plainOf (proc.apvts, hcOn) > 0.5f ? 1.0f : 0.55f);    // still adjustable while HARMONIC COLOR is off
+       #endif
     }
 
     void themeChanged()
@@ -189,6 +470,20 @@ private:
     juce::TextButton depthView { "DEPTH VIEW" }, irKey { "IR" };
     juce::OwnedArray<juce::TextButton> algo, route, mods;
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> modAtt;
+   #ifdef MAS_STUDIO_DYN
+    LampGrille lampL, lampR;
+   public:
+    EnergyRail railIn { EnergyRail::input }, railOut { EnergyRail::output };
+   private:
+    struct TickTimer : juce::Timer { std::function<void()> onTick; void timerCallback() override { if (onTick) onTick(); } };
+    TickTimer railTimer;
+    mas::RailBallistics railBal[2][2];
+    double railLastMs = 0.0;
+    std::uint32_t railBlocks = 0;
+    float railStale = 0.0f, railWarm = 0.0f;
+    FineSlider satMix;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> satAtt;
+   #endif
 };
 
 //==============================================================================
@@ -623,6 +918,9 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
 {
     setLookAndFeel (&lnf);
     wordmark = juce::ImageCache::getFromMemory (BinaryData::wordmark_png, BinaryData::wordmark_pngSize);
+   #ifdef MAS_STUDIO_DYN
+    emblem = juce::ImageCache::getFromMemory (BinaryData::emblem_png, BinaryData::emblem_pngSize);
+   #endif
     themeIndex = juce::jlimit (0, kNumThemes - 1, (int) proc.apvts.state.getProperty ("studioTheme", 0));
     lnf.setThemeIndex (themeIndex);
     pro = (bool) proc.apvts.state.getProperty ("studioPro", false);
@@ -806,6 +1104,7 @@ void Panel::showThemeMenu()
                      [safe = juce::Component::SafePointer<Panel> (this)] (int r) { if (safe != nullptr && r > 0) safe->setTheme (r - 1); });
 }
 
+
 void Panel::loadIRFile (const juce::File& f)
 {
     classic->loadIRFile (f);
@@ -816,7 +1115,40 @@ void Panel::loadIRFile (const juce::File& f)
 void Panel::timerCallback()
 {
     main->sync();
+#ifdef MAS_STUDIO_DYN
+    // Valve light behind the side grilles.
+    //  HARMONIC COLOR OFF: a very quiet decorative idle glow (it does not mean that any saturation is running).
+    //  ON: brightness and colour follow the real saturation amount = MIX (DRIVE adds a little, so does the signal it is
+    //      working on, measured by the engine): soft amber -> fiery -> deep red-orange at the top. Warm-up ~0.3 s,
+    //      cool-down ~0.8 s. Visual only: nothing here reaches the audio thread.
+    {
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const double dt = lampLastMs > 0.0 ? juce::jlimit (0.0, 0.1, (nowMs - lampLastMs) * 0.001) : 0.03;
+        lampLastMs = nowMs;
+        const bool hc = plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f && plainOf (proc.apvts, ParamIDs::mode) < 0.5f;
+        const float drive = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcDrive) / 100.0f);
+        const float hmix = juce::jlimit (0.0f, 1.0f, plainOf (proc.apvts, ParamIDs::hcMix) / 100.0f);
+        const float inDb = proc.spaceLevel[0].load (std::memory_order_relaxed);
+        const float load = juce::jlimit (0.0f, 1.0f, (inDb + 48.0f) / 36.0f);
+        lampLoad += (float) (1.0 - std::exp (-dt / 0.35)) * (load - lampLoad);
+        // MIX 0 % (or HARMONIC COLOR OFF) = the idle glow; the light rises with the real amount of saturation mixed in.
+        // ON at 0 % is only a hair above idle; DRIVE and the measured signal add a little, scaled by the amount itself.
+        constexpr float idle = 0.12f, onFloor = 0.02f, top = 0.92f;
+        const float amount = hc ? juce::jlimit (0.0f, 1.0f, std::pow (hmix, 0.8f) * (0.8f + 0.2f * drive)) : 0.0f;
+        const float goal = hc ? juce::jlimit (0.0f, 1.0f, idle + onFloor + (top - idle - onFloor) * amount + 0.08f * lampLoad * amount) : idle;
+        const float goalCol = hc ? amount : 0.0f;
+        const double tau = goal > lampHeat ? 0.28 : 0.72;
+        const float k = (float) (1.0 - std::exp (-dt / tau));
+        lampHeat += k * (goal - lampHeat);
+        lampColour += k * (goalCol - lampColour);
+        if (page == 0) main->setLampHeat (lampHeat, lampColour);
+    }
+#endif
+   #ifdef MAS_STUDIO_DYN
+    const bool wantLevels = page == 0 && isVisible() && (drawerT > 0.0f || plainOf (proc.apvts, ParamIDs::hcOn) > 0.5f);
+   #else
     const bool wantLevels = page == 0 && drawerT > 0.0f && isVisible();
+   #endif
     if (proc.spaceLevelsWanted.load() != wantLevels) proc.spaceLevelsWanted.store (wantLevels);
     if (room != nullptr && page == 0 && drawerT > 0.0f) room->tick();
     static int slow = 0;
@@ -840,7 +1172,8 @@ void Panel::paint (juce::Graphics& g)
 {
     const int h = page == 0 ? barY() : contentY() + kPageH;
     const auto& t = theme (themeIndex);
-    drawCached (g, topCache, juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x"), kW, h, [this, h] (juce::Graphics& gg) { renderTop (gg, h); });
+    const juce::String cacheKey = juce::String (t.name) + (pro ? "P" : "M") + (page == 0 ? "0" : "x");
+    drawCached (g, topCache, cacheKey, kW, h, [this, h] (juce::Graphics& gg) { renderTop (gg, h); });
 }
 
 void Panel::renderTop (juce::Graphics& g, int h)
@@ -876,6 +1209,40 @@ void Panel::renderTop (juce::Graphics& g, int h)
         g.drawText ("MASTER SPACE", tr, juce::Justification::centred);
     }
     {
+       #ifdef MAS_STUDIO_DYN
+        // 1.7d: the original brand emblem above the wordmark, in place of the decorative wave. A quiet premium
+        // watermark: proportional (never stretched), centred on the wordmark, rendered once into the cached top
+        // layer at the physical pixel size (progressive down-scaling, so the small dots and the profile stay clean).
+        if (emblem.isValid())
+        {
+            const float eh = 35.0f, ew = eh * (float) emblem.getWidth() / (float) emblem.getHeight();
+            const float cx = 40.0f + 75.0f;                     // centre of the wordmark (x 40, width 150)
+            const juce::Rectangle<float> er (cx - ew * 0.5f, 61.0f - eh, ew, eh);
+            const float sc = juce::jmax (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+            const int pw = juce::roundToInt (ew * sc), ph = juce::roundToInt (eh * sc);
+            juce::Image img = emblem.convertedToFormat (juce::Image::ARGB);
+            while (img.getHeight() > ph * 2)
+                img = img.rescaled (img.getWidth() / 2, img.getHeight() / 2, juce::Graphics::highResamplingQuality);
+            img = img.rescaled (pw, ph, juce::Graphics::highResamplingQuality);
+            {
+                // the original brand colours, slightly muted (owner's choice A): a watermark, not a second focal point
+                juce::Image::BitmapData bd (img, juce::Image::BitmapData::readWrite);
+                for (int y = 0; y < bd.height; ++y)
+                    for (int x = 0; x < bd.width; ++x)
+                    {
+                        auto c = bd.getPixelColour (x, y);
+                        const float a = c.getFloatAlpha();
+                        if (a <= 0.0f) continue;
+                        const float lum = 0.2126f * c.getFloatRed() + 0.7152f * c.getFloatGreen() + 0.0722f * c.getFloatBlue();
+                        const auto grey = juce::Colour::fromFloatRGBA (lum, lum, lum, a);
+                        bd.setPixelColour (x, y, c.interpolatedWith (grey, 0.28f).withMultipliedBrightness (0.86f).withAlpha (a));
+                    }
+            }
+            g.setOpacity (0.82f);
+            g.drawImage (img, er, juce::RectanglePlacement::centred);
+            g.setOpacity (1.0f);
+        }
+       #else
         juce::Path wave;
         const float wx = 40, wy = 46;
         const float amps[] = { 0, 2, 5, 9, 3, 12, 6, 14, 4, 9, 2, 0 };
@@ -883,6 +1250,7 @@ void Panel::renderTop (juce::Graphics& g, int h)
         for (int i = 0; i < 12; ++i) wave.lineTo (wx + 12 + (float) i * 7, wy - amps[i] * ((i % 2) ? 1.0f : -1.0f));
         wave.lineTo (wx + 110, wy);
         glowStroke (g, wave, t.ind, 1.5f, 2.5f, 0.95f);
+       #endif
         if (wordmark.isValid())
         {
             const float ww = 150.0f, wh = ww * (float) wordmark.getHeight() / (float) wordmark.getWidth();
@@ -899,15 +1267,19 @@ void Panel::renderTop (juce::Graphics& g, int h)
         plate (g, { 26, y, 236, 316 }, 16.0f, t);
         plate (g, { 270, y, 560, 316 }, 18.0f, t);
         plate (g, { 838, y, 236, 316 }, 16.0f, t);
+#ifdef MAS_STUDIO_DYN
+        // the side grilles are LampGrille components (lit by HARMONIC COLOR)
+#else
         grille (g, { 36, y + 52, 22, 212 }, t);
         grille (g, { 1042, y + 52, 22, 212 }, t);
+#endif
         goldLine (g, 476, y + 30, y + 290, t);
         goldLine (g, 624, y + 30, y + 290, t);
-        plate (g, { 26, y + 324, W - 52, 56 }, 14.0f, t, 0.035f, false);
-        recess (g, { 36, y + 332, W - 72, 42 }, 10.0f, mix (t.tint, juce::Colours::black, 0.5f));
+        plate (g, { 26, y + 324, W - 52, 56.0f + (float) (kContentH - 380) }, 14.0f, t, 0.035f, false);
+        recess (g, { 36, y + 332, W - 72, 42.0f + (float) (kContentH - 380) }, 10.0f, mix (t.tint, juce::Colours::black, 0.5f));
         // the light line from DEPTH down to the drawer
         g.setColour (mix (t.ind, juce::Colours::white, 0.3f).withAlpha (0.9f));
-        g.fillRect (549.0f, y + 380.0f, 2.0f, 8.0f);
+        g.fillRect (549.0f, y + (float) kContentH, 2.0f, 8.0f);
     }
     else
         plate (g, { 26, y, W - 52, (float) kPageH }, 18.0f, t);

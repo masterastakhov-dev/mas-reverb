@@ -5,6 +5,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include "MSEngine.h"
 #include "legacy/MSEngine11.h"
+#include "IOMeters.h"
 #include <map>
 
 namespace mspreset { class PresetManager; }
@@ -149,8 +150,16 @@ namespace ParamIDs
     // States and presets without them load with the EQ off and no band in use.
     inline constexpr const char* eqOn = "eqon";
     inline constexpr char eqBankChar[3] = { 'w', 'e', 'l' };
-    inline constexpr char eqFieldChar[7] = { 'u', 'b', 't', 'f', 'g', 'q', 's' };
-    enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope, eqNumFields };
+    inline constexpr char eqFieldChar[] = { 'u', 'b', 't', 'f', 'g', 'q', 's'
+#ifdef MAS_STUDIO_DYN
+                                             , 'd', 'h', 'm'
+#endif
+                                           };
+    enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope,
+#ifdef MAS_STUDIO_DYN
+                   eqDynOn, eqDynThreshold, eqDynMax,
+#endif
+                   eqNumFields };
     inline juce::String eqId (int bank, int band, int field)
     {
         return juce::String ("eq") + juce::String::charToString ((juce::juce_wchar) eqBankChar[bank]) + juce::String (band + 1)
@@ -222,6 +231,11 @@ public:
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+   #ifdef MAS_STUDIO_DYN
+    // host bypass: the audio is JUCE's default bypass, unchanged; only the SIGNAL RAILS see it
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlockBypassed;
+   #endif
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -304,6 +318,10 @@ public:
     // only while the display asks for them
     std::atomic<float> spaceLevel[5] { { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f }, { -140.0f } };
     std::atomic<bool> spaceLevelsWanted { false };
+   #ifdef MAS_STUDIO_DYN
+    std::atomic<float> dynReduction[3][8] {};     // Dynamic Cut: current reduction per bank / band, dB (>= 0)
+    mas::IOMeters ioMeters;                       // SIGNAL RAILS: INPUT (before processing) / OUTPUT (after everything)
+   #endif
     std::atomic<int> spaceVisual { 0 };                          // 0 FULL, 1 ECO, 2 OFF (a view setting, not a parameter)
     req::Settings readEq() const;                                // current EQ settings (any thread)
     bool eqAvailable() const { return riMeters.engineAvailable.load(); }   // algorithmic 1.2 engine only

@@ -210,8 +210,21 @@ struct Model
     }
     void setRaw (int i, int field, float plain) { auto* r = prm[bank][i][field]; r->setValueNotifyingHost (r->convertTo0to1 (plain)); }
     // one complete edit (host undo step / automation gesture)
+#ifdef MAS_STUDIO_DYN
+    // a Dynamic Cut band has no static gain: its gain is the live reduction only
+    bool lockedGain (int i, int field) const { return field == ParamIDs::eqGain && raw (i).used && raw (i).dynamic && raw (i).type == req::Bell; }
+    void set (int i, int field, float plain) { if (lockedGain (i, field)) plain = 0.0f; ensure (i); auto* r = prm[bank][i][field]; r->beginChangeGesture(); r->setValueNotifyingHost (r->convertTo0to1 (plain)); r->endChangeGesture(); refresh(); }
+    void drag (int i, int field, float plain) { if (lockedGain (i, field)) plain = 0.0f; setRaw (i, field, plain); refresh(); }
+    bool anyOtherBandUsed (int bk, int i) const
+    {
+        for (int b = 0; b < req::numBanks; ++b) for (int k = 0; k < req::kBands; ++k)
+            if ((b != bk || k != i) && s.band[b][k].used) return true;
+        return false;
+    }
+#else
     void set (int i, int field, float plain) { ensure (i); auto* r = prm[bank][i][field]; r->beginChangeGesture(); r->setValueNotifyingHost (r->convertTo0to1 (plain)); r->endChangeGesture(); refresh(); }
     void drag (int i, int field, float plain) { setRaw (i, field, plain); refresh(); }
+#endif
     void begin (int i, int field) { ensure (i); prm[bank][i][field]->beginChangeGesture(); }
     void end (int i, int field) { prm[bank][i][field]->endChangeGesture(); }
     void ensure (int i)
@@ -226,10 +239,17 @@ struct Model
     {
         ensure (i);
         setRaw (i, ParamIDs::eqType, (float) type); setRaw (i, ParamIDs::eqQ, typeQ (type));
+#ifdef MAS_STUDIO_DYN
+        if (type != req::Bell) setRaw (i, ParamIDs::eqDynOn, 0.0f);
+#endif
         if (req::isCut (type)) setRaw (i, ParamIDs::eqGain, 0.0f);
         refresh();
     }
-    void resetBand (int i) { setRaw (i, ParamIDs::eqUsed, 0.0f); setRaw (i, ParamIDs::eqBypass, 0.0f); refresh(); }   // main band: back home and out of the signal; free band: removed
+    void resetBand (int i) {
+#ifdef MAS_STUDIO_DYN
+        setRaw (i, ParamIDs::eqDynOn, 0.0f);
+#endif
+        setRaw (i, ParamIDs::eqUsed, 0.0f); setRaw (i, ParamIDs::eqBypass, 0.0f); refresh(); }   // main band: back home and out of the signal; free band: removed
 
     // ---- PEAK TO EQ: prepares a Bell at the peak, gain 0 dB. Never cuts anything by itself.
     int freeBandForPeak() const
@@ -238,13 +258,21 @@ struct Model
         for (int i : { 1, 2 }) if (! raw (i).used) return i;
         return -1;
     }
-    void assignPeak (int i, float freq, float q)
+    void assignPeak (int i, float freq, float q, bool dynamic = false)
     {
+#ifndef MAS_STUDIO_DYN
+        juce::ignoreUnused (dynamic);
+#endif
         undoBank = bank; undoBand = i; undoValid = true;
         for (int f = 0; f < ParamIDs::eqNumFields; ++f) undoVal[f] = prm[bank][i][f]->getValue();
         setRaw (i, ParamIDs::eqType, (float) req::Bell); setRaw (i, ParamIDs::eqFreq, juce::jlimit (20.0f, 20000.0f, freq));
         setRaw (i, ParamIDs::eqQ, juce::jlimit (0.1f, 18.0f, q)); setRaw (i, ParamIDs::eqGain, 0.0f);
         setRaw (i, ParamIDs::eqBypass, 0.0f); setRaw (i, ParamIDs::eqSlope, 1.0f); setRaw (i, ParamIDs::eqUsed, 1.0f);
+#ifdef MAS_STUDIO_DYN
+        setRaw (i, ParamIDs::eqDynOn, dynamic ? 1.0f : 0.0f);
+        setRaw (i, ParamIDs::eqDynThreshold, -36.0f);
+        setRaw (i, ParamIDs::eqDynMax, 3.0f);
+#endif
         refresh(); sel = i;
     }
     void undoPeak()
@@ -307,6 +335,10 @@ public:
     void clearPeak() { std::fill (peakA.begin(), peakA.end(), -200.0f); }
     void poke() { tipUntil = juce::Time::getMillisecondCounter() + 2200; }
     const std::vector<spec::Peak>& markers() const { return engA.detector.markers(); }
+#ifdef MAS_STUDIO_DYN
+    float dynShown[req::kBands] = {};
+    mutable std::map<int, float> heldY;
+#endif
 
     // ---- analyzer: FFT of the real signal from the DSP taps (smoothing is for the picture only)
     void tick (double dt)
@@ -405,8 +437,23 @@ public:
                     const bool hov = p.id == hoverMarker;
                     juce::Path dm; dm.addQuadrilateral (c.x, c.y - 4.5f, c.x + 3.6f, c.y, c.x, c.y + 4.5f, c.x - 3.6f, c.y);
                     g.setColour (juce::Colour (0xff0b0f15)); g.fillPath (dm);
-                    g.setColour (juce::Colours::white.withAlpha (hov ? 1.0f : 0.85f)); g.strokePath (dm, juce::PathStrokeType (hov ? 1.6f : 1.1f));
-                    g.setColour (juce::Colours::white.withAlpha (0.18f)); g.fillRect (c.x - 0.5f, c.y + 6.0f, 1.0f, juce::jmax (0.0f, y1 - c.y - 6.0f));
+#ifdef MAS_STUDIO_DYN
+                    g.setColour ((p.fundamental ? col::gold : juce::Colours::white).withAlpha (hov ? 1.0f : (p.held ? 0.6f : 0.85f)));
+#else
+                    g.setColour (juce::Colours::white.withAlpha (hov ? 1.0f : 0.85f));
+#endif
+                    g.strokePath (dm, juce::PathStrokeType (hov ? 1.6f : 1.1f));
+                   #ifdef MAS_STUDIO_DYN
+                    if (hov)
+                    {   // hover: a clear target (halo + brighter line) — this marker will take the click
+                        g.setColour (juce::Colour (0xffffa04c).withAlpha (0.18f)); g.fillEllipse (c.x - 11.0f, c.y - 11.0f, 22.0f, 22.0f);
+                        g.setColour (juce::Colour (0xffffa04c).withAlpha (0.8f)); g.drawEllipse (c.x - 11.0f, c.y - 11.0f, 22.0f, 22.0f, 1.0f);
+                    }
+                    g.setColour (juce::Colours::white.withAlpha (hov ? 0.45f : 0.18f));
+                   #else
+                    g.setColour (juce::Colours::white.withAlpha (0.18f));
+                   #endif
+                    g.fillRect (c.x - 0.5f, c.y + 6.0f, 1.0f, juce::jmax (0.0f, y1 - c.y - 6.0f));
                 }
             g.restoreState();
             const int srcKey = md.srcKey();
@@ -445,6 +492,55 @@ public:
         g.saveState(); g.reduceClipRegion (juce::Rectangle<float> (x0, y0, x1 - x0, y1 - y0).toNearestInt());
         if (haveSel && ! sb.bypass && tip > 0.0f) { g.setColour (col::gold.withAlpha (0.09f * a * tip)); g.fillPath (selFill); }
         g.setColour (col::gold.withAlpha (a)); g.strokePath (curve, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+#ifdef MAS_STUDIO_DYN
+        // Dynamic Cut at work: the curve as it is right now (amber), measured in the engine
+        {
+            float red[req::kBands] = {};
+            bool any = false;
+            for (int i = 0; i < req::kBands; ++i)
+            {
+                const auto& bd = md.raw (i);
+                if (md.s.on && bd.used && ! bd.bypass && bd.dynamic && bd.type == req::Bell)
+                {
+                    red[i] = md.proc.dynReduction[md.bank][i].load (std::memory_order_relaxed);
+                    any = any || red[i] > 0.05f;
+                }
+            }
+            if (any)
+            {
+                juce::Path live, area;
+                for (int x = 0; x <= n; ++x)
+                {
+                    const double f = juce::jmin ((double) fOf (x0 + (float) x), 0.499 * fs);
+                    double tot = 0.0, dyn = 0.0;
+                    for (int i = 0; i < req::kBands; ++i)
+                    {
+                        tot += req::bandMagnitudeDb (md.raw (i), f, fs);
+                        if (red[i] > 0.0f) { auto vb = md.raw (i); vb.gainDb = -red[i]; dyn += req::bandMagnitudeDb (vb, f, fs); }
+                    }
+                    const float y = yOf ((float) juce::jlimit (-40.0, 40.0, tot + dyn)), ys = yOf ((float) juce::jlimit (-40.0, 40.0, tot));
+                    if (x == 0) { live.startNewSubPath (x0, y); area.startNewSubPath (x0, ys); } else live.lineTo (x0 + (float) x, y);
+                    if (x > 0) area.lineTo (x0 + (float) x, ys);
+                }
+                for (int x = n; x >= 0; --x)
+                {
+                    const double f = juce::jmin ((double) fOf (x0 + (float) x), 0.499 * fs);
+                    double tot = 0.0;
+                    for (int i = 0; i < req::kBands; ++i)
+                    {
+                        tot += req::bandMagnitudeDb (md.raw (i), f, fs);
+                        if (red[i] > 0.0f) { auto vb = md.raw (i); vb.gainDb = -red[i]; tot += req::bandMagnitudeDb (vb, f, fs); }
+                    }
+                    area.lineTo (x0 + (float) x, yOf ((float) juce::jlimit (-40.0, 40.0, tot)));
+                }
+                area.closeSubPath();
+                const juce::Colour amber (0xffffa04c);
+                g.setColour (amber.withAlpha (0.16f)); g.fillPath (area);
+                g.setColour (amber.withAlpha (0.9f)); g.strokePath (live, juce::PathStrokeType (1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+            for (int i = 0; i < req::kBands; ++i) dynShown[i] = red[i];
+        }
+#endif
         g.restoreState();
         for (int i = 0; i < req::kBands; ++i)
         {
@@ -452,6 +548,18 @@ public:
             const auto bd = md.view (i);
             const auto p = pointOf (bd);
             const bool sel = i == md.sel;
+#ifdef MAS_STUDIO_DYN
+            if (bd.used && bd.dynamic && bd.type == req::Bell)
+            {
+                const juce::Colour amber (0xffffa04c);
+                g.setColour (amber.withAlpha (0.85f * a)); g.drawEllipse (p.x - 7.5f, p.y - 7.5f, 15.0f, 15.0f, 1.2f);
+                const float r = dynShown[i];
+                const juce::String txt = r > 0.05f ? "-" + juce::String (r, 1) + " dB" : "DYN";
+                g.setFont (font (9.0f, true, 0.06f));
+                g.setColour (amber.withAlpha ((r > 0.05f ? 1.0f : 0.7f) * a));
+                g.drawText (txt, juce::Rectangle<float> (p.x - 30.0f, p.y + 9.0f, 60.0f, 11.0f), juce::Justification::centred);
+            }
+#endif
             if (sel && ! req::isCut (bd.type))
             {
                 const float h = bwOct (bd.q) * 0.5f, xa = xOf (juce::jlimit (20.0f, 20000.0f, bd.freq * std::pow (2.0f, -h))), xb = xOf (juce::jlimit (20.0f, 20000.0f, bd.freq * std::pow (2.0f, h)));
@@ -472,7 +580,13 @@ public:
                 {
                     const char* bn[] = { "WET", "EARLY", "LATE" };
                     t1 << fmtFreq (p.freq) << dot << juce::String (p.levelDb, 1) << " dBFS" << dot << "+" << juce::String (p.promDb, 1) << " dB over neighbours" << dot << "width " << (p.bwHz < 10.0f ? juce::String (p.bwHz, 1) : juce::String (juce::roundToInt (p.bwHz))) << " Hz";
+#ifdef MAS_STUDIO_DYN
+                    if (p.held) t1 << dot << "held (not detected right now)";
+                    if (p.fundamental) t1 << dot << "fundamental";
+                    t2 << "click / drag down: DYNAMIC CUT on " << bn[md.bank] << " (drag = threshold)   ·   right click: STATIC EQ";
+#else
                     t2 << "click: prepare a " << bn[md.bank] << " EQ band here (gain stays 0 dB)";
+#endif
                     at = markerPos (p); ta = 1.0f;
                 }
         if (ta == 0.0f && haveSel && tip > 0.0f)
@@ -480,6 +594,9 @@ public:
             t1 << Model::roleName (md.sel) << dot;
             if (req::isCut (sb.type)) t1 << typeName (sb.type) << dot << fmtFreq (sb.freq) << dot << req::slopeDb (sb.slope) << " dB/oct";
             else t1 << fmtFreq (sb.freq) << dot << fmtGain (sb.gainDb) << dot << "Q " << juce::String (sb.q, 2);
+#ifdef MAS_STUDIO_DYN
+            if (sb.dynamic) t1 << dot << "DYNAMIC CUT  thr " << juce::String (sb.dynamicThresholdDb, 1) << " dBFS, max " << juce::String (sb.dynamicMaxDb, 1) << " dB  (drag up/down = threshold)";
+#endif
             if (sb.bypass) t1 << dot << "bypass";
             at = pointOf (sb); ta = tip;
         }
@@ -497,7 +614,35 @@ public:
         }
         g.setFont (font (10.5f, true, 0.1f)); g.setColour (col::dim.withAlpha (0.95f));
         if (! avail) g.drawText ("REVERB EQ: ALGO MODE, ENGINE 1.2", juce::Rectangle<float> (x0, y1 - 20.0f, x1 - x0, 14.0f), juce::Justification::centred);
-        else if (! md.s.on) g.drawText ("REVERB EQ OFF", juce::Rectangle<float> (x0, y1 - 20.0f, x1 - x0, 14.0f), juce::Justification::centred);
+        else if (! md.s.on)
+        {
+           #ifdef MAS_STUDIO_DYN
+            bool anyDyn = false;
+            for (int b = 0; b < req::numBanks; ++b) for (int i = 0; i < req::kBands; ++i) anyDyn = anyDyn || (md.s.band[b][i].used && md.s.band[b][i].dynamic);
+            if (anyDyn) { g.setColour (juce::Colour (0xffffa04c)); g.drawText ("REVERB EQ OFF: DYNAMIC CUT INACTIVE (switch REVERB EQ ON to hear it)", juce::Rectangle<float> (x0, y1 - 20.0f, x1 - x0, 14.0f), juce::Justification::centred); }
+            else
+           #endif
+            g.drawText ("REVERB EQ OFF", juce::Rectangle<float> (x0, y1 - 20.0f, x1 - x0, 14.0f), juce::Justification::centred);
+        }
+       #ifdef MAS_STUDIO_DYN
+        // threshold drag: the value and the live gain reduction next to the cursor
+        if (drag >= 0 && (dragMode == 4 || (dragMode == 1 && dragMoved && isDyn (drag))))
+        {
+            const auto& bd = md.raw (drag);
+            const juce::String s1 = "THRESHOLD " + juce::String (bd.dynamicThresholdDb, 1) + " dBFS",
+                               s2 = "GAIN REDUCTION " + (dynShown[drag] > 0.05f ? "-" + juce::String (dynShown[drag], 1) : juce::String ("0.0")) + " dB  (max " + juce::String (bd.dynamicMaxDb, 1) + ")";
+            g.setFont (font (10.5f, true, 0.04f));
+            const float w = juce::jmax (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), s1), juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), s2)) + 20.0f, h = 36.0f;
+            auto anchor = thrCursor.isOrigin() ? pointOf (md.view (drag)) : thrCursor;
+            juce::Rectangle<float> box (anchor.x + 16.0f, anchor.y - h - 10.0f, w, h);
+            if (box.getRight() > x1) box.setX (anchor.x - 16.0f - w);
+            if (box.getY() < y0 + 2.0f) box.setY (anchor.y + 16.0f);
+            g.setColour (juce::Colour (0xf00a0d12)); g.fillRoundedRectangle (box, 6.0f);
+            g.setColour (juce::Colour (0xffffa04c).withAlpha (0.7f)); g.drawRoundedRectangle (box, 6.0f, 1.0f);
+            g.setColour (juce::Colours::white); g.drawText (s1, box.withHeight (18.0f).translated (0, 2), juce::Justification::centred);
+            g.setColour (juce::Colour (0xffffb766)); g.drawText (s2, box.withTrimmedTop (17.0f).withHeight (16.0f), juce::Justification::centred);
+        }
+       #endif
         if (flashUntil > now) { g.setFont (font (11.0f, true)); g.setColour (col::text); g.drawText (flash, juce::Rectangle<float> (x0, y1 - 38.0f, x1 - x0, 14.0f), juce::Justification::centred); }
     }
 
@@ -527,27 +672,99 @@ public:
     {
         const float x = xOf (p.freq);
         const int ix = juce::jlimit (0, juce::jmax (0, (int) dispA.size() - 1), juce::roundToInt (x - padL));
-        const float y = dispA.empty() ? padT + ph() : ySpec (dispA[(size_t) ix]);
+        float y = dispA.empty() ? padT + ph() : ySpec (dispA[(size_t) ix]);
+       #ifdef MAS_STUDIO_DYN
+        // a held marker stays exactly where it was last confirmed: nothing slides away under the mouse
+        if (p.held) { if (auto it = heldY.find (p.id); it != heldY.end()) y = it->second; }
+        else { if (heldY.size() > 64) heldY.clear(); heldY[p.id] = y; }
+       #endif
         return { x, juce::jlimit (padT + 8.0f, padT + ph() - 6.0f, y - 9.0f) };
     }
     int hitMarker (juce::Point<float> p) const
     {
         if (! md.detect || ! md.anOn) return -1;
+       #ifdef MAS_STUDIO_DYN
+        // generous invisible hit area (~20 px on screen at any window scale), the nearest marker wins
+        const float sc = juce::jmax (0.5f, juce::Component::getApproximateScaleFactorForComponent (this));
+        const float rad = juce::jlimit (14.0f, 30.0f, 20.0f / sc);
+        int best = -1; float bd = rad;
+        for (const auto& m : markers()) { const float d = p.getDistanceFrom (markerPos (m)); if (d < bd) { bd = d; best = m.id; } }
+        return best;
+       #else
         for (const auto& m : markers()) if (p.getDistanceFrom (markerPos (m)) < 9.0f) return m.id;
         return -1;
+       #endif
     }
+   #ifdef MAS_STUDIO_DYN
+    // band point vs marker: whichever is nearer gets the mouse (a marker click never grabs a neighbouring band)
+    void pick (juce::Point<float> p, int& band, int& marker) const
+    {
+        band = hit (p, 14.0f); marker = hitMarker (p);
+        if (band >= 0 && marker >= 0)
+        {
+            float dm = 1e9f;
+            for (const auto& m : markers()) if (m.id == marker) dm = p.getDistanceFrom (markerPos (m));
+            if (dm < p.getDistanceFrom (pointOf (md.view (band)))) band = -1; else marker = -1;
+        }
+    }
+    bool isDyn (int i) const { const auto& b = md.raw (i); return i >= 0 && b.used && b.dynamic && b.type == req::Bell; }
+    void flashMsg (const juce::String& s) { flash = s; flashUntil = juce::Time::getMillisecondCounter() + 2600; repaint(); }
+    // REVERB EQ OFF: a new Dynamic Cut is silent. Switch the EQ on only when that wakes up nothing else; otherwise ask.
+    void ensureEqOnFor (int i)
+    {
+        if (md.s.on) return;
+        if (! md.anyOtherBandUsed (md.bank, i)) { md.setOn (true); flashMsg ("REVERB EQ switched ON for this Dynamic Cut"); return; }
+        juce::PopupMenu m;
+        m.addSectionHeader ("REVERB EQ is OFF: this Dynamic Cut is not heard");
+        m.addItem (1, "Turn REVERB EQ ON  (other configured bands will sound too)");
+        m.addItem (2, "Keep REVERB EQ OFF");
+        juce::Component::SafePointer<Graph> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
+                         [safe] (int r) { if (safe != nullptr && r == 1) { safe->md.setOn (true); safe->edited(); } });
+    }
+   #endif
     void mouseMove (const juce::MouseEvent& e) override
     {
+       #ifdef MAS_STUDIO_DYN
+        int h = -1, hm = -1; pick (e.position, h, hm);
+        if (hm != hoverMarker) { hoverMarker = hm; repaint(); }
+        if (h >= 0 && h == md.sel) poke();
+        setMouseCursor (h >= 0 || hm >= 0 ? juce::MouseCursor::DraggingHandCursor
+                               : hitWidth (e.position, 10.0f) != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+       #else
         const int h = hit (e.position, 14.0f), hm = h < 0 ? hitMarker (e.position) : -1;
         if (hm != hoverMarker) { hoverMarker = hm; repaint(); }
         if (h >= 0 && h == md.sel) poke();
         setMouseCursor (h >= 0 ? juce::MouseCursor::DraggingHandCursor : hm >= 0 ? juce::MouseCursor::PointingHandCursor
                                : hitWidth (e.position, 10.0f) != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+       #endif
     }
     void mouseExit (const juce::MouseEvent&) override { if (hoverMarker != -1) { hoverMarker = -1; repaint(); } }
     void mouseDown (const juce::MouseEvent& e) override
     {
         entry.setVisible (false);
+       #ifdef MAS_STUDIO_DYN
+        {
+            int bi = -1, hm = -1; pick (e.position, bi, hm);
+            if (hm >= 0 && bi < 0)
+            {
+                if (e.mods.isPopupMenu()) { peakToEq (hm); return; }     // right click: DYNAMIC CUT or STATIC EQ
+                for (const auto& p : markers())
+                    if (p.id == hm)
+                    {
+                        const int k = md.freeBandForPeak();
+                        if (k < 0) { peakToEq (hm, true); return; }      // all bands used: the user picks one to replace
+                        md.assignPeak (k, p.freq, 3.0f, true);         // an explicit click = a Dynamic Cut at this peak
+                        select (k); hoverMarker = -1;
+                        drag = k; dragMode = 4; dragMoved = true; dragF = p.freq;
+                        dragThr = md.raw (k).dynamicThresholdDb; dragCreated = true; thrCursor = e.position;
+                        md.begin (k, ParamIDs::eqDynThreshold);       // the same gesture goes on as the threshold drag
+                        poke(); return;
+                    }
+                return;
+            }
+        }
+       #endif
         const int i = hit (e.position, 14.0f);
         if (e.mods.isPopupMenu()) { if (i >= 0) { select (i); menu (i); } return; }
         if (i < 0)
@@ -563,6 +780,9 @@ public:
         const auto b = md.view (i);
         drag = i; dragF = b.freq; dragG = b.gainDb; dragQ = b.q; dragSlope = b.slope; dragCut = req::isCut (b.type); dragMoved = false;
         dragMode = e.mods.isAltDown() && ! dragCut ? 3 : 1;          // Alt + drag up / down = Q
+       #ifdef MAS_STUDIO_DYN
+        dragThr = b.dynamicThresholdDb; dragCreated = false; thrCursor = {};
+       #endif
     }
     void mouseDrag (const juce::MouseEvent& e) override
     {
@@ -573,6 +793,24 @@ public:
             md.drag (drag, ParamIDs::eqQ, juce::jlimit (0.1f, 18.0f, qOfBw (juce::jlimit (0.08f, 7.0f, oct)))); poke(); edited(); return;
         }
         const float dx = (float) e.getDistanceFromDragStartX(), dy = (float) e.getDistanceFromDragStartY();
+       #ifdef MAS_STUDIO_DYN
+        // Dynamic Cut: vertical = THRESHOLD (down = lower threshold = more cut), horizontal = frequency (existing band)
+        if (dragMode == 4 || (dragMode == 1 && isDyn (drag)))
+        {
+            if (dragMode == 1 && ! dragMoved)
+            {
+                if (std::abs (dx) + std::abs (dy) < 3.0f) return;
+                dragMoved = true;
+                md.begin (drag, ParamIDs::eqFreq); md.begin (drag, ParamIDs::eqDynThreshold);
+            }
+            const float fine = e.mods.isShiftDown() ? 0.2f : 1.0f;
+            const float vy = thrDragY (dy, e.mods.isShiftDown());
+            md.drag (drag, ParamIDs::eqDynThreshold, juce::jlimit (-72.0f, -6.0f, dragThr - vy));
+            if (dragMode == 1) md.drag (drag, ParamIDs::eqFreq, juce::jlimit (20.0f, 20000.0f, dragF * std::pow (1000.0f, dx * fine / pw())));
+            thrCursor = e.position;
+            poke(); edited(); return;
+        }
+       #endif
         if (! dragMoved)
         {
             if (std::abs (dx) + std::abs (dy) < 3.0f) return;
@@ -592,6 +830,17 @@ public:
     }
     void mouseUp (const juce::MouseEvent&) override
     {
+       #ifdef MAS_STUDIO_DYN
+        if (drag >= 0 && (dragMode == 4 || (dragMode == 1 && isDyn (drag) && dragMoved)))
+        {
+            md.end (drag, ParamIDs::eqDynThreshold);
+            if (dragMode == 1) md.end (drag, ParamIDs::eqFreq);
+            const int created = dragCreated ? drag : -1;
+            drag = -1; dragCreated = false; poke(); repaint();
+            if (created >= 0) ensureEqOnFor (created);
+            return;
+        }
+       #endif
         if (drag >= 0)
         {
             if (dragMode == 2) md.end (drag, ParamIDs::eqQ);
@@ -644,6 +893,24 @@ public:
         m.addItem (20, "Frequency...");
         if (! req::isCut (b.type)) { m.addItem (21, "Gain..."); m.addItem (22, "Q..."); }
         m.addSeparator();
+#ifdef MAS_STUDIO_DYN
+        if (! req::isCut (b.type))
+        {
+            m.addItem (40, b.dynamic ? "Convert to Static EQ" : "Convert to Dynamic Cut");
+            if (b.dynamic)
+            {
+                m.addSeparator();
+                m.addSectionHeader ("DYNAMIC CUT / THRESHOLD");
+                for (int j = 0; j < 5; ++j) m.addItem (50 + j, juce::String (-42 + 6 * j) + " dBFS", true,
+                                                        std::abs (b.dynamicThresholdDb - (float) (-42 + 6 * j)) < 0.6f);
+                m.addItem (23, "Threshold...  (" + juce::String (b.dynamicThresholdDb, 1) + " dBFS)");
+                m.addSectionHeader ("MAX REDUCTION");
+                for (int j = 0; j < 4; ++j) m.addItem (60 + j, juce::String (2 + j) + " dB", true,
+                                                        std::abs (b.dynamicMaxDb - (float) (2 + j)) < 0.2f);
+                m.addItem (24, "Max reduction...  (" + juce::String (b.dynamicMaxDb, 1) + " dB)");
+            }
+        }
+#endif
         m.addItem (30, b.bypass ? "Enable band" : "Bypass");
         m.addItem (31, i < Model::kMain ? "Reset band" : "Remove band");
         juce::Component::SafePointer<Graph> safe (this);
@@ -655,6 +922,22 @@ public:
             else if (r == 2) md2.setType (i, i == 0 ? req::LowCut : req::HighCut);
             else if (r >= 10 && r < 14) md2.set (i, ParamIDs::eqSlope, (float) (r - 10));
             else if (r >= 20 && r <= 22) { safe->openEntry (i, r == 20 ? ParamIDs::eqFreq : r == 21 ? ParamIDs::eqGain : ParamIDs::eqQ); return; }
+#ifdef MAS_STUDIO_DYN
+            else if (r == 40)
+            {
+                md2.ensure (i);
+                md2.set (i, ParamIDs::eqDynOn, md2.view (i).dynamic ? 0.0f : 1.0f);
+                if (md2.view (i).dynamic)
+                {
+                    md2.set (i, ParamIDs::eqType, (float) req::Bell);
+                    md2.set (i, ParamIDs::eqGain, 0.0f);
+                    safe->ensureEqOnFor (i);
+                }
+            }
+            else if (r == 23 || r == 24) { safe->openEntry (i, r == 23 ? ParamIDs::eqDynThreshold : ParamIDs::eqDynMax); return; }
+            else if (r >= 50 && r < 55) md2.set (i, ParamIDs::eqDynThreshold, (float) (-42 + 6 * (r - 50)));
+            else if (r >= 60 && r < 64) md2.set (i, ParamIDs::eqDynMax, (float) (2 + r - 60));
+#endif
             else if (r == 30) md2.set (i, ParamIDs::eqBypass, md2.view (i).bypass ? 0.0f : 1.0f);
             else if (r == 31) { md2.resetBand (i); if (i >= Model::kMain) md2.sel = -1; }
             juce::ignoreUnused (edge);
@@ -663,12 +946,54 @@ public:
     }
 
     // PEAK TO EQ: one click on a marker prepares a band (Bell, measured frequency, proposed Q, gain 0 dB)
+   #ifdef MAS_STUDIO_DYN
+    void peakToEq (int markerId, bool dynamicOnly = false)
+   #else
     void peakToEq (int markerId)
+   #endif
     {
         for (const auto& p : markers())
             if (p.id == markerId)
             {
                 const float f = p.freq, q = spec::suggestQ (p);
+#ifdef MAS_STUDIO_DYN
+                // Only an explicit user action arms dynamic processing (never the detection itself).
+                // dynamicOnly: left click with all bands in use -> the user picks the band to replace for a Dynamic Cut.
+                // otherwise (right click on a marker): the choice DYNAMIC CUT / STATIC EQ.
+                juce::Component::SafePointer<Graph> safe (this);
+                auto place = [safe, f, q] (bool dyn)
+                {
+                    if (safe == nullptr) return;
+                    const float chosenQ = dyn ? 3.0f : q;
+                    auto assign = [safe, f, chosenQ, dyn] (int band)
+                    {
+                        if (safe == nullptr) return;
+                        safe->md.assignPeak (band, f, chosenQ, dyn);
+                        safe->hoverMarker = -1;
+                        safe->poke(); safe->edited();
+                        if (dyn) safe->ensureEqOnFor (band);
+                    };
+                    const int unused = safe->md.freeBandForPeak();
+                    if (unused >= 0) { assign (unused); return; }
+                    juce::PopupMenu replace;                       // nothing is overwritten silently
+                    replace.addSectionHeader ("All bands are in use. Put " + fmtFreq (f) + (dyn ? " (Dynamic Cut)" : "") + " on:");
+                    for (int i : { 1, 2, 4, 5, 6, 7 })
+                    {
+                        const auto b = safe->md.view (i);
+                        replace.addItem (100 + i, juce::String (Model::roleName (i)) + "  (" + fmtFreq (b.freq) + (b.dynamic ? ", dynamic" : "") + ")");
+                    }
+                    replace.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (safe.getComponent()).withMousePosition(),
+                                           [assign] (int r) { if (r >= 100) assign (r - 100); });
+                };
+                if (dynamicOnly) { place (true); return; }
+                juce::PopupMenu choice;
+                choice.addSectionHeader ("Detected " + fmtFreq (f));
+                choice.addItem (1, "DYNAMIC CUT   Q 3 / -36 dBFS / max 3 dB");
+                choice.addItem (2, "STATIC EQ   0 dB / adjust by hand");
+                choice.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
+                                      [place] (int answer) { if (answer == 1 || answer == 2) place (answer == 1); });
+                return;
+#else
                 const int k = md.freeBandForPeak();
                 if (k >= 0) { md.assignPeak (k, f, q); hoverMarker = -1; poke(); edited(); return; }
                 juce::PopupMenu m;                                   // no free band: the user chooses, nothing is replaced silently
@@ -682,6 +1007,7 @@ public:
                 m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(), [safe, f, q] (int r)
                 { if (safe != nullptr && r >= 100) { safe->md.assignPeak (r - 100, f, q); safe->poke(); safe->edited(); } });
                 return;
+#endif
             }
     }
 
@@ -689,6 +1015,11 @@ public:
     {
         entryBand = i; entryField = field;
         const auto b = md.view (i);
+       #ifdef MAS_STUDIO_DYN
+        if (field == ParamIDs::eqDynThreshold || field == ParamIDs::eqDynMax)
+            entry.setText (juce::String (field == ParamIDs::eqDynThreshold ? b.dynamicThresholdDb : b.dynamicMaxDb, 1), false);
+        else
+       #endif
         entry.setText (field == ParamIDs::eqFreq ? juce::String (juce::roundToInt (b.freq)) : field == ParamIDs::eqGain ? juce::String (b.gainDb, 1) : juce::String (b.q, 2), false);
         const auto p = pointOf (b);
         entry.setBounds (juce::Rectangle<int> (92, 24).withCentre ({ juce::roundToInt (p.x), juce::roundToInt (p.y) - 30 }).constrainedWithin (getLocalBounds().reduced (4)));
@@ -702,6 +1033,10 @@ public:
         float v = t.getFloatValue();
         if (entryField == ParamIDs::eqFreq) md.set (entryBand, entryField, juce::jlimit (20.0f, 20000.0f, v * (t.containsChar ('k') ? 1000.0f : 1.0f)));
         else if (entryField == ParamIDs::eqGain) md.set (entryBand, entryField, juce::jlimit (-18.0f, 18.0f, v));
+       #ifdef MAS_STUDIO_DYN
+        else if (entryField == ParamIDs::eqDynThreshold) md.set (entryBand, entryField, juce::jlimit (-72.0f, -6.0f, v));
+        else if (entryField == ParamIDs::eqDynMax) md.set (entryBand, entryField, juce::jlimit (0.0f, 6.0f, std::abs (v)));
+       #endif
         else md.set (entryBand, entryField, juce::jlimit (0.1f, 18.0f, v));
         poke(); edited();
     }
@@ -729,6 +1064,13 @@ private:
     int shownA = -2, shownB = -2, settle = 0, hoverMarker = -1, drag = -1, dragMode = 1, dragSlope = 1, entryBand = -1, entryField = 0;
     float dragF = 1000.0f, dragG = 0.0f, dragQ = 1.0f, wheelAcc = 0.0f;
     bool dragCut = false, dragMoved = false;
+   #ifdef MAS_STUDIO_DYN
+    float dragThr = -36.0f;
+    bool dragCreated = false;
+    juce::Point<float> thrCursor;
+    // vertical pixels -> dB: 0.12 dB per px (Shift: 0.03), so 100 px = 12 dB
+    static float thrDragY (float dy, bool fine) { return dy * (fine ? 0.03f : 0.12f); }
+   #endif
     juce::uint32 tipUntil = 0, flashUntil = 0;
     juce::String flash;
 };

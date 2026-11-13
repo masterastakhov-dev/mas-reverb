@@ -300,6 +300,7 @@ void grille (juce::Graphics& g, juce::Rectangle<float> r, const Theme& t)
     g.fillPath (web);
 }
 
+
 void goldLine (juce::Graphics& g, float x, float y0, float y1, const Theme& t)
 {
     g.setColour (juce::Colours::black.withAlpha (0.6f));
@@ -706,6 +707,26 @@ void LookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int 
         g.setColour (juce::Colours::white.withAlpha (0.6f)); g.drawLine (cap.getX() + 5, cap.getY() + 1, cap.getRight() - 5, cap.getY() + 1, 1.0f);
         g.setColour (rgb (27, 30, 35)); g.fillRoundedRectangle (cap.getX() + 5, cap.getCentreY() - 1, cap.getWidth() - 10, 2.0f, 1.0f);
         g.setColour (juce::Colours::white.withAlpha (0.35f)); g.fillRect (cap.getX() + 5, cap.getCentreY() + 1, cap.getWidth() - 10, 1.0f);
+        return;
+    }
+    if (s.getProperties()["hfader"] && style == juce::Slider::LinearHorizontal)
+    {
+        // compact SATURATION fader: a thin slot, warm fill (amber -> deep red with the amount), small chrome cap
+        const float cy = (float) y + (float) h * 0.5f, x0 = (float) x, x1 = (float) (x + w);
+        recess (g, { x0 - 6.0f, cy - 3.0f, x1 - x0 + 12.0f, 6.0f }, 3.0f, rgb (6, 8, 11));
+        const float amt = juce::jlimit (0.0f, 1.0f, (pos - x0) / juce::jmax (1.0f, x1 - x0));
+        const juce::Colour warm = juce::Colour (0xffffa04c).interpolatedWith (juce::Colour (0xffe0401c), amt);
+        const juce::Rectangle<float> fill (x0 - 4.0f, cy - 1.5f, juce::jmax (0.0f, pos - x0 + 4.0f), 3.0f);
+        g.setColour (warm.withAlpha (0.25f * dim)); g.fillRoundedRectangle (fill.expanded (0.0f, 2.0f), 2.5f);
+        g.setColour (warm.withAlpha (0.95f * dim)); g.fillRoundedRectangle (fill, 1.5f);
+        const juce::Rectangle<float> capR (pos - 6.0f, cy - 7.5f, 12.0f, 15.0f);
+        juce::Path cp; cp.addRoundedRectangle (capR, 3.0f);
+        juce::DropShadow (juce::Colours::black.withAlpha (0.7f), 5, { 0, 2 }).drawForPath (g, cp);
+        juce::ColourGradient cg (rgb (233, 237, 242), 0, capR.getY(), rgb (208, 214, 221), 0, capR.getBottom(), false);
+        cg.addColour (0.3, rgb (168, 175, 185)); cg.addColour (0.55, rgb (93, 100, 110)); cg.addColour (0.78, rgb (143, 151, 162));
+        g.setGradientFill (cg); g.fillPath (cp);
+        if (s.isMouseOverOrDragging()) { g.setColour (juce::Colours::white.withAlpha (0.1f)); g.fillPath (cp); }
+        g.setColour (rgb (27, 30, 35)); g.fillRect (pos - 0.5f, capR.getY() + 3.5f, 1.0f, capR.getHeight() - 7.0f);
         return;
     }
     if (style == juce::Slider::LinearBar || style == juce::Slider::LinearBarVertical)
