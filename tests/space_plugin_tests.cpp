@@ -344,6 +344,73 @@ static int studioSnapshots (const juce::File& dir)
 }
 #endif
 
+#ifdef MAS_STUDIO_DYN
+// --dyn-renders <dir>: listening material for Dynamic Cut. A reverb with a ringing 1.2 kHz resonance
+// (a narrow +9 dB WET bell stands in for a room / instrument resonance), rendered with Dynamic Cut OFF and ON.
+static int dynRenders (const juce::File& dir)
+{
+    dir.createDirectory();
+    const double fs = 48000.0, pi = juce::MathConstants<double>::pi;
+    const int n = (int) (fs * 12.0);
+    // source: plucked notes (A minor arpeggio, harmonics) and short noise hits
+    juce::AudioBuffer<float> src (2, n); src.clear();
+    juce::Random rnd (3);
+    const double notes[] = { 220.0, 261.63, 329.63, 440.0, 392.0, 329.63, 293.66, 246.94 };
+    for (int k = 0; k < 24; ++k)
+    {
+        const int start = (int) (k * 0.45 * fs);
+        const double f = notes[k % 8] * (k % 3 == 2 ? 2.0 : 1.0);
+        for (int i = 0; i < (int) (fs * 1.2) && start + i < n; ++i)
+        {
+            const double tt = i / fs, env = std::exp (-tt * 4.0);
+            double v = 0; for (int h = 1; h <= 8; ++h) v += std::sin (2 * pi * f * h * tt) / (h * h);
+            for (int c = 0; c < 2; ++c) src.addSample (c, start + i, (float) (0.25 * env * v));
+        }
+        if (k % 4 == 0) for (int i = 0; i < 2400 && start + i < n; ++i)
+            for (int c = 0; c < 2; ++c) src.addSample (c, start + i, (float) (0.3 * std::exp (-i / 400.0) * (rnd.nextFloat() * 2 - 1)));
+    }
+    auto renderWith = [&] (bool dyn, const char* name)
+    {
+        auto p = std::make_unique<MasterSpaceAudioProcessor>();
+        p->setRateAndBufferSizeDetails (fs, 512); p->prepareToPlay (fs, 512);
+        auto set = [&] (const juce::String& id, float v) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (v)); };
+        using namespace ParamIDs;
+        set (mix, 35.0f); set (decay, 2.6f); set (algorithm, 2.0f); set (eqOn, 1.0f);
+        auto band = [&] (int i, float f, float g, float q, bool d)
+        {
+            set (eqId (0, i, eqUsed), 1); set (eqId (0, i, eqType), (float) req::Bell); set (eqId (0, i, eqFreq), f);
+            set (eqId (0, i, eqGain), g); set (eqId (0, i, eqQ), q); set (eqId (0, i, eqDynOn), d ? 1.0f : 0.0f);
+            set (eqId (0, i, eqDynThreshold), -36.0f); set (eqId (0, i, eqDynMax), 3.0f);
+        };
+        band (1, 1200.0f, 9.0f, 8.0f, false);             // the resonance
+        if (dyn) band (4, 1200.0f, 0.0f, 3.0f, true);     // Dynamic Cut on it, default settings
+        pump (60);
+        auto buf = src;
+        juce::MidiBuffer midi;
+        for (int pos = 0; pos < n; pos += 512)
+        {
+            juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), 2, pos, juce::jmin (512, n - pos));
+            p->processBlock (view, midi);
+        }
+        auto f = dir.getChildFile (name);
+        f.deleteFile();
+        std::unique_ptr<juce::AudioFormatWriter> w (juce::WavAudioFormat().createWriterFor (new juce::FileOutputStream (f), fs, 2, 24, {}, 0));
+        w->writeFromAudioSampleBuffer (buf, 0, n);
+        std::printf ("  wrote %s\n", name);
+        return buf;
+    };
+    auto off = renderWith (false, "1_dynamic_cut_OFF.wav");
+    auto on = renderWith (true, "2_dynamic_cut_ON.wav");
+    juce::AudioBuffer<float> diff (2, n);
+    for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) diff.setSample (c, i, off.getSample (c, i) - on.getSample (c, i));
+    auto f = dir.getChildFile ("3_difference_what_was_removed.wav");
+    f.deleteFile();
+    std::unique_ptr<juce::AudioFormatWriter> w (juce::WavAudioFormat().createWriterFor (new juce::FileOutputStream (f), fs, 2, 24, {}, 0));
+    w->writeFromAudioSampleBuffer (diff, 0, n);
+    return 0;
+}
+#endif
+
 #ifdef MAS_RI
 // Prints a hash of the rendered output for fixed scenarios. Run on the 1.4 and on the 1.5 test binaries:
 // with the new EQ off (any variant of "off") every 1.5 hash must equal the 1.4 hash of the same scenario.
@@ -415,6 +482,9 @@ int main (int argc, char** argv)
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
     }
+   #endif
+   #ifdef MAS_STUDIO_DYN
+    if (argc > 2 && juce::String (argv[1]) == "--dyn-renders") return dynRenders (juce::File (juce::String (argv[2])));
    #endif
    #ifdef MAS_STUDIO
     if (argc > 2 && juce::String (argv[1]) == "--studio-snapshot")
