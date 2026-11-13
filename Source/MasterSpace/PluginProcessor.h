@@ -144,6 +144,16 @@ namespace ParamIDs
                                                 rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality,
                                                 hcOn, hcChar, hcDrive, hcColor, hcMix, hcComp, hcPos };
    #endif
+   #ifdef MAS_STUDIO_18
+    // 1.8 STUDIO: M/S HARMONIC COLOR (STEREO by default)
+    inline constexpr const char* hcMode      = "hcmode";       // 0 STEREO, 1 M/S
+    inline constexpr const char* hcMidDrive  = "hcmdrive";
+    inline constexpr const char* hcSideDrive = "hcsdrive";
+    inline constexpr const char* hcMidMix    = "hcmmix";
+    inline constexpr const char* hcSideMix   = "hcsmix";
+    // every 1.8 parameter: states and presets without them load with the defaults (STEREO, compressor OFF)
+    inline constexpr const char* studio18Params[] = { hcMode, hcMidDrive, hcSideDrive, hcMidMix, hcSideMix };
+   #endif
    #ifdef MAS_EQ
     // REVERB EQ (1.5 EQ LAB): "eqon" and, per bank (w = WET, e = EARLY, l = LATE) and band (1..8):
     // u = used, b = bypass, t = type, f = frequency, g = gain, q = Q, s = slope  ->  e.g. "eqw3f".

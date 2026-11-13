@@ -228,6 +228,9 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                #ifdef MAS_EQ
                 addedLater = addedLater || ParamIDs::isEqParam (pi.id);   // REVERB EQ: older presets load with it off
                #endif
+               #ifdef MAS_STUDIO_18
+                for (const char* id : ParamIDs::studio18Params) addedLater = addedLater || pi.id == id;   // 1.8: older presets load STEREO, comp off
+               #endif
                #else
                 const bool addedLater = false;
                #endif

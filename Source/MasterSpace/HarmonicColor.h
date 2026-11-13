@@ -332,13 +332,20 @@ public:
     bool isActive() const { return settings.on || fade > 0.0f; }
 
     // In place on a stereo pair. level = the gain the pair is heard at (drive is relative to it).
-    void process (float* L, float* R, int n, float level)
+    void process (float* L, float* R, int n, float level) { processN<2> (L, R, n, level); }
+    // 1.8 M/S: in place on ONE signal (MID or SIDE): its own drive, mix, LEVEL COMP and guards. The stereo
+    // instantiation above is compiled from exactly the same expressions as before (bit-identical).
+    void processMono (float* X, int n, float level) { processN<1> (X, nullptr, n, level); }
+
+private:
+    template <int NC>
+    void processN (float* L, float* R, int n, float level)
     {
         float* io[2] = { L, R };
         const bool hq = curQ == 1;
         if (! settings.on && fade <= 0.0f)
         {
-            if (hq) for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) io[c][i] = ch[c].refDelay (io[c][i]);   // exact delay
+            if (hq) for (int c = 0; c < NC; ++c) for (int i = 0; i < n; ++i) io[c][i] = ch[c].refDelay (io[c][i]);   // exact delay
             else if (wasRunning)
             {
                 for (auto& c : ch) { c.reset(); c.guard.peak (316.0, fs, 0.75, 0.0); c.air.highShelf (std::min (3000.0, 0.35 * fs), fs, 0.0); c.low.lowShelf (180.0, fs, 0.0); }
@@ -354,7 +361,7 @@ public:
             const int m = std::min (kMaxBlock, n - pos);
             float ref[2][kMaxBlock], out[2][kMaxBlock];
             float eRes = 0, eIn = 0;
-            for (int c = 0; c < 2; ++c)
+            for (int c = 0; c < NC; ++c)
             {
                 Chan& k = ch[c];
                 float g = curGain, mx = curMix;
@@ -396,13 +403,22 @@ public:
                     }
                     out[c][i] = y;
                 }
-                if (c == 1) { curGain = g; curMix = mx; }
+                if (c == NC - 1) { curGain = g; curMix = mx; }
             }
             // LEVEL COMP: the pair keeps its energy envelope (slow follower on L + R); on/off cross-fade
             for (int i = 0; i < m; ++i)
             {
-                const float xi = ref[0][i] * ref[0][i] + ref[1][i] * ref[1][i];
-                const float yi = out[0][i] * out[0][i] + out[1][i] * out[1][i];
+                float xi, yi;
+                if constexpr (NC == 2)
+                {
+                    xi = ref[0][i] * ref[0][i] + ref[1][i] * ref[1][i];
+                    yi = out[0][i] * out[0][i] + out[1][i] * out[1][i];
+                }
+                else
+                {
+                    xi = ref[0][i] * ref[0][i];
+                    yi = out[0][i] * out[0][i];
+                }
                 pIn += aEnv * (xi - pIn);
                 pOut += aEnv * (yi - pOut);
                 pInF += aFast * (xi - pInF);
@@ -421,10 +437,12 @@ public:
                 fade = settings.on ? std::min (1.0f, fade + fadeStep) : std::max (0.0f, fade - fadeStep);
                 float z[2];
                 z[0] = out[0][i] * gComp;
-                z[1] = out[1][i] * gComp;
+                if constexpr (NC == 2) z[1] = out[1][i] * gComp; else z[1] = 0.0f;
                 {   // band balance measured on the mid signal (one set of analysis filters per pair)
                     Chan& a = ch[0];
-                    const float mi = ref[0][i] + ref[1][i], mo = z[0] + z[1];
+                    float mi, mo;
+                    if constexpr (NC == 2) { mi = ref[0][i] + ref[1][i]; mo = z[0] + z[1]; }
+                    else                   { mi = ref[0][i];             mo = z[0]; }
                     const float bi = a.bandIn.run (mi), bo = a.bandOut.run (mo);
                     bandEIn += aEnv * (bi * bi - bandEIn);
                     bandEOut += aEnv * (bo * bo - bandEOut);
@@ -458,11 +476,12 @@ public:
                     lowDb += 0.25f * (std::clamp (wantLow, -12.0f, 0.0f) - lowDb);
                     for (auto& k : ch) { k.guard.peak (316.0, fs, 0.75, guardDb); k.air.highShelf (std::min (3000.0, 0.35 * fs), fs, airDb); k.low.lowShelf (180.0, fs, lowDb); }
                 }
-                float f[2];
-                for (int c = 0; c < 2; ++c) f[c] = ch[c].air.run (ch[c].guard.run (ch[c].low.run (z[c])));
+                float f[2] { 0.0f, 0.0f };
+                for (int c = 0; c < NC; ++c) f[c] = ch[c].air.run (ch[c].guard.run (ch[c].low.run (z[c])));
                 if (settings.levelComp)     // the guards add or take a little: the final energy is held too
                 {
-                    const float fi = f[0] * f[0] + f[1] * f[1];
+                    float fi;
+                    if constexpr (NC == 2) fi = f[0] * f[0] + f[1] * f[1]; else fi = f[0] * f[0];
                     pFin += aEnv * (fi - pFin);
                     pFinF += aFast * (fi - pFinF);
                     if (pFin < 1.0e-30f) pFin = 0.0f;
@@ -471,7 +490,7 @@ public:
                     trim += aGain * (std::clamp (std::sqrt (want), 0.7f, 1.4f) - trim);
                 }
                 else trim += aGain * (1.0f - trim);
-                for (int c = 0; c < 2; ++c)
+                for (int c = 0; c < NC; ++c)
                     io[c][pos + i] = ref[c][i] + fade * (f[c] * trim - ref[c][i]);
             }
             resAcc += eRes; inAcc += eIn;
@@ -485,6 +504,7 @@ public:
         }
     }
 
+public:
     // display values: added harmonics relative to the input (dB), LEVEL COMP gain (dB)
     std::atomic<float> meterResidue { -120.0f }, meterComp { 0.0f }, meterGuard { 0.0f };
     const Settings& getSettings() const { return settings; }

@@ -258,6 +258,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
         ch (hcPos, "Color Position", { "Post (wet)", "Pre (reverb input)" }, 0, false);
     }
    #endif
+   #ifdef MAS_STUDIO_18
+    // ---- 1.8 STUDIO. New IDs with their own version hint; old states / presets load with the defaults
+    // (STEREO colour, compressor OFF): nothing of the old sound changes.
+    {
+        constexpr int kHint18 = 6;
+        auto pct18 = [] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; };
+        auto pf = [&p, pct18] (const char* id, const char* name, float def)
+        {
+            p.push_back (std::make_unique<APF> (juce::ParameterID { id, kHint18 }, name, juce::NormalisableRange<float> (0.0f, 100.0f), def,
+                                                Attr().withStringFromValueFunction (pct18)));
+        };
+        p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { hcMode, kHint18 }, "Color Mode",
+                                                                   juce::StringArray { "Stereo", "M/S" }, 0));
+        pf (hcMidDrive,  "Color Mid Drive",  30.0f);
+        pf (hcSideDrive, "Color Side Drive", 30.0f);
+        pf (hcMidMix,    "Color Mid Mix",    100.0f);
+        pf (hcSideMix,   "Color Side Mix",   100.0f);
+    }
+   #endif
    #ifdef MAS_EQ
     // ---- 1.5 EQ LAB: REVERB EQ. Off by default; states / presets without it load with the EQ off.
     {
@@ -500,6 +519,13 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
         p.hcMix         = get (hcMix) * 0.01f;
         p.hcLevelComp   = get (hcComp) > 0.5f;
         p.hcPos         = juce::roundToInt (get (hcPos)) > 0 ? 1 : 0;
+       #ifdef MAS_STUDIO_18
+        p.hcMode        = juce::roundToInt (get (hcMode)) > 0 ? 1 : 0;
+        p.hcMidDrive    = get (hcMidDrive) * 0.01f;
+        p.hcSideDrive   = get (hcSideDrive) * 0.01f;
+        p.hcMidMix      = get (hcMidMix) * 0.01f;
+        p.hcSideMix     = get (hcSideMix) * 0.01f;
+       #endif
     }
    #endif
 }
@@ -1987,6 +2013,13 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
    #ifdef MAS_RI
     // states written before 1.4: SMART DUCKER and RESONANCE GUARD off, every new parameter at its default
     for (const char* id : ParamIDs::riParams)
+        if (! presentIDs.contains (id))
+            if (auto* prm = apvts.getParameter (id))
+                prm->setValueNotifyingHost (prm->getDefaultValue());
+   #endif
+   #ifdef MAS_STUDIO_18
+    // states written before 1.8: STEREO colour, compressor off, every new parameter at its default
+    for (const char* id : ParamIDs::studio18Params)
         if (! presentIDs.contains (id))
             if (auto* prm = apvts.getParameter (id))
                 prm->setValueNotifyingHost (prm->getDefaultValue());

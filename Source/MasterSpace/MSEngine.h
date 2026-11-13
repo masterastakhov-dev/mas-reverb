@@ -24,6 +24,9 @@
 #include <atomic>
 #include <functional>
 #include "HarmonicColor.h"
+#ifdef MAS_STUDIO_18
+ #include "HarmonicColorMS.h"
+#endif
 #endif
 #ifdef MAS_EQ
 #include "ReverbEQ.h"
@@ -336,6 +339,11 @@ struct Params
     float hcDrive = 0.3f, hcColor = 0.0f, hcMix = 1.0f;
     bool  hcLevelComp = true;
     int   hcPos = 0;                            // 0 POST (on the formed wet), 1 PRE (on the signal that feeds the reverb)
+#ifdef MAS_STUDIO_18
+    // 1.8 M/S HARMONIC COLOR (STEREO by default, also for old projects / presets)
+    int   hcMode = 0;                           // 0 STEREO, 1 M/S
+    float hcMidDrive = 0.3f, hcSideDrive = 0.3f, hcMidMix = 1.0f, hcSideMix = 1.0f;
+#endif
 #endif
 #ifdef MAS_EQ
     // REVERB EQ (1.5 EQ LAB): off by default, also for old projects / presets
@@ -1115,7 +1123,12 @@ public:
     int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
     int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
     static int hqLatencyFor (double sampleRate) { return ri::ResonanceGuard::hqLatencyFor (sampleRate) + hc::HarmonicColor::kLatencyHQ; }
+#ifdef MAS_STUDIO_18
+    const hc::HarmonicColor& colorMeters() const { return curHcPos == 1 ? hcPre.meters() : hcLate.meters(); }
+    const hc::ColorSlot& colorSlot() const { return curHcPos == 1 ? hcPre : hcLate; }
+#else
     const hc::HarmonicColor& colorMeters() const { return curHcPos == 1 ? hcPre : hcLate; }
+#endif
     // Quality change applied at once, with no internal fade: the plugin fades its whole output around
     // the switch (all paths change latency together). Audio thread, no allocation.
     void switchQualityNow (int q)
@@ -1239,10 +1252,19 @@ private:
             hc::HarmonicColor::Settings h;
             h.character = std::clamp (params.hcChar, 0, 2); h.drive = params.hcDrive; h.color = params.hcColor;
             h.mix = params.hcMix; h.levelComp = params.hcLevelComp; h.quality = curQuality;
+           #ifdef MAS_STUDIO_18
+            const hc::ColorSlot::MS ms { params.hcMidDrive, params.hcSideDrive, params.hcMidMix, params.hcSideMix };
+            const bool msMode = params.hcMode == 1;
+            h.on = params.hcOn && curHcPos == 0;
+            hcEarly.set (h, msMode, ms, force); hcLate.set (h, msMode, ms, force);
+            h.on = params.hcOn && curHcPos == 1;
+            hcPre.set (h, msMode, ms, force);
+           #else
             h.on = params.hcOn && curHcPos == 0;
             hcEarly.set (h, force); hcLate.set (h, force);
             h.on = params.hcOn && curHcPos == 1;
             hcPre.set (h, force);
+           #endif
         }
        #endif
        #ifdef MAS_EQ
@@ -1646,7 +1668,11 @@ private:
     ri::SmartDucker ducker;
     ri::ResonanceGuard rg;
     DelayLine directDelay[2], scDelay[2];
+#ifdef MAS_STUDIO_18
+    hc::ColorSlot hcEarly, hcLate, hcPre;      // STEREO (the 1.7d instance) or M/S (two mono processors)
+#else
     hc::HarmonicColor hcEarly, hcLate, hcPre;
+#endif
     int curHcPos = 0;
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;

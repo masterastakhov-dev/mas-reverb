@@ -511,9 +511,12 @@ static int refHashes (const juce::File& dumpDir)
     {
         if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain));
     };
-    struct Sc { const char* name; const char* preset; int duck, rg, hc, q; };
+    struct Sc { const char* name; const char* preset; int duck, rg, hc, q, hcChar = 0, hcPos = 0; };
     const Sc scs[] = { { "default", nullptr, 0, 0, 0, 0 }, { "atmos-vocal-glow", "factory:Vocal Spaces/ATMOS Vocal Glow", 0, 0, 0, 0 },
-                       { "hall-modules-live", "factory:Halls/Concert Hall", 1, 1, 1, 0 }, { "atmos-modules-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 1, 1, 1, 1 } };
+                       { "hall-modules-live", "factory:Halls/Concert Hall", 1, 1, 1, 0 }, { "atmos-modules-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 1, 1, 1, 1 },
+                       // HARMONIC COLOR STEREO in every place and character (1.8 must keep these bit-identical)
+                       { "hc-pre-tube-live", "factory:Halls/Concert Hall", 0, 0, 1, 0, 1, 1 },
+                       { "hc-post-tape-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 0, 0, 1, 1, 2, 0 } };
    #ifdef MAS_EQ
     const char* variants[] = { "eq-default", "eq-off-bands-set", "eq-on-no-bands", "eq-on-all-bypassed" };
    #else
@@ -527,6 +530,8 @@ static int refHashes (const juce::File& dumpDir)
                 if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
                 setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);
                 setP (*p, ParamIDs::hcOn, (float) sc.hc); setP (*p, ParamIDs::quality, (float) sc.q);
+                setP (*p, ParamIDs::hcChar, (float) sc.hcChar); setP (*p, ParamIDs::hcPos, (float) sc.hcPos);
+                if (sc.hcChar != 0 || sc.hcPos != 0) setP (*p, ParamIDs::hcDrive, 70.0f);   // the older scenarios stay as they were
                #ifdef MAS_EQ
                 if (v >= 1)
                     for (int b = 0; b < 3; ++b)
@@ -1787,6 +1792,209 @@ int main (int argc, char** argv)
             check (maxStep < 0.5f && f.peakDb <= -69.9f && f.rmsDb < -69.0f, "return to silence is smooth (largest step " + juce::String (maxStep, 2) + " dB per frame at 60 Hz)");
         }
     }
+
+   #ifdef MAS_STUDIO_18
+    //==========================================================================
+    section ("1.8 M/S HARMONIC COLOR: STEREO untouched, independent MID / SIDE");
+    {
+        constexpr double kPi = 3.141592653589793;
+        auto setQ = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        { if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        // a stereo test signal: different material left / right (a real wide wet)
+        auto wide = [] (double fs, double secs, int seed)
+        {
+            auto b = pinkish (fs, secs, seed);
+            juce::Random r (seed + 99);
+            float t = 0.0f;
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                t = 0.96f * t + 0.04f * (r.nextFloat() * 2.0f - 1.0f);
+                b.setSample (1, i, 0.6f * b.getSample (1, i) + 0.9f * t);
+            }
+            return b;
+        };
+        auto mDiff = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int ch, bool side)
+        {   // largest difference of MID (ch 0) or SIDE of two stereo buffers
+            float m = 0.0f;
+            for (int i = 0; i < a.getNumSamples(); ++i)
+            {
+                const float x = side ? 0.5f * (a.getSample (0, i) - a.getSample (1, i)) : 0.5f * (a.getSample (0, i) + a.getSample (1, i));
+                const float y = side ? 0.5f * (b.getSample (0, i) - b.getSample (1, i)) : 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+                m = juce::jmax (m, std::abs (x - y));
+            }
+            juce::ignoreUnused (ch);
+            return m;
+        };
+
+        // ---- the slot on its own (LIVE and HQ, 44.1 / 48 / 96 kHz)
+        for (int q : { 0, 1 })
+            for (double fs : { 44100.0, 48000.0, 96000.0 })
+            {
+                const juce::String tag = juce::String (q ? "HQ   " : "LIVE ") + juce::String (fs / 1000.0, 1) + " kHz: ";
+                auto run1 = [&] (const juce::AudioBuffer<float>& in, bool ms, hc::HarmonicColor::Settings h, hc::ColorSlot::MS m)
+                {
+                    hc::ColorSlot slot;
+                    h.quality = q;
+                    slot.prepare (fs);
+                    slot.set (h, ms, m, true);
+                    auto b = in;
+                    for (int pos = 0; pos < b.getNumSamples(); pos += 256)
+                    {
+                        const int n = juce::jmin (256, b.getNumSamples() - pos);
+                        slot.set (h, ms, m, false);
+                        slot.process (b.getWritePointer (0, pos), b.getWritePointer (1, pos), n, 1.0f);
+                    }
+                    return b;
+                };
+                hc::HarmonicColor::Settings h; h.on = true; h.character = hc::HarmonicColor::Tube; h.drive = 0.8f; h.mix = 1.0f; h.levelComp = true;
+                const auto in = wide (fs, 2.0, 7);
+
+                // neutral M/S: MIX 0 gives what STEREO gives at MIX 0 (no level, width or phase change)
+                {
+                    // without LEVEL COMP the two paths are the same linear system: equal to rounding. With it, M/S follows
+                    // MID and SIDE energies separately (as it should): only its tiny micro-corrections differ.
+                    auto h0 = h; h0.mix = 0.0f; h0.levelComp = false;
+                    const auto a = run1 (in, false, h0, {}), b = run1 (in, true, h0, { 0.8f, 0.8f, 1.0f, 1.0f });
+                    h0.levelComp = true;
+                    const auto c = run1 (in, false, h0, {}), d = run1 (in, true, h0, { 0.8f, 0.8f, 1.0f, 1.0f });
+                    double e = 0.0, ref = 0.0;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < c.getNumSamples(); ++i)
+                        { const double x = c.getSample (ch, i), y = d.getSample (ch, i); e += (x - y) * (x - y); ref += x * x; }
+                    const double relDb = 10.0 * std::log10 ((e + 1.0e-30) / (ref + 1.0e-30));
+                    check (maxAbsDiff (a, b) < 2.0e-6f && relDb < -60.0, tag + "M/S at MIX 0 = STEREO at MIX 0: exact without LEVEL COMP (max diff "
+                           + juce::String (maxAbsDiff (a, b), 8) + "), with it the difference is " + juce::String (relDb, 1) + " dB");
+                }
+                // mono in -> no SIDE is made; anti-phase in -> no MID is made
+                {
+                    auto mono = in; mono.copyFrom (1, 0, mono, 0, 0, mono.getNumSamples());
+                    const auto o = run1 (mono, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    float side = 0.0f, mid = 0.0f;
+                    for (int i = 0; i < o.getNumSamples(); ++i) { side = juce::jmax (side, std::abs (o.getSample (0, i) - o.getSample (1, i))); mid = juce::jmax (mid, std::abs (o.getSample (0, i))); }
+                    check (side < 1.0e-9f && mid > 0.05f, tag + "mono in: L = R out (|L - R| " + juce::String (side, 12) + "), MID saturated");
+                    auto anti = in; for (int i = 0; i < anti.getNumSamples(); ++i) anti.setSample (1, i, -anti.getSample (0, i));
+                    const auto o2 = run1 (anti, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    float sum = 0.0f;
+                    for (int i = 0; i < o2.getNumSamples(); ++i) sum = juce::jmax (sum, std::abs (o2.getSample (0, i) + o2.getSample (1, i)));
+                    check (sum < 1.0e-9f, tag + "anti-phase in (L = -R): stays anti-phase (|L + R| " + juce::String (sum, 12) + ")");
+                }
+                // independence: SIDE settings never touch the MID result and vice versa (LEVEL COMP included)
+                {
+                    const auto a = run1 (in, true, h, { 0.8f, 0.1f, 1.0f, 0.2f }), b = run1 (in, true, h, { 0.8f, 1.0f, 1.0f, 1.0f });
+                    const auto c = run1 (in, true, h, { 0.1f, 0.6f, 0.3f, 1.0f }), d = run1 (in, true, h, { 1.0f, 0.6f, 1.0f, 1.0f });
+                    check (mDiff (a, b, 0, false) < 1.0e-6f && mDiff (a, b, 0, true) > 1.0e-3f, tag + "SIDE DRIVE / MIX change only the SIDE (MID diff " + juce::String (mDiff (a, b, 0, false), 9) + ")");
+                    check (mDiff (c, d, 0, true) < 1.0e-6f && mDiff (c, d, 0, false) > 1.0e-3f, tag + "MID DRIVE / MIX change only the MID (SIDE diff " + juce::String (mDiff (c, d, 0, true), 9) + ")");
+                }
+                // the main SATURATION MIX scales both: at 0 % M/S is neutral whatever MID / SIDE MIX say
+                {
+                    auto h0 = h; h0.mix = 0.0f;
+                    const auto a = run1 (in, true, h0, { 1.0f, 1.0f, 1.0f, 1.0f }), b = run1 (in, true, h, { 1.0f, 1.0f, 0.0f, 0.0f });
+                    check (maxAbsDiff (a, b) < 2.0e-6f, tag + "SATURATION MIX 0 % = MID / SIDE MIX 0 %: no saturation anywhere");
+                }
+                // level: LEVEL COMP holds the energy of each part
+                {
+                    auto off = in;
+                    if (q == 1) { hc::HarmonicColor::Settings ho = h; ho.on = false; off = run1 (in, false, ho, {}); }
+                    const auto o = run1 (in, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    const int s0 = (int) fs / 2, len = o.getNumSamples() - s0;
+                    auto rmsOf = [&] (const juce::AudioBuffer<float>& b) { return juce::Decibels::gainToDecibels (std::sqrt (0.5f * (b.getRMSLevel (0, s0, len) * b.getRMSLevel (0, s0, len) + b.getRMSLevel (1, s0, len) * b.getRMSLevel (1, s0, len)))); };
+                    const float dl = rmsOf (o) - rmsOf (off);
+                    check (std::abs (dl) < 1.0f, tag + "M/S at DRIVE 90 %: level held by LEVEL COMP (" + juce::String (dl, 2) + " dB)");
+                }
+                // switching STEREO <-> M/S on a steady tone: no click (no step larger than the tone itself makes)
+                {
+                    juce::AudioBuffer<float> tone (2, (int) (fs * 1.2));
+                    for (int i = 0; i < tone.getNumSamples(); ++i)
+                    {
+                        const float v = 0.3f * (float) std::sin (2.0 * kPi * 220.0 * i / fs);
+                        tone.setSample (0, i, v); tone.setSample (1, i, 0.7f * v + 0.1f * (float) std::sin (2.0 * kPi * 330.0 * i / fs));
+                    }
+                    hc::ColorSlot slot; auto hq = h; hq.quality = q; hq.drive = 0.6f;
+                    slot.prepare (fs); slot.set (hq, false, {}, true);
+                    const hc::ColorSlot::MS ms { 0.9f, 0.9f, 1.0f, 1.0f };
+                    float stepSteady = 0.0f, stepSwitch = 0.0f, prevL = 0.0f;
+                    const int third = tone.getNumSamples() / 3;
+                    for (int pos = 0; pos < tone.getNumSamples(); pos += 128)
+                    {
+                        const int nb = juce::jmin (128, tone.getNumSamples() - pos);
+                        const bool msNow = pos >= third && pos < 2 * third;
+                        slot.set (hq, msNow, ms, false);
+                        slot.process (tone.getWritePointer (0, pos), tone.getWritePointer (1, pos), nb, 1.0f);
+                        for (int i = 0; i < nb; ++i)
+                        {
+                            const int k = pos + i;
+                            const float st = std::abs (tone.getSample (0, k) - prevL); prevL = tone.getSample (0, k);
+                            const bool nearSwitch = std::abs (k - third) < (int) (0.08 * fs) || std::abs (k - 2 * third) < (int) (0.08 * fs);
+                            if (k > (int) (0.2 * fs)) (nearSwitch ? stepSwitch : stepSteady) = juce::jmax (nearSwitch ? stepSwitch : stepSteady, st);
+                        }
+                    }
+                    check (allFinite (tone) && stepSwitch < 1.25f * stepSteady, tag + "STEREO -> M/S -> STEREO while a tone plays: no click (largest step "
+                           + juce::String (stepSwitch, 4) + " vs " + juce::String (stepSteady, 4) + " steady)");
+                }
+            }
+
+        // ---- in the plugin: M/S selected but HARMONIC COLOR OFF = bit-identical to 1.7d; latency unchanged
+        for (int q : { 0, 1 })
+        {
+            auto a = makeProcessor (48000.0, 256), b = makeProcessor (48000.0, 256);
+            for (auto* pr : { a.get(), b.get() }) { pr->getPresetManager().load (pr->getPresetManager().indexOf ("factory:Halls/Concert Hall")); setQ (*pr, ParamIDs::quality, (float) q); }
+            setQ (*b, ParamIDs::hcMode, 1.0f); setQ (*b, ParamIDs::hcMidDrive, 90.0f); setQ (*b, ParamIDs::hcSideMix, 20.0f);
+            pump (100);
+            auto x = pinkish (48000.0, 3.0, 4), y = x;
+            run (*a, x, 256); run (*b, y, 256);
+            check (maxAbsDiff (x, y) == 0.0f && a->getLatencySamples() == b->getLatencySamples(),
+                   juce::String (q ? "STUDIO HQ" : "LIVE") + ": M/S selected, HARMONIC COLOR OFF -> bit-identical, latency " + juce::String (b->getLatencySamples()));
+        }
+        // ---- in the plugin: M/S ON, POST and PRE, finite, latency the same as STEREO; preset loads STEREO
+        for (int pos : { 0, 1 })
+        {
+            auto a = makeProcessor (48000.0, 256);
+            a->getPresetManager().load (a->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            setQ (*a, ParamIDs::quality, 1.0f); setQ (*a, ParamIDs::hcOn, 1.0f); setQ (*a, ParamIDs::hcPos, (float) pos);
+            setQ (*a, ParamIDs::hcMode, 1.0f); setQ (*a, ParamIDs::hcMidDrive, 80.0f); setQ (*a, ParamIDs::hcSideDrive, 20.0f);
+            pump (100);
+            const int lat = a->getLatencySamples();
+            auto x = wide (48000.0, 3.0, 12);
+            run (*a, x, 256);
+            check (allFinite (x) && peak (x) > 0.01f && lat == a->getLatencySamples(),
+                   juce::String (pos ? "PRE" : "POST") + ": M/S ON in STUDIO HQ runs clean, latency unchanged (" + juce::String (lat) + ")");
+        }
+        {
+            auto a = makeProcessor (48000.0, 256);
+            setQ (*a, ParamIDs::hcMode, 1.0f); setQ (*a, ParamIDs::hcMidMix, 40.0f);
+            a->getPresetManager().load (a->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            pump (50);
+            const bool presetOk = a->apvts.getRawParameterValue (ParamIDs::hcMode)->load() < 0.5f
+                                  && std::abs (a->apvts.getRawParameterValue (ParamIDs::hcMidMix)->load() - 100.0f) < 0.01f;
+            juce::MemoryBlock mb;
+            auto fresh = makeProcessor (48000.0, 256);
+            fresh->getStateInformation (mb);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), (int) mb.getSize());
+            for (auto* e : xml->getChildIterator()) if (e->getStringAttribute ("id").startsWith ("hcm") || e->getStringAttribute ("id").startsWith ("hcs")) e->setAttribute ("id", "zz");
+            juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary (*xml, old);
+            setQ (*a, ParamIDs::hcMode, 1.0f);
+            a->setStateInformation (old.getData(), (int) old.getSize());
+            pump (50);
+            check (presetOk && a->apvts.getRawParameterValue (ParamIDs::hcMode)->load() < 0.5f,
+                   "an older preset / project (no 1.8 IDs) loads STEREO with every M/S value at its default");
+        }
+        // ---- CPU: M/S costs about what STEREO costs
+        {
+            hc::HarmonicColor::Settings h; h.on = true; h.drive = 0.6f; h.quality = 1;
+            double t[2] {};
+            for (int ms = 0; ms < 2; ++ms)
+            {
+                hc::ColorSlot slot; slot.prepare (48000.0); slot.set (h, ms == 1, {}, true);
+                auto b = pinkish (48000.0, 10.0, 3);
+                const double t0 = nowMs();
+                for (int pos = 0; pos + 256 <= b.getNumSamples(); pos += 256) slot.process (b.getWritePointer (0, pos), b.getWritePointer (1, pos), 256, 1.0f);
+                t[ms] = nowMs() - t0;
+            }
+            std::printf ("     HARMONIC COLOR HQ, 10 s stereo at 48 kHz: STEREO %.1f ms, M/S %.1f ms\n", t[0], t[1]);
+            check (t[1] < 1.35 * t[0] + 5.0, "M/S costs about what STEREO costs (" + juce::String (t[1] / juce::jmax (1.0, t[0]), 2) + "x)");
+        }
+    }
+   #endif
 
     //==========================================================================
     section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
