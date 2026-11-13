@@ -286,6 +286,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
                 p.push_back (std::make_unique<juce::AudioParameterChoice> (pid (eqSlope), nm + "Slope",
                                  juce::StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" }, 1,
                                  juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+#ifdef MAS_STUDIO_DYN
+                // Manual dynamic cuts are OFF by default; 1.5 and earlier builds never see these IDs.
+                p.push_back (std::make_unique<juce::AudioParameterBool> (pid (eqDynOn), nm + "Dynamic Cut", false));
+                p.push_back (std::make_unique<APF> (pid (eqDynThreshold), nm + "Dynamic Threshold",
+                                 juce::NormalisableRange<float> (-72.0f, -6.0f), -36.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dBFS"; })));
+                p.push_back (std::make_unique<APF> (pid (eqDynMax), nm + "Dynamic Max Cut",
+                                 juce::NormalisableRange<float> (0.0f, 6.0f), 3.0f,
+                                 Attr().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dB"; })));
+#endif
             }
     }
    #endif
@@ -357,6 +367,11 @@ static req::Settings eqFrom (Get&& value, bool on)
             d.gainDb = juce::jlimit (-18.0f, 18.0f, value (b, i, eqGain));
             d.q      = juce::jlimit (0.1f, 18.0f, value (b, i, eqQ));
             d.slope  = juce::jlimit (0, 3, juce::roundToInt (value (b, i, eqSlope)));
+#ifdef MAS_STUDIO_DYN
+            d.dynamic = value (b, i, eqDynOn) > 0.5f;
+            d.dynamicThresholdDb = juce::jlimit (-72.0f, -6.0f, value (b, i, eqDynThreshold));
+            d.dynamicMaxDb = juce::jlimit (0.0f, 6.0f, value (b, i, eqDynMax));
+#endif
         }
     return s;
 }
@@ -1760,7 +1775,12 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
         auto field = [&m] (int b, int i, int f)
         {
             const auto it = m.find (ParamIDs::eqId (b, i, f));
-            return it != m.end() ? it->second : (f == ParamIDs::eqFreq ? 1000.0f : f == ParamIDs::eqQ ? 1.0f : f == ParamIDs::eqSlope ? 1.0f : 0.0f);
+            if (it != m.end()) return it->second;
+#ifdef MAS_STUDIO_DYN
+            if (f == ParamIDs::eqDynThreshold) return -36.0f;
+            if (f == ParamIDs::eqDynMax) return 3.0f;
+#endif
+            return f == ParamIDs::eqFreq ? 1000.0f : f == ParamIDs::eqQ ? 1.0f : f == ParamIDs::eqSlope ? 1.0f : 0.0f;
         };
         p.eq = eqFrom (field, getter (ParamIDs::eqOn) > 0.5f);
     }

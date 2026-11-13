@@ -19,6 +19,9 @@ struct Peak
     int id = 0;
     float freq = 0, levelDb = -200, promDb = 0, bwHz = 0, q = 0, age = 0;
     bool harmonic = false;
+#ifdef MAS_STUDIO_DYN
+    bool fundamental = false;   // root of a detected harmonic family (overtones are marked separately)
+#endif
 };
 
 class PeakDetector
@@ -26,6 +29,9 @@ class PeakDetector
 public:
     int maxMarkers = 6;
     float minPromDb = 9.0f, floorDb = -84.0f, lonePeakSeconds = 1.0f, harmonicSeconds = 3.0f;
+#ifdef MAS_STUDIO_DYN
+    float markerHoldSeconds = 3.0f; // keep a CONFIRMED marker actionable after the last matching peak
+#endif
 
     void reset() { tracks.clear(); shown.clear(); }
 
@@ -82,13 +88,29 @@ public:
             p.bwHz += 0.3f * (c.bwHz - p.bwHz); p.q = p.freq / std::max (1e-3f, p.bwHz);
             p.age += (float) dt; best->hit = true; best->miss = 0;
         }
+#ifdef MAS_STUDIO_DYN
+        // Confirmed peaks remain visible and clickable for 3 seconds after their last match.
+        for (auto& t : tracks) if (! t.hit)
+        {
+            t.miss += (float) dt;
+            t.p.age = std::max (0.0f, t.p.age - 2.0f * (float) dt);
+            t.linger = std::max (0.0f, t.linger - (float) dt);
+        }
+        tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [] (const Track& t)
+        { return t.miss > 0.25f && t.linger <= 0.0f; }), tracks.end());
+#else
         for (auto& t : tracks) if (! t.hit) { t.miss += (float) dt; t.p.age = std::max (0.0f, t.p.age - 2.0f * (float) dt); }
         tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [] (const Track& t) { return t.miss > 0.25f; }), tracks.end());
+#endif
 
         // harmonic series: notes and their overtones have to hold much longer before they are shown
         // (a series = a root with at least two whole-number multiples among the peaks present right now; two
         // resonances that just happen to sit an octave or two apart are not a series)
+#ifdef MAS_STUDIO_DYN
+        for (auto& t : tracks) if (t.hit) { t.p.harmonic = false; t.p.fundamental = false; }
+#else
         for (auto& t : tracks) t.p.harmonic = false;
+#endif
         for (auto& u : tracks)
         {
             if (! u.hit) continue;
@@ -101,6 +123,9 @@ public:
             }
             if (multiples < 2) continue;
             u.p.harmonic = true;
+#ifdef MAS_STUDIO_DYN
+            u.p.fundamental = true;
+#endif
             for (auto& t : tracks)
             {
                 const float ratio = t.p.freq / u.p.freq, n = std::round (ratio);
@@ -108,9 +133,20 @@ public:
             }
         }
         shown.clear();
+#ifdef MAS_STUDIO_DYN
+        for (auto& t : tracks)
+        {
+            if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds))
+                t.linger = markerHoldSeconds;
+            if (t.linger > 0.0f) shown.push_back (t.p);
+        }
+        std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b)
+        { return a.fundamental != b.fundamental ? a.fundamental : a.promDb > b.promDb; });
+#else
         for (const auto& t : tracks)
             if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds)) shown.push_back (t.p);
         std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b) { return a.promDb > b.promDb; });
+#endif
         if ((int) shown.size() > maxMarkers) shown.resize ((size_t) maxMarkers);
     }
 
@@ -118,7 +154,11 @@ public:
     int numTracks() const { return (int) tracks.size(); }
 
 private:
+#ifdef MAS_STUDIO_DYN
+    struct Track { Peak p; bool hit = false; float miss = 0, linger = 0; };
+#else
     struct Track { Peak p; bool hit = false; float miss = 0; };
+#endif
     std::vector<Track> tracks;
     std::vector<Peak> cand, shown;
     std::vector<double> cum;

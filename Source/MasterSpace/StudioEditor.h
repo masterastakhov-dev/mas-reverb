@@ -79,6 +79,11 @@ private:
     juce::OwnedArray<juce::TextButton> tabs;
     Cache topCache;
     int themeIndex = 0;
+#ifdef MAS_STUDIO_DYN
+    float lampHeat = 0.0f;
+    int lampStep = 0;
+    double lampLastMs = 0.0;
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Panel)
 };

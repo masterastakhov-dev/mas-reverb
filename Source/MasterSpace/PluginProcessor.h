@@ -149,8 +149,16 @@ namespace ParamIDs
     // States and presets without them load with the EQ off and no band in use.
     inline constexpr const char* eqOn = "eqon";
     inline constexpr char eqBankChar[3] = { 'w', 'e', 'l' };
-    inline constexpr char eqFieldChar[7] = { 'u', 'b', 't', 'f', 'g', 'q', 's' };
-    enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope, eqNumFields };
+    inline constexpr char eqFieldChar[] = { 'u', 'b', 't', 'f', 'g', 'q', 's'
+#ifdef MAS_STUDIO_DYN
+                                             , 'd', 'h', 'm'
+#endif
+                                           };
+    enum EqField { eqUsed = 0, eqBypass, eqType, eqFreq, eqGain, eqQ, eqSlope,
+#ifdef MAS_STUDIO_DYN
+                   eqDynOn, eqDynThreshold, eqDynMax,
+#endif
+                   eqNumFields };
     inline juce::String eqId (int bank, int band, int field)
     {
         return juce::String ("eq") + juce::String::charToString ((juce::juce_wchar) eqBankChar[bank]) + juce::String (band + 1)
