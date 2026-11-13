@@ -1370,7 +1370,7 @@ int main (int argc, char** argv)
    #endif
 
    #ifdef MAS_EQ
-#ifdef MAS_STUDIO
+#ifdef MAS_STUDIO_DYN
     //==========================================================================
     section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
     {
