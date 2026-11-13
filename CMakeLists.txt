@@ -120,6 +120,16 @@ juce_add_binary_data(MasterSpaceStudioPresets HEADER_NAME MasterSpacePresets.h N
     SOURCES ${MAS_SPACE_PRESETS} ${MAS_ATMOS_PRESETS})
 target_link_libraries(MasterSpaceStudio PRIVATE MasterSpaceStudioPresets MasStudioFonts)
 
+# MASTER SPACE 1.7d DYNAMIC TEST: isolated AU/VST3 identity and preset folder;
+# same studio GUI with independently opt-in manual dynamic EQ (MAS_STUDIO_DYN).
+mas_add_plugin(MasterSpace17d "MASTER SPACE 1.7d DYNAMIC TEST" MS7d com.masterastakhovsound.masterspace17d 1.7.0
+               Source/MasterSpace "MASTER SPACE 1.7d manual dynamic resonance cuts (test build)")
+target_sources(MasterSpace17d PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp
+               Source/MasterSpace/StudioLook.cpp Source/MasterSpace/StudioEditor.cpp)
+target_compile_definitions(MasterSpace17d PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1)
+target_link_libraries(MasterSpace17d PRIVATE MasterSpaceStudioPresets MasStudioFonts)
+
+
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
                Source/MasterSpace11 "MASTER SPACE 1.1 (reference for A/B)")
@@ -212,6 +222,24 @@ if(MAS_BUILD_TESTS)
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1 MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1
         JucePlugin_Name="MASTER SPACE STUDIO TEST" JucePlugin_VersionString="1.6.0")
     target_link_libraries(MasterSpaceStudioTests PRIVATE
+        MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # Separate 1.7d tests: same snapshot coverage + manual dynamic band / peak hold tests.
+    juce_add_console_app(MasterSpace17dTests PRODUCT_NAME "MasterSpace17dTests")
+    target_sources(MasterSpace17dTests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp
+        Source/MasterSpace/StudioLook.cpp
+        Source/MasterSpace/StudioEditor.cpp)
+    target_compile_definitions(MasterSpace17dTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1
+        JucePlugin_Name="MASTER SPACE 1.7d DYNAMIC TEST" JucePlugin_VersionString="1.7.0")
+    target_link_libraries(MasterSpace17dTests PRIVATE
         MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()
