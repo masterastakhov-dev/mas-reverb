@@ -19,6 +19,7 @@ struct Peak
     int id = 0;
     float freq = 0, levelDb = -200, promDb = 0, bwHz = 0, q = 0, age = 0;
     bool harmonic = false;
+    bool fundamental = false;   // root of a detected harmonic family (overtones are marked separately)
 };
 
 class PeakDetector
@@ -26,6 +27,7 @@ class PeakDetector
 public:
     int maxMarkers = 6;
     float minPromDb = 9.0f, floorDb = -84.0f, lonePeakSeconds = 1.0f, harmonicSeconds = 3.0f;
+    float markerHoldSeconds = 3.0f; // keep a CONFIRMED marker actionable after the last matching peak
 
     void reset() { tracks.clear(); shown.clear(); }
 
@@ -82,13 +84,21 @@ public:
             p.bwHz += 0.3f * (c.bwHz - p.bwHz); p.q = p.freq / std::max (1e-3f, p.bwHz);
             p.age += (float) dt; best->hit = true; best->miss = 0;
         }
-        for (auto& t : tracks) if (! t.hit) { t.miss += (float) dt; t.p.age = std::max (0.0f, t.p.age - 2.0f * (float) dt); }
-        tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [] (const Track& t) { return t.miss > 0.25f; }), tracks.end());
+        // Don't remove a confirmed marker just because the signal stopped: the engineer needs
+        // time to examine it and click it. Freeze frequency/Q/level while unmatched.
+        for (auto& t : tracks) if (! t.hit)
+        {
+            t.miss += (float) dt;
+            t.p.age = std::max (0.0f, t.p.age - 2.0f * (float) dt);
+            t.linger = std::max (0.0f, t.linger - (float) dt);
+        }
+        tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [] (const Track& t)
+        { return t.miss > 0.25f && t.linger <= 0.0f; }), tracks.end());
 
         // harmonic series: notes and their overtones have to hold much longer before they are shown
         // (a series = a root with at least two whole-number multiples among the peaks present right now; two
         // resonances that just happen to sit an octave or two apart are not a series)
-        for (auto& t : tracks) t.p.harmonic = false;
+        for (auto& t : tracks) { t.p.harmonic = false; t.p.fundamental = false; }
         for (auto& u : tracks)
         {
             if (! u.hit) continue;
@@ -101,6 +111,7 @@ public:
             }
             if (multiples < 2) continue;
             u.p.harmonic = true;
+            u.p.fundamental = true;
             for (auto& t : tracks)
             {
                 const float ratio = t.p.freq / u.p.freq, n = std::round (ratio);
@@ -108,9 +119,15 @@ public:
             }
         }
         shown.clear();
-        for (const auto& t : tracks)
-            if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds)) shown.push_back (t.p);
-        std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b) { return a.promDb > b.promDb; });
+        for (auto& t : tracks)
+        {
+            if (t.hit && t.p.age >= (t.p.harmonic ? harmonicSeconds : lonePeakSeconds))
+                t.linger = markerHoldSeconds;
+            if (t.linger > 0.0f) shown.push_back (t.p);
+        }
+        // Root fundamentals get priority when the number of displayed markers is limited.
+        std::sort (shown.begin(), shown.end(), [] (const Peak& a, const Peak& b)
+        { return a.fundamental != b.fundamental ? a.fundamental : a.promDb > b.promDb; });
         if ((int) shown.size() > maxMarkers) shown.resize ((size_t) maxMarkers);
     }
 
@@ -118,7 +135,7 @@ public:
     int numTracks() const { return (int) tracks.size(); }
 
 private:
-    struct Track { Peak p; bool hit = false; float miss = 0; };
+    struct Track { Peak p; bool hit = false; float miss = 0, linger = 0; };
     std::vector<Track> tracks;
     std::vector<Peak> cand, shown;
     std::vector<double> cum;
