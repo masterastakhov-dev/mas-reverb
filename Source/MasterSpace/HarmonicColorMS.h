@@ -61,19 +61,27 @@ public:
     const HarmonicColor& midMeters() const { return mid; }
     const HarmonicColor& sideMeters() const { return side; }
 
-    void process (float* L, float* R, int n, float level)
+    // STEREO and steady (no M/S, no cross-fade)? Then the caller runs stereo().process() itself, with exactly the
+    // call 1.7d made (same arguments, constants included): the compiler sees the very same call site, so STEREO
+    // stays bit-identical whatever it decides about inlining and FMA contraction.
+    bool steadyStereo()
     {
         // a module turned off while in M/S goes back to the exact STEREO bypass once its own fade has ended
         if (msTarget && ! msSelected) msTarget = false;
         if (msTarget && ! st.getSettings().on && ! mid.isActive() && ! side.isActive()) msTarget = false;
-
-        if (! msTarget && msGain <= 0.0f)                  // STEREO, steady: exactly the 1.7d code path
+        if (! msTarget && msGain <= 0.0f)
         {
             if (! msIdle) { mid.reset(); side.reset(); msIdle = true; }
             if (stIdle) { st.reset(); stIdle = false; }
-            st.process (L, R, n, level);
-            return;
+            return true;
         }
+        return false;
+    }
+    HarmonicColor& stereo() { return st; }
+
+    void process (float* L, float* R, int n, float level)
+    {
+        if (steadyStereo()) { st.process (L, R, n, level); return; }
         if (msTarget && msGain >= 1.0f)                    // M/S, steady
         {
             if (! stIdle) { st.reset(); stIdle = true; }

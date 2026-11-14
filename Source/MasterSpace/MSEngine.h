@@ -1401,7 +1401,15 @@ private:
        #ifdef MAS_RI
         // HARMONIC COLOR, PRE: colours the signal that feeds the reverb (the dry / direct path stays untouched).
         // In STUDIO HQ the module (or its plain delay when off) sits in exactly one place: PRE or POST.
+#ifdef MAS_STUDIO_18
+        if (curHcPos == 1 && (curQuality == 1 || hcPre.isActive()))
+        {
+            if (hcPre.steadyStereo()) hcPre.stereo().process (inL, inR, n, 1.0f);     // the 1.7d call, as it was
+            else hcPre.process (inL, inR, n, 1.0f);
+        }
+#else
         if (curHcPos == 1 && (curQuality == 1 || hcPre.isActive())) hcPre.process (inL, inR, n, 1.0f);
+#endif
        #endif
         er.process (inL, inR, erL, erR, n);
        #ifdef MAS_ATMOS
@@ -1452,8 +1460,21 @@ private:
         // the ducker; the drive is relative to the level each part is heard at.
         if (curHcPos == 0)
         {
+#ifdef MAS_STUDIO_18
+            if (curQuality == 1 || hcEarly.isActive())
+            {
+                if (hcEarly.steadyStereo()) hcEarly.stereo().process (erL, erR, n, curEr);
+                else hcEarly.process (erL, erR, n, curEr);
+            }
+            if (curQuality == 1 || hcLate.isActive())
+            {
+                if (hcLate.steadyStereo()) hcLate.stereo().process (ltL, ltR, n, curLate * algoGain);
+                else hcLate.process (ltL, ltR, n, curLate * algoGain);
+            }
+#else
             if (curQuality == 1 || hcEarly.isActive()) hcEarly.process (erL, erR, n, curEr);
             if (curQuality == 1 || hcLate.isActive()) hcLate.process (ltL, ltR, n, curLate * algoGain);
+#endif
         }
         // RESONANCE GUARD on the formed wet; its source reference is the signal that feeds the reverb.
         float* dEL = ltR + kChunk; float* dER = dEL + kChunk; float* dLL = dER + kChunk; float* dLR = dLL + kChunk;
