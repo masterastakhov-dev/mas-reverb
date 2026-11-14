@@ -37,7 +37,11 @@ struct IOMeters
     {
         const bool on = wanted.load (std::memory_order_relaxed);
         if (on && ! running)
+        {
+            // restart: no average and no peak left over from before the meters were hidden (no stale red marker)
             for (auto& io : ms) io[0] = io[1] = 0.0;
+            for (auto& io : peakLin) { io[0].store (0.0f, std::memory_order_relaxed); io[1].store (0.0f, std::memory_order_relaxed); }
+        }
         running = on;
         return on;
     }

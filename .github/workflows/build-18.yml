@@ -1,0 +1,151 @@
+name: Build MASTER SPACE 1.8 STUDIO (macOS AU + VST3)
+
+# Isolated 1.8 STUDIO workflow: unique product (MS18), binaries, ZIP, tests, sound identity.
+# 1.6 and 1.7d stay untouched; no publishing, no merging.
+on:
+  push:
+    branches: [ claude/1.8-studio ]
+  pull_request:
+    branches: [ claude/1.7d-dynamic ]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libx11-dev libxinerama-dev libxext-dev libxrandr-dev libxcursor-dev libfreetype6-dev libfontconfig1-dev ninja-build > /dev/null
+      - name: Build tests (1.5, 1.6 STUDIO, 1.7d, 1.8)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
+          cmake --build build --target MasterSpace15Tests MasterSpaceStudioTests MasterSpace17dTests MasterSpace18Tests
+      - name: Build the pre-1.8 reference (1.7d code at d3f2153, current reference test)
+        run: |
+          git worktree add ../ref d3f2153
+          cp tests/space_plugin_tests.cpp ../ref/tests/
+          cmake -S ../ref -B build-ref -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON -DFETCHCONTENT_SOURCE_DIR_JUCE="$PWD/build/_deps/juce-src"
+          cmake --build build-ref --target MasterSpace17dTests
+      - name: Processor tests + sound identity (OFF = pre-1.8 code, 1.5, 1.6, 1.7d bit-for-bit)
+        run: |
+          ./build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests | tee studio18-tests.log
+          grep -q "checks, 0 failed" studio18-tests.log
+          ./build-ref/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests --refhash > href.txt
+          ./build/MasterSpace15Tests_artefacts/Release/MasterSpace15Tests --refhash > h15.txt
+          ./build/MasterSpaceStudioTests_artefacts/Release/MasterSpaceStudioTests --refhash > h16.txt
+          ./build/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests --refhash > h17d.txt
+          ./build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash > h18.txt
+          N=$(grep -c REF href.txt)
+          gcc --version | head -1 | tee -a studio18-tests.log
+          # every pair, for the record (different build configurations may round differently on this compiler)
+          for h in h15.txt h16.txt h17d.txt h18.txt; do
+            echo "pre-1.8 (1.7d config) vs $h: $(diff <(grep REF href.txt) <(grep REF $h) | grep -c '^>') differing renders of $N" | tee -a studio18-tests.log
+          done
+          echo "1.5 vs 1.6: $(diff <(grep REF h15.txt) <(grep REF h16.txt) | grep -c '^>')  1.6 vs 1.7d: $(diff <(grep REF h16.txt) <(grep REF h17d.txt) | grep -c '^>')" | tee -a studio18-tests.log
+          # the requirement: the same configuration, old code vs new code, and 1.8 with its modules OFF
+          diff <(grep REF href.txt) <(grep REF h17d.txt)
+          diff <(grep REF href.txt) <(grep REF h18.txt)
+          echo "IDENTICAL: $N renders - pre-1.8 code (d3f2153) = 1.7d = 1.8 (new modules OFF, HARMONIC COLOR STEREO)" | tee -a studio18-tests.log
+      - name: 1.7d tests (still green)
+        run: ./build/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests | tee dynamic17d-tests.log
+      - name: 1.8 editor snapshots
+        run: ./build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --studio-snapshot snapshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio18-tests-and-snapshots
+          path: |
+            studio18-tests.log
+            dynamic17d-tests.log
+            snapshots
+          retention-days: 30
+
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: MasterSpace18
+            name: MASTER SPACE 1.8 STUDIO
+            code: MS18
+            slug: MASTER-SPACE-1.8-STUDIO
+    env:
+      TARGET: ${{ matrix.target }}
+      NAME: ${{ matrix.name }}
+      CODE: ${{ matrix.code }}
+      SLUG: ${{ matrix.slug }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64)
+        run: |
+          cmake -B build -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: cmake --build build --config Release --target "${TARGET}_AU" "${TARGET}_VST3" -- -quiet
+
+      - name: Ad-hoc sign
+        run: |
+          ART="build/${TARGET}_artefacts/Release"
+          codesign --force --deep --sign - "$ART/AU/$NAME.component"
+          codesign --force --deep --sign - "$ART/VST3/$NAME.vst3"
+          lipo -info "$ART/AU/$NAME.component/Contents/MacOS/$NAME"
+
+      - name: Validate Audio Unit (auval)
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/${TARGET}_artefacts/Release/AU/$NAME.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -a | grep -i "Mast" || true
+          auval -strict -v aufx "$CODE" Mast | tee auval.log
+          grep -q "AU VALIDATION SUCCEEDED" auval.log
+
+      - name: pluginval (state save / restore, automation, 44.1 / 48 / 96 kHz)
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV=pluginval.app/Contents/MacOS/pluginval
+          mkdir -p ~/Library/Audio/Plug-Ins/VST3
+          cp -R "build/${TARGET}_artefacts/Release/VST3/$NAME.vst3" ~/Library/Audio/Plug-Ins/VST3/
+          $PV --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 64,256,512,1024 \
+              --validate ~/Library/Audio/Plug-Ins/VST3/"$NAME.vst3" 2>&1 | tee pluginval-vst3.log
+          $PV --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 64,256,512,1024 \
+              --validate ~/Library/Audio/Plug-Ins/Components/"$NAME.component" 2>&1 | tee pluginval-au.log
+
+      - name: Package
+        run: |
+          ART="build/${TARGET}_artefacts/Release"
+          OUT="dist/$NAME"
+          mkdir -p "$OUT"
+          cp -R "$ART/AU/$NAME.component" "$OUT/"
+          cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
+          INSTALL_IN="installer/install-${TARGET}.command.in"
+          [ -f "$INSTALL_IN" ] || INSTALL_IN="installer/install.command.in"
+          sed -e "s/__NAME__/$NAME/g" -e "s/__CODE__/$CODE/g" "$INSTALL_IN" > "$OUT/Install $NAME.command"
+          README_IN="installer/README-${TARGET}.txt.in"
+          [ -f "$README_IN" ] || README_IN="installer/README.txt.in"
+          sed "s/__NAME__/$NAME/g" "$README_IN" > "$OUT/README.txt"
+          chmod +x "$OUT/Install $NAME.command"
+          if grep -q "__NAME__\|__CODE__" "$OUT/Install $NAME.command"; then echo "installer template not filled in"; exit 1; fi
+          bash -n "$OUT/Install $NAME.command"
+          cp auval.log "$OUT/auval-report.txt"
+          [ -f pluginval-vst3.log ] && cp pluginval-vst3.log "$OUT/pluginval-vst3-report.txt"
+          [ -f pluginval-au.log ] && cp pluginval-au.log "$OUT/pluginval-au-report.txt"
+          [ -d presets/factory ] && [ "$TARGET" = "MasterSpace" ] && mkdir -p "$OUT/Preset format" && cp docs/PRESET_FORMAT.md "$OUT/Preset format/" 2>/dev/null || true
+          cd dist && ditto -c -k --keepParent "$NAME" "$SLUG-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.slug }}-macOS
+          path: dist/${{ matrix.slug }}-macOS.zip
+          retention-days: 90

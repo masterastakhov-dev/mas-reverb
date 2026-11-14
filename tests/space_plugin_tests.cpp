@@ -295,10 +295,14 @@ static int studioSnapshots (const juce::File& dir)
             for (int x = 36; x < 196; ++x)
             {
                 const auto c = img.getPixelAt (x, y);
-                if (c.getRed() > 120 && c.getRed() > c.getGreen() + 50 && c.getRed() > c.getBlue() + 40) ++red;
+                if (c.getRed() > 80 && c.getRed() > c.getGreen() + 35 && c.getRed() > c.getBlue() + 35) ++red;   // muted red disc
                 if (c.getBlue() > 170 && c.getGreen() > 140 && c.getRed() < 120) ++cyan;
             }
-        const bool ok = red > 60 && cyan == 0;
+       #ifdef MAS_STUDIO_18
+        const bool ok = red == 0 && cyan == 0;        // 1.8: the corner carries only the slogan
+       #else
+        const bool ok = red > 40 && cyan == 0;
+       #endif
         std::printf ("  [%s] header: brand emblem above the wordmark (red %d px), no wave (cyan %d px)\n", ok ? " ok " : "FAIL", red, cyan);
         if (! ok) return 1;
     }
@@ -421,6 +425,19 @@ static int studioSnapshots (const juce::File& dir)
     shot ("04_MAIN_PRO");
     const char* names[] = { "MAIN", "SPACE", "EARLY", "LATE", "DECAY_EQ", "MOD", "STEREO", "ADVANCED", "ATMOS", "DUCKER", "GUARD", "COLOR", "REVERB_EQ", "PRESETS" };
     for (int i = 1; i < 14; ++i) { panel.setPage (i); feed (3); shot (juce::String ("05_PRO_") + juce::String (i).paddedLeft ('0', 2) + "_" + names[i]); }
+   #ifdef MAS_STUDIO_18
+    {
+        // 1.8: the compressor working (GR on both meters), COLOR in M/S, MAIN with M/S COMP on
+        set (ParamIDs::cpOn, 1.0f); set (ParamIDs::cpMidThr, -52.0f); set (ParamIDs::cpSideThr, -56.0f);
+        set (ParamIDs::cpMidRatio, 4.0f); set (ParamIDs::cpSideRatio, 3.0f);
+        set (ParamIDs::hcOn, 1.0f); set (ParamIDs::hcMode, 1.0f); set (ParamIDs::hcMidDrive, 60.0f); set (ParamIDs::hcSideMix, 45.0f);
+        panel.setPage (14); feed (12); shot ("05_PRO_14_COMP");
+        panel.setPage (11); feed (3); shot ("05_PRO_11_COLOR_MS");
+        panel.setPro (false); panel.setPage (0); feed (8); shot ("08_MAIN_COMP_ON");
+        set (ParamIDs::cpOn, 0.0f); set (ParamIDs::hcOn, 0.0f); set (ParamIDs::hcMode, 0.0f);
+        feed (4);
+    }
+   #endif
     panel.setPro (false); panel.setPage (0);
     for (int th = 1; th < studio::kNumThemes; ++th) { panel.setTheme (th); shot (juce::String ("06_THEME_") + studio::theme (th).name); }
     panel.setTheme (0);
@@ -507,9 +524,12 @@ static int refHashes (const juce::File& dumpDir)
     {
         if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain));
     };
-    struct Sc { const char* name; const char* preset; int duck, rg, hc, q; };
+    struct Sc { const char* name; const char* preset; int duck, rg, hc, q, hcChar = 0, hcPos = 0; };
     const Sc scs[] = { { "default", nullptr, 0, 0, 0, 0 }, { "atmos-vocal-glow", "factory:Vocal Spaces/ATMOS Vocal Glow", 0, 0, 0, 0 },
-                       { "hall-modules-live", "factory:Halls/Concert Hall", 1, 1, 1, 0 }, { "atmos-modules-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 1, 1, 1, 1 } };
+                       { "hall-modules-live", "factory:Halls/Concert Hall", 1, 1, 1, 0 }, { "atmos-modules-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 1, 1, 1, 1 },
+                       // HARMONIC COLOR STEREO in every place and character (1.8 must keep these bit-identical)
+                       { "hc-pre-tube-live", "factory:Halls/Concert Hall", 0, 0, 1, 0, 1, 1 },
+                       { "hc-post-tape-hq", "factory:Vocal Spaces/ATMOS Vocal Glow", 0, 0, 1, 1, 2, 0 } };
    #ifdef MAS_EQ
     const char* variants[] = { "eq-default", "eq-off-bands-set", "eq-on-no-bands", "eq-on-all-bypassed" };
    #else
@@ -523,6 +543,8 @@ static int refHashes (const juce::File& dumpDir)
                 if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
                 setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);
                 setP (*p, ParamIDs::hcOn, (float) sc.hc); setP (*p, ParamIDs::quality, (float) sc.q);
+                setP (*p, ParamIDs::hcChar, (float) sc.hcChar); setP (*p, ParamIDs::hcPos, (float) sc.hcPos);
+                if (sc.hcChar != 0 || sc.hcPos != 0) setP (*p, ParamIDs::hcDrive, 70.0f);   // the older scenarios stay as they were
                #ifdef MAS_EQ
                 if (v >= 1)
                     for (int b = 0; b < 3; ++b)
@@ -1720,6 +1742,24 @@ int main (int argc, char** argv)
             check (std::isfinite (a->ioMeters.rmsDb[0][0].load()) && a->ioMeters.rmsDb[0][0].load() <= -119.9f, "a NaN sample cannot freeze the meter (recovers to the floor)");
         }
 
+        // ---- no stale peak: MAIN shown -> peak near 0 dBFS -> MAIN hidden -> silence -> MAIN shown again
+        {
+            auto pr = makeProcessor (48000.0, 512);
+            pr->ioMeters.wanted = true;
+            auto hot = sineBuf (48000.0, 0.5, -0.3f, -0.3f);
+            run (*pr, hot, 512);                          // a red peak is waiting in the atomics, nobody takes it
+            pr->ioMeters.wanted = false;
+            auto quiet = silence (48000.0, 1.0);
+            run (*pr, quiet, 512);
+            pr->ioMeters.wanted = true;
+            auto quiet2 = silence (48000.0, 0.05);
+            run (*pr, quiet2, 512);
+            const float pin = pk (*pr, 0, 0), pout = pk (*pr, 1, 0);
+            check (pin < -199.0f && pout < -12.0f && rms (*pr, 0, 0) <= -119.9f,
+                   "MAIN hidden during a -0.3 dBFS peak, shown again in silence: INPUT no stale peak; OUTPUT only the real tail ("
+                   + juce::String (pout, 1) + " dBFS)");
+        }
+
         // ---- cost: measurement overhead per 512-sample block
         {
             auto on = makeProcessor (48000.0, 512), off = makeProcessor (48000.0, 512);
@@ -1765,6 +1805,550 @@ int main (int argc, char** argv)
             check (maxStep < 0.5f && f.peakDb <= -69.9f && f.rmsDb < -69.0f, "return to silence is smooth (largest step " + juce::String (maxStep, 2) + " dB per frame at 60 Hz)");
         }
     }
+
+   #ifdef MAS_STUDIO_18
+    //==========================================================================
+    section ("1.8 M/S HARMONIC COLOR: STEREO untouched, independent MID / SIDE");
+    {
+        constexpr double kPi = 3.141592653589793;
+        auto setQ = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        { if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        // a stereo test signal: different material left / right (a real wide wet)
+        auto wide = [] (double fs, double secs, int seed)
+        {
+            auto b = pinkish (fs, secs, seed);
+            juce::Random r (seed + 99);
+            float t = 0.0f;
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                t = 0.96f * t + 0.04f * (r.nextFloat() * 2.0f - 1.0f);
+                b.setSample (1, i, 0.6f * b.getSample (1, i) + 0.9f * t);
+            }
+            return b;
+        };
+        auto mDiff = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int ch, bool side)
+        {   // largest difference of MID (ch 0) or SIDE of two stereo buffers
+            float m = 0.0f;
+            for (int i = 0; i < a.getNumSamples(); ++i)
+            {
+                const float x = side ? 0.5f * (a.getSample (0, i) - a.getSample (1, i)) : 0.5f * (a.getSample (0, i) + a.getSample (1, i));
+                const float y = side ? 0.5f * (b.getSample (0, i) - b.getSample (1, i)) : 0.5f * (b.getSample (0, i) + b.getSample (1, i));
+                m = juce::jmax (m, std::abs (x - y));
+            }
+            juce::ignoreUnused (ch);
+            return m;
+        };
+
+        // ---- the slot on its own (LIVE and HQ, 44.1 / 48 / 96 kHz)
+        for (int q : { 0, 1 })
+            for (double fs : { 44100.0, 48000.0, 96000.0 })
+            {
+                const juce::String tag = juce::String (q ? "HQ   " : "LIVE ") + juce::String (fs / 1000.0, 1) + " kHz: ";
+                auto run1 = [&] (const juce::AudioBuffer<float>& in, bool ms, hc::HarmonicColor::Settings h, hc::ColorSlot::MS m)
+                {
+                    hc::ColorSlot slot;
+                    h.quality = q;
+                    slot.prepare (fs);
+                    slot.set (h, ms, m, true);
+                    auto b = in;
+                    for (int pos = 0; pos < b.getNumSamples(); pos += 256)
+                    {
+                        const int n = juce::jmin (256, b.getNumSamples() - pos);
+                        slot.set (h, ms, m, false);
+                        slot.process (b.getWritePointer (0, pos), b.getWritePointer (1, pos), n, 1.0f);
+                    }
+                    return b;
+                };
+                hc::HarmonicColor::Settings h; h.on = true; h.character = hc::HarmonicColor::Tube; h.drive = 0.8f; h.mix = 1.0f; h.levelComp = true;
+                const auto in = wide (fs, 2.0, 7);
+
+                // neutral M/S: MIX 0 gives what STEREO gives at MIX 0 (no level, width or phase change)
+                {
+                    // without LEVEL COMP the two paths are the same linear system: equal to rounding. With it, M/S follows
+                    // MID and SIDE energies separately (as it should): only its tiny micro-corrections differ.
+                    auto h0 = h; h0.mix = 0.0f; h0.levelComp = false;
+                    const auto a = run1 (in, false, h0, {}), b = run1 (in, true, h0, { 0.8f, 0.8f, 1.0f, 1.0f });
+                    h0.levelComp = true;
+                    const auto c = run1 (in, false, h0, {}), d = run1 (in, true, h0, { 0.8f, 0.8f, 1.0f, 1.0f });
+                    double e = 0.0, ref = 0.0;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < c.getNumSamples(); ++i)
+                        { const double x = c.getSample (ch, i), y = d.getSample (ch, i); e += (x - y) * (x - y); ref += x * x; }
+                    const double relDb = 10.0 * std::log10 ((e + 1.0e-30) / (ref + 1.0e-30));
+                    // the same linear system in exact arithmetic; float rounding of the oversampling and guard filters
+                    // differs with the compiler (1e-7 here, 2e-5 on the CI runner): required inaudible, below -80 dBFS
+                    check (maxAbsDiff (a, b) < 1.0e-4f && relDb < -60.0, tag + "M/S at MIX 0 = STEREO at MIX 0: without LEVEL COMP below -80 dBFS (max diff "
+                           + juce::String (maxAbsDiff (a, b), 8) + "), with it the difference is " + juce::String (relDb, 1) + " dB");
+                }
+                // mono in -> no SIDE is made; anti-phase in -> no MID is made
+                {
+                    auto mono = in; mono.copyFrom (1, 0, mono, 0, 0, mono.getNumSamples());
+                    const auto o = run1 (mono, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    float side = 0.0f, mid = 0.0f;
+                    for (int i = 0; i < o.getNumSamples(); ++i) { side = juce::jmax (side, std::abs (o.getSample (0, i) - o.getSample (1, i))); mid = juce::jmax (mid, std::abs (o.getSample (0, i))); }
+                    check (side < 1.0e-9f && mid > 0.05f, tag + "mono in: L = R out (|L - R| " + juce::String (side, 12) + "), MID saturated");
+                    auto anti = in; for (int i = 0; i < anti.getNumSamples(); ++i) anti.setSample (1, i, -anti.getSample (0, i));
+                    const auto o2 = run1 (anti, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    float sum = 0.0f;
+                    for (int i = 0; i < o2.getNumSamples(); ++i) sum = juce::jmax (sum, std::abs (o2.getSample (0, i) + o2.getSample (1, i)));
+                    check (sum < 1.0e-9f, tag + "anti-phase in (L = -R): stays anti-phase (|L + R| " + juce::String (sum, 12) + ")");
+                }
+                // independence: SIDE settings never touch the MID result and vice versa (LEVEL COMP included)
+                {
+                    const auto a = run1 (in, true, h, { 0.8f, 0.1f, 1.0f, 0.2f }), b = run1 (in, true, h, { 0.8f, 1.0f, 1.0f, 1.0f });
+                    const auto c = run1 (in, true, h, { 0.1f, 0.6f, 0.3f, 1.0f }), d = run1 (in, true, h, { 1.0f, 0.6f, 1.0f, 1.0f });
+                    check (mDiff (a, b, 0, false) < 1.0e-6f && mDiff (a, b, 0, true) > 1.0e-3f, tag + "SIDE DRIVE / MIX change only the SIDE (MID diff " + juce::String (mDiff (a, b, 0, false), 9) + ")");
+                    check (mDiff (c, d, 0, true) < 1.0e-6f && mDiff (c, d, 0, false) > 1.0e-3f, tag + "MID DRIVE / MIX change only the MID (SIDE diff " + juce::String (mDiff (c, d, 0, true), 9) + ")");
+                }
+                // the main SATURATION MIX scales both: at 0 % M/S is neutral whatever MID / SIDE MIX say
+                {
+                    auto h0 = h; h0.mix = 0.0f;
+                    const auto a = run1 (in, true, h0, { 1.0f, 1.0f, 1.0f, 1.0f }), b = run1 (in, true, h, { 1.0f, 1.0f, 0.0f, 0.0f });
+                    check (maxAbsDiff (a, b) < 2.0e-6f, tag + "SATURATION MIX 0 % = MID / SIDE MIX 0 %: no saturation anywhere");
+                }
+                // level: LEVEL COMP holds the energy of each part
+                {
+                    auto off = in;
+                    if (q == 1) { hc::HarmonicColor::Settings ho = h; ho.on = false; off = run1 (in, false, ho, {}); }
+                    const auto o = run1 (in, true, h, { 0.9f, 0.9f, 1.0f, 1.0f });
+                    const int s0 = (int) fs / 2, len = o.getNumSamples() - s0;
+                    auto rmsOf = [&] (const juce::AudioBuffer<float>& b) { return juce::Decibels::gainToDecibels (std::sqrt (0.5f * (b.getRMSLevel (0, s0, len) * b.getRMSLevel (0, s0, len) + b.getRMSLevel (1, s0, len) * b.getRMSLevel (1, s0, len)))); };
+                    const float dl = rmsOf (o) - rmsOf (off);
+                    check (std::abs (dl) < 1.0f, tag + "M/S at DRIVE 90 %: level held by LEVEL COMP (" + juce::String (dl, 2) + " dB)");
+                }
+                // switching STEREO <-> M/S on a steady tone: no click (no step larger than the tone itself makes)
+                {
+                    juce::AudioBuffer<float> tone (2, (int) (fs * 1.2));
+                    for (int i = 0; i < tone.getNumSamples(); ++i)
+                    {
+                        const float v = 0.3f * (float) std::sin (2.0 * kPi * 220.0 * i / fs);
+                        tone.setSample (0, i, v); tone.setSample (1, i, 0.7f * v + 0.1f * (float) std::sin (2.0 * kPi * 330.0 * i / fs));
+                    }
+                    hc::ColorSlot slot; auto hq = h; hq.quality = q; hq.drive = 0.6f;
+                    slot.prepare (fs); slot.set (hq, false, {}, true);
+                    const hc::ColorSlot::MS ms { 0.9f, 0.9f, 1.0f, 1.0f };
+                    float stepSteady = 0.0f, stepSwitch = 0.0f, prevL = 0.0f;
+                    const int third = tone.getNumSamples() / 3;
+                    for (int pos = 0; pos < tone.getNumSamples(); pos += 128)
+                    {
+                        const int nb = juce::jmin (128, tone.getNumSamples() - pos);
+                        const bool msNow = pos >= third && pos < 2 * third;
+                        slot.set (hq, msNow, ms, false);
+                        slot.process (tone.getWritePointer (0, pos), tone.getWritePointer (1, pos), nb, 1.0f);
+                        for (int i = 0; i < nb; ++i)
+                        {
+                            const int k = pos + i;
+                            const float st = std::abs (tone.getSample (0, k) - prevL); prevL = tone.getSample (0, k);
+                            const bool nearSwitch = std::abs (k - third) < (int) (0.08 * fs) || std::abs (k - 2 * third) < (int) (0.08 * fs);
+                            if (k > (int) (0.2 * fs)) (nearSwitch ? stepSwitch : stepSteady) = juce::jmax (nearSwitch ? stepSwitch : stepSteady, st);
+                        }
+                    }
+                    check (allFinite (tone) && stepSwitch < 1.25f * stepSteady, tag + "STEREO -> M/S -> STEREO while a tone plays: no click (largest step "
+                           + juce::String (stepSwitch, 4) + " vs " + juce::String (stepSteady, 4) + " steady)");
+                }
+            }
+
+        // ---- in the plugin: M/S selected but HARMONIC COLOR OFF = bit-identical to 1.7d; latency unchanged
+        for (int q : { 0, 1 })
+        {
+            auto a = makeProcessor (48000.0, 256), b = makeProcessor (48000.0, 256);
+            for (auto* pr : { a.get(), b.get() }) { pr->getPresetManager().load (pr->getPresetManager().indexOf ("factory:Halls/Concert Hall")); setQ (*pr, ParamIDs::quality, (float) q); }
+            setQ (*b, ParamIDs::hcMode, 1.0f); setQ (*b, ParamIDs::hcMidDrive, 90.0f); setQ (*b, ParamIDs::hcSideMix, 20.0f);
+            pump (100);
+            auto x = pinkish (48000.0, 3.0, 4), y = x;
+            run (*a, x, 256); run (*b, y, 256);
+            check (maxAbsDiff (x, y) == 0.0f && a->getLatencySamples() == b->getLatencySamples(),
+                   juce::String (q ? "STUDIO HQ" : "LIVE") + ": M/S selected, HARMONIC COLOR OFF -> bit-identical, latency " + juce::String (b->getLatencySamples()));
+        }
+        // ---- in the plugin: M/S ON, POST and PRE, finite, latency the same as STEREO; preset loads STEREO
+        for (int pos : { 0, 1 })
+        {
+            auto a = makeProcessor (48000.0, 256);
+            a->getPresetManager().load (a->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            setQ (*a, ParamIDs::quality, 1.0f); setQ (*a, ParamIDs::hcOn, 1.0f); setQ (*a, ParamIDs::hcPos, (float) pos);
+            setQ (*a, ParamIDs::hcMode, 1.0f); setQ (*a, ParamIDs::hcMidDrive, 80.0f); setQ (*a, ParamIDs::hcSideDrive, 20.0f);
+            pump (100);
+            const int lat = a->getLatencySamples();
+            auto x = wide (48000.0, 3.0, 12);
+            run (*a, x, 256);
+            check (allFinite (x) && peak (x) > 0.01f && lat == a->getLatencySamples(),
+                   juce::String (pos ? "PRE" : "POST") + ": M/S ON in STUDIO HQ runs clean, latency unchanged (" + juce::String (lat) + ")");
+        }
+        {
+            auto a = makeProcessor (48000.0, 256);
+            setQ (*a, ParamIDs::hcMode, 1.0f); setQ (*a, ParamIDs::hcMidMix, 40.0f);
+            a->getPresetManager().load (a->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            pump (50);
+            const bool presetOk = a->apvts.getRawParameterValue (ParamIDs::hcMode)->load() < 0.5f
+                                  && std::abs (a->apvts.getRawParameterValue (ParamIDs::hcMidMix)->load() - 100.0f) < 0.01f;
+            juce::MemoryBlock mb;
+            auto fresh = makeProcessor (48000.0, 256);
+            fresh->getStateInformation (mb);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), (int) mb.getSize());
+            for (auto* e : xml->getChildIterator()) if (e->getStringAttribute ("id").startsWith ("hcm") || e->getStringAttribute ("id").startsWith ("hcs")) e->setAttribute ("id", "zz");
+            juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary (*xml, old);
+            setQ (*a, ParamIDs::hcMode, 1.0f);
+            a->setStateInformation (old.getData(), (int) old.getSize());
+            pump (50);
+            check (presetOk && a->apvts.getRawParameterValue (ParamIDs::hcMode)->load() < 0.5f,
+                   "an older preset / project (no 1.8 IDs) loads STEREO with every M/S value at its default");
+        }
+        // ---- CPU: M/S costs about what STEREO costs
+        {
+            hc::HarmonicColor::Settings h; h.on = true; h.drive = 0.6f; h.quality = 1;
+            double t[2] {};
+            for (int ms = 0; ms < 2; ++ms)
+            {
+                hc::ColorSlot slot; slot.prepare (48000.0); slot.set (h, ms == 1, {}, true);
+                auto b = pinkish (48000.0, 10.0, 3);
+                const double t0 = nowMs();
+                for (int pos = 0; pos + 256 <= b.getNumSamples(); pos += 256) slot.process (b.getWritePointer (0, pos), b.getWritePointer (1, pos), 256, 1.0f);
+                t[ms] = nowMs() - t0;
+            }
+            std::printf ("     HARMONIC COLOR HQ, 10 s stereo at 48 kHz: STEREO %.1f ms, M/S %.1f ms\n", t[0], t[1]);
+            check (t[1] < 1.35 * t[0] + 5.0, "M/S costs about what STEREO costs (" + juce::String (t[1] / juce::jmax (1.0, t[0]), 2) + "x)");
+        }
+    }
+
+    //==========================================================================
+    section ("1.8 M/S OUTPUT COMPRESSOR: the module");
+    {
+        constexpr double kPi = 3.141592653589793;
+        auto sine = [] (double fs, double secs, float dbL, float dbR, double hz = 1000.0)
+        {
+            juce::AudioBuffer<float> b (2, (int) (fs * secs));
+            const float a = juce::Decibels::decibelsToGain (dbL, -300.0f), c = juce::Decibels::decibelsToGain (dbR, -300.0f);
+            for (int i = 0; i < b.getNumSamples(); ++i)
+            {
+                const float v = (float) std::sin (2.0 * kPi * hz * i / fs);
+                b.setSample (0, i, a * v); b.setSample (1, i, c * v);
+            }
+            return b;
+        };
+        auto runComp = [] (msc::MSCompressor& c, juce::AudioBuffer<float>& b, int block = 256)
+        {
+            for (int pos = 0; pos < b.getNumSamples(); pos += block)
+            {
+                const int n = juce::jmin (block, b.getNumSamples() - pos);
+                c.process (b.getReadPointer (0, pos), b.getReadPointer (1, pos), b.getWritePointer (0, pos), b.getWritePointer (1, pos), n, c.routing());
+            }
+        };
+        auto peakDb = [] (const juce::AudioBuffer<float>& b, int ch, int from)
+        { return juce::Decibels::gainToDecibels (b.getMagnitude (ch, from, b.getNumSamples() - from), -200.0f); };
+        auto msOf = [] (const juce::AudioBuffer<float>& b, bool side, int from)
+        {
+            float m = 0.0f;
+            for (int i = from; i < b.getNumSamples(); ++i) m = juce::jmax (m, std::abs (0.5f * (b.getSample (0, i) + (side ? -1.0f : 1.0f) * b.getSample (1, i))));
+            return juce::Decibels::gainToDecibels (m, -200.0f);
+        };
+        auto base = []
+        {
+            msc::Settings s; s.on = true; s.hpfOn = false; s.mix = 1.0f;
+            s.mid  = { -24.0f, 4.0f, 1.0f, 50.0f, 0.0f, 0.0f };
+            s.side = { -24.0f, 4.0f, 1.0f, 50.0f, 0.0f, 0.0f };
+            return s;
+        };
+        for (double fs : { 44100.0, 48000.0, 96000.0 })
+        {
+            const juce::String tag = juce::String (fs / 1000.0, 1) + " kHz: ";
+            const int settle = (int) (0.6 * fs);
+            // static curve, MID only (L = R): -12 dBFS sine, threshold -24, 4:1, hard knee -> -21 dBFS, SIDE stays 0
+            {
+                msc::MSCompressor c; c.prepare (fs); c.set (base(), true);
+                auto b = sine (fs, 1.0, -12.0f, -12.0f);
+                runComp (c, b);
+                float lr = 0.0f; for (int i = 0; i < b.getNumSamples(); ++i) lr = juce::jmax (lr, std::abs (b.getSample (0, i) - b.getSample (1, i)));
+                check (std::abs (msOf (b, false, settle) + 21.0f) < 0.3f && lr == 0.0f && std::abs (c.grMid.load() - 9.0f) < 0.3f && c.grSide.load() == 0.0f,
+                       tag + "MID: -12 dBFS sine, -24 dBFS / 4:1 -> " + juce::String (msOf (b, false, settle), 2) + " dBFS (expected -21), GR "
+                       + juce::String (c.grMid.load(), 2) + " dB; L = R kept exactly; SIDE GR 0");
+            }
+            // SIDE only (L = -R): its own curve, no MID created
+            {
+                auto st = base(); st.side.ratio = 2.0f;
+                msc::MSCompressor c; c.prepare (fs); c.set (st, true);
+                auto b = sine (fs, 1.0, -12.0f, -12.0f);
+                for (int i = 0; i < b.getNumSamples(); ++i) b.setSample (1, i, -b.getSample (0, i));
+                runComp (c, b);
+                float sum = 0.0f; for (int i = 0; i < b.getNumSamples(); ++i) sum = juce::jmax (sum, std::abs (b.getSample (0, i) + b.getSample (1, i)));
+                check (std::abs (msOf (b, true, settle) + 18.0f) < 0.3f && sum == 0.0f && c.grMid.load() == 0.0f,
+                       tag + "SIDE (L = -R): -12 dBFS, -24 dBFS / 2:1 -> " + juce::String (msOf (b, true, settle), 2) + " dBFS (expected -18); no MID made");
+            }
+            // independence: a loud MID and a quiet SIDE; the SIDE passes bit-exact whatever MID does
+            {
+                juce::AudioBuffer<float> a (2, (int) fs);
+                juce::Random r (3);
+                for (int i = 0; i < a.getNumSamples(); ++i)
+                {
+                    const float m = 0.5f * (float) std::sin (2.0 * kPi * 200.0 * i / fs), sd = 0.003f * (r.nextFloat() - 0.5f);
+                    a.setSample (0, i, m + sd); a.setSample (1, i, m - sd);
+                }
+                auto b1 = a, b2 = a;
+                auto s1 = base(); auto s2 = base(); s2.mid = { -40.0f, 10.0f, 0.1f, 30.0f, 12.0f, 6.0f };
+                msc::MSCompressor c1, c2; c1.prepare (fs); c1.set (s1, true); c2.prepare (fs); c2.set (s2, true);
+                runComp (c1, b1); runComp (c2, b2);
+                float dS = 0.0f;
+                for (int i = 0; i < a.getNumSamples(); ++i)
+                    dS = juce::jmax (dS, std::abs ((b1.getSample (0, i) - b1.getSample (1, i)) - (b2.getSample (0, i) - b2.getSample (1, i))));
+                check (dS < 1.0e-7f && msOf (b1, false, 0) > msOf (b2, false, 0) + 3.0f,
+                       tag + "MID and SIDE independent: heavy MID settings leave the quiet SIDE untouched (diff " + juce::String (dS, 9) + ")");
+            }
+            // 1:1, PARALLEL MIX 0 %: the output is the input, bit for bit
+            {
+                auto s1 = base(); s1.mid.ratio = s1.side.ratio = 1.0f;
+                auto s2 = base(); s2.mix = 0.0f;
+                msc::MSCompressor c1, c2; c1.prepare (fs); c1.set (s1, true); c2.prepare (fs); c2.set (s2, true);
+                const auto in = pinkish (fs, 1.0, 8);
+                auto b1 = in, b2 = in;
+                runComp (c1, b1); runComp (c2, b2);
+                check (maxAbsDiff (b1, in) == 0.0f && maxAbsDiff (b2, in) == 0.0f, tag + "RATIO 1:1 and PARALLEL MIX 0 %: bit-identical to the input");
+            }
+            // PARALLEL MIX 50 %: half of the change
+            {
+                auto s1 = base(); auto s2 = base(); s2.mix = 0.5f;
+                msc::MSCompressor c1, c2; c1.prepare (fs); c1.set (s1, true); c2.prepare (fs); c2.set (s2, true);
+                const auto in = sine (fs, 1.0, -6.0f, -10.0f);
+                auto b1 = in, b2 = in;
+                runComp (c1, b1); runComp (c2, b2);
+                float e = 0.0f;
+                for (int i = settle; i < in.getNumSamples(); ++i) e = juce::jmax (e, std::abs ((b2.getSample (0, i) - in.getSample (0, i)) - 0.5f * (b1.getSample (0, i) - in.getSample (0, i))));
+                check (e < 1.0e-5f, tag + "PARALLEL MIX 50 % = half of the change (error " + juce::String (e, 8) + ")");
+            }
+            // attack / release in time: 63 % of the final GR after about ATTACK (+ the 5 ms detector), RELEASE likewise
+            {
+                auto st = base(); st.mid = { -30.0f, 10.0f, 10.0f, 200.0f, 0.0f, 0.0f };
+                msc::MSCompressor c; c.prepare (fs); c.set (st, true);
+                auto b = sine (fs, 2.0, -40.0f, -40.0f);
+                for (int i = (int) (0.5 * fs); i < (int) (1.5 * fs); ++i) for (int ch = 0; ch < 2; ++ch) b.setSample (ch, i, b.getSample (ch, i) * juce::Decibels::decibelsToGain (30.0f));
+                std::vector<float> gr;
+                for (int pos = 0; pos < b.getNumSamples(); pos += 16)
+                {
+                    c.process (b.getReadPointer (0, pos), b.getReadPointer (1, pos), b.getWritePointer (0, pos), b.getWritePointer (1, pos), 16, 0);
+                    gr.push_back (c.grMid.load());
+                }
+                auto at = [&] (double t) { return gr[(size_t) juce::jlimit (0, (int) gr.size() - 1, (int) (t * fs / 16))]; };
+                const float fin = at (1.45);
+                const float a1 = at (0.5 + 0.015) / fin, r1 = at (1.5 + 0.2) / fin;
+                check (fin > 15.0f && a1 > 0.45f && a1 < 0.85f && r1 > 0.25f && r1 < 0.5f,
+                       tag + "ATTACK 10 ms: " + juce::String (a1 * 100.0f, 0) + " % of the GR after 15 ms; RELEASE 200 ms: "
+                       + juce::String (r1 * 100.0f, 0) + " % left after 200 ms (GR " + juce::String (fin, 1) + " dB)");
+            }
+            // side-chain high-pass: a 50 Hz bass drives the detector far less (the bass itself is not filtered)
+            {
+                auto s1 = base(); auto s2 = base(); s2.hpfOn = true; s2.hpfHz = 150.0f;
+                msc::MSCompressor c1, c2; c1.prepare (fs); c1.set (s1, true); c2.prepare (fs); c2.set (s2, true);
+                auto b1 = sine (fs, 1.0, -10.0f, -10.0f, 50.0), b2 = b1;
+                runComp (c1, b1); runComp (c2, b2);
+                check (c1.grMid.load() > c2.grMid.load() + 6.0f, tag + "SC HPF 150 Hz: GR on a 50 Hz bass " + juce::String (c2.grMid.load(), 1)
+                       + " dB instead of " + juce::String (c1.grMid.load(), 1) + " dB");
+            }
+        }
+        // ON / OFF and WET <-> FULL while a loud tone is compressed by 10 dB: smooth, no click
+        {
+            const double fs = 48000.0;
+            auto st = base(); st.mid = { -30.0f, 4.0f, 5.0f, 100.0f, 0.0f, 0.0f };
+            msc::MSCompressor c; c.prepare (fs); c.set (st, true);
+            auto b = sine (fs, 2.0, -6.0f, -9.0f, 220.0);
+            float stepSwitch = 0.0f, stepSteady = 0.0f, prev = 0.0f;
+            for (int pos = 0; pos < b.getNumSamples(); pos += 128)
+            {
+                const double t = pos / fs;
+                st.on = ! (t > 0.5 && t < 1.0);
+                st.routing = t > 1.4 ? 1 : 0;
+                c.set (st);
+                c.process (b.getReadPointer (0, pos), b.getReadPointer (1, pos), b.getWritePointer (0, pos), b.getWritePointer (1, pos), 128, c.routing());
+                for (int i = 0; i < 128; ++i)
+                {
+                    const double ti = (pos + i) / fs;
+                    const float d = std::abs (b.getSample (0, pos + i) - prev); prev = b.getSample (0, pos + i);
+                    const bool near = std::abs (ti - 0.5) < 0.05 || std::abs (ti - 1.0) < 0.05 || std::abs (ti - 1.4) < 0.08;
+                    if (ti > 0.3) (near ? stepSwitch : stepSteady) = juce::jmax (near ? stepSwitch : stepSteady, d);
+                }
+            }
+            check (stepSwitch < 1.05f * juce::Decibels::decibelsToGain (-6.0f) * (float) (2.0 * kPi * 220.0 / fs) && allFinite (b),
+                   "ON / OFF and WET ONLY <-> FULL OUTPUT while compressing 10 dB: no click (largest step " + juce::String (stepSwitch, 4)
+                   + ", steady " + juce::String (stepSteady, 4) + ")");
+        }
+        // NaN / inf: never stuck
+        {
+            msc::MSCompressor c; c.prepare (48000.0); c.set (base(), true);
+            auto b = pinkish (48000.0, 0.2, 2);
+            b.setSample (0, 100, std::numeric_limits<float>::quiet_NaN());
+            b.setSample (1, 200, std::numeric_limits<float>::infinity());
+            runComp (c, b);
+            auto ok = sine (48000.0, 1.0, -40.0f, -40.0f), ref = ok;
+            runComp (c, ok);
+            float tail = 0.0f;
+            for (int ch = 0; ch < 2; ++ch) for (int i = 36000; i < ok.getNumSamples(); ++i) tail = juce::jmax (tail, std::abs (ok.getSample (ch, i) - ref.getSample (ch, i)));
+            check (std::isfinite (c.grMid.load()) && allFinite (ok) && tail < 1.0e-6f,
+                   "a NaN / inf sample does not leave the compressor stuck: finite, back to unity below the threshold after the release (diff "
+                   + juce::String (tail, 9) + ")");
+        }
+    }
+
+    //==========================================================================
+    section ("1.8 M/S OUTPUT COMPRESSOR: in the plugin");
+    {
+        auto setQ = [] (MasterSpaceAudioProcessor& q, const juce::String& id, float plain)
+        { if (auto* r = q.apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
+        auto heavy = [&] (MasterSpaceAudioProcessor& q, int routing)
+        {
+            setQ (q, ParamIDs::cpOn, 1.0f); setQ (q, ParamIDs::cpRouting, (float) routing);
+            setQ (q, ParamIDs::cpMidThr, -40.0f); setQ (q, ParamIDs::cpMidRatio, 8.0f); setQ (q, ParamIDs::cpMidAtk, 2.0f);
+            setQ (q, ParamIDs::cpSideThr, -40.0f); setQ (q, ParamIDs::cpSideRatio, 8.0f); setQ (q, ParamIDs::cpSideAtk, 2.0f);
+        };
+        const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms18-comp-ir.wav");
+        {
+            juce::AudioBuffer<float> ir (2, 19200);
+            juce::Random rng (11);
+            for (int i = 0; i < ir.getNumSamples(); ++i)
+                for (int c = 0; c < 2; ++c) ir.setSample (c, i, (rng.nextFloat() - 0.5f) * std::exp (-5.0f * (float) i / ir.getNumSamples()));
+            irFile.deleteFile();
+            std::unique_ptr<juce::OutputStream> os (irFile.createOutputStream());
+            std::unique_ptr<juce::AudioFormatWriter> wr (juce::WavAudioFormat().createWriterFor (os.get(), 48000.0, 2, 24, {}, 0));
+            if (wr != nullptr) { os.release(); wr->writeFromAudioSampleBuffer (ir, 0, ir.getNumSamples()); }
+        }
+        // kind: 0 ALGO 1.2, 1 ALGO 1.1 legacy, 2 IR
+        auto make = [&] (int kind, int routing, int quality)
+        {
+            auto q = makeProcessor (48000.0, 256);
+            q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Halls/Concert Hall"));
+            setQ (*q, ParamIDs::routing, (float) routing); setQ (*q, ParamIDs::quality, (float) quality);
+            if (kind == 1) setQ (*q, ParamIDs::engine, 0.0f);
+            if (kind == 2) { q->loadImpulseResponse (irFile); setQ (*q, ParamIDs::mode, 1.0f); }
+            pump (300);
+            // the IR loads in the background: wait until the audio thread really has it (not a fixed time)
+            for (int k = 0; k < 400 && kind == 2 && ! q->isIRActiveOnAudio(); ++k) { auto w0 = silence (48000.0, 0.01); run (*q, w0, 256); pump (20); }
+            // juce::dsp::Convolution swaps the IR on its own thread and cross-fades to it: let that finish too
+            for (int k = 0; k < 60 && kind == 2; ++k) { auto w1 = silence (48000.0, 0.01); run (*q, w1, 256); pump (15); }
+            auto w = silence (48000.0, 0.3); run (*q, w, 256); pump (100);
+            return q;
+        };
+        const char* kinds[3] = { "ALGO 1.2", "ALGO 1.1", "IR" };
+
+        // OFF by default; ON with 1:1 = bit-identical, in every path
+        for (int kind = 0; kind < 3; ++kind)
+            for (int routing : { 0, 1 })
+            {
+                auto a = make (kind, routing, 0), b = make (kind, routing, 0);
+                const bool defOff = a->apvts.getRawParameterValue (ParamIDs::cpOn)->load() < 0.5f;
+                setQ (*b, ParamIDs::cpOn, 1.0f); setQ (*b, ParamIDs::cpMidRatio, 1.0f); setQ (*b, ParamIDs::cpSideRatio, 1.0f);
+                pump (50);
+                auto x = pinkish (48000.0, 2.0, 5), y = x;
+                run (*a, x, 256); run (*b, y, 256);
+                // IR: JUCE's convolution is reproducible between two instances only to the last float bit (-144 dB,
+                // with or without the compressor), so IR is checked to -120 dB; the algorithmic paths bit for bit
+                const float tolOff = kind == 2 ? 1.0e-6f : 0.0f;
+                check (defOff && maxAbsDiff (x, y) <= tolOff, juce::String (kinds[kind]) + (routing ? " AUX" : " INSERT")
+                       + ": COMP OFF by default; ON at 1:1 (WET ONLY) = " + (kind == 2 ? "OFF to -120 dB" : "bit-identical to OFF")
+                       + " (diff " + juce::String (maxAbsDiff (x, y), 9) + ")");
+            }
+
+        // WET ONLY never touches the dry: INSERT with the reverb MIX at 0 % -> identical to OFF; FULL OUTPUT does compress it
+        {
+            auto a = make (0, 0, 0), b = make (0, 0, 0), c = make (0, 0, 0);
+            for (auto* q : { a.get(), b.get(), c.get() }) setQ (*q, ParamIDs::mix, 0.0f);
+            heavy (*b, 0); heavy (*c, 1);
+            pump (50);
+            auto x = pinkish (48000.0, 2.0, 6), y = x, z = x;
+            run (*a, x, 256); run (*b, y, 256); run (*c, z, 256);
+            check (maxAbsDiff (x, y) == 0.0f && maxAbsDiff (x, z) > 0.01f, "INSERT, reverb MIX 0 %: WET ONLY leaves the dry bit-identical; FULL OUTPUT compresses it (diff "
+                   + juce::String (maxAbsDiff (x, z), 3) + ")");
+        }
+        // the wet tap is the real wet: in AUX (output = wet) WET ONLY and FULL OUTPUT give the same result, in every path, LIVE and HQ
+        for (int kind = 0; kind < 3; ++kind)
+            for (int quality : { 0, 1 })
+            {
+                auto b = make (kind, 1, quality), c = make (kind, 1, quality), off = make (kind, 1, quality);
+                heavy (*b, 0); heavy (*c, 1);
+                pump (50);
+                auto x = pinkish (48000.0, 2.0, 7), y = x, z = x;
+                run (*b, x, 256);
+                run (*c, y, 256);
+                run (*off, z, 256);
+                const float d = maxAbsDiff (x, y), comp = maxAbsDiff (x, z);
+                // IR in AUX keeps a -86 dB dry leak of its own (its float MIX smoothing settles at 0.99997): FULL OUTPUT also
+                // compresses that, WET ONLY rightly does not. The algorithmic paths must match exactly.
+                const float tol = kind == 2 ? 1.0e-4f : 1.0e-6f;
+                check (d < tol && comp > 1.0e-3f && b->getLatencySamples() == off->getLatencySamples(),
+                       juce::String (kinds[kind]) + (quality ? " HQ  " : " LIVE") + ", AUX: WET ONLY = FULL OUTPUT (diff " + juce::String (d, 7)
+                       + ", compression " + juce::String (comp, 3) + "), latency unchanged (" + juce::String (b->getLatencySamples()) + ")");
+            }
+        // transitions while compressing: preset change, 1.2 <-> 1.1, ALGO <-> IR, LIVE <-> HQ: finite and without clicks
+        {
+            auto q = make (0, 0, 0);
+            heavy (*q, 0);
+            q->loadImpulseResponse (irFile);
+            pump (300);
+            juce::AudioBuffer<float> x (2, 48000 * 6);
+            for (int i = 0; i < x.getNumSamples(); ++i)
+            {
+                const float v = 0.25f * (float) std::sin (2.0 * 3.141592653589793 * 180.0 * i / 48000.0);
+                x.setSample (0, i, v); x.setSample (1, i, 0.8f * v);
+            }
+            float big = 0.0f, prev = 0.0f;
+            juce::MidiBuffer midi;
+            for (int pos = 0, k = 0; pos < x.getNumSamples(); pos += 256, ++k)
+            {
+                if (k == 60)  q->getPresetManager().load (q->getPresetManager().indexOf ("factory:Vocal Spaces/ATMOS Vocal Glow"));
+                if (k == 300) setQ (*q, ParamIDs::engine, 0.0f);
+                if (k == 480) setQ (*q, ParamIDs::mode, 1.0f);
+                if (k == 660) setQ (*q, ParamIDs::mode, 0.0f);
+                if (k == 840) setQ (*q, ParamIDs::quality, 1.0f);
+                if (k % 20 == 0) pump (5);
+                juce::AudioBuffer<float> view (x.getArrayOfWritePointers(), 2, pos, 256);
+                q->processBlock (view, midi);
+                for (int i = 0; i < 256; ++i) { big = juce::jmax (big, std::abs (x.getSample (0, pos + i) - prev)); prev = x.getSample (0, pos + i); }
+            }
+            heavy (*q, 1);   // and to FULL OUTPUT
+            check (allFinite (x) && big < 0.12f, "while compressing: preset change, 1.2 -> 1.1, ALGO -> IR -> ALGO, LIVE -> HQ: finite, largest step "
+                   + juce::String (big, 3));
+        }
+        // mono input, stereo output
+        {
+            auto q = std::make_unique<MasterSpaceAudioProcessor>();
+            auto lay = q->getBusesLayout(); lay.inputBuses.getReference (0) = juce::AudioChannelSet::mono();
+            q->setBusesLayout (lay); q->setRateAndBufferSizeDetails (48000.0, 256); q->prepareToPlay (48000.0, 256);
+            heavy (*q, 0);
+            pump (50);
+            auto x = pinkish (48000.0, 2.0, 9); x.clear (1, 0, x.getNumSamples());
+            run (*q, x, 256);
+            check (allFinite (x) && peak (x) > 0.001f, "mono input: WET ONLY runs clean");
+        }
+        // an older project (no 1.8 IDs) loads with the compressor OFF
+        {
+            auto fresh = makeProcessor (48000.0, 256);
+            juce::MemoryBlock mb; fresh->getStateInformation (mb);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), (int) mb.getSize());
+            for (auto* e : xml->getChildIterator()) if (e->getStringAttribute ("id").startsWith ("cp")) e->setAttribute ("id", "zz");
+            juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary (*xml, old);
+            auto q = makeProcessor (48000.0, 256);
+            heavy (*q, 1);
+            q->setStateInformation (old.getData(), (int) old.getSize());
+            pump (50);
+            check (q->apvts.getRawParameterValue (ParamIDs::cpOn)->load() < 0.5f && q->apvts.getRawParameterValue (ParamIDs::cpRouting)->load() < 0.5f
+                   && std::abs (q->apvts.getRawParameterValue (ParamIDs::cpMidThr)->load() + 24.0f) < 0.01f,
+                   "an older project loads with the compressor OFF, WET ONLY, defaults");
+        }
+        // CPU of the compressor on its own and in the plugin
+        {
+            auto off = make (0, 0, 0), on = make (0, 0, 0);
+            heavy (*on, 0);
+            pump (50);
+            auto x = pinkish (48000.0, 20.0, 3), y = x;
+            double t0 = nowMs(); run (*off, x, 256); const double tOff = nowMs() - t0;
+            t0 = nowMs(); run (*on, y, 256); const double tOn = nowMs() - t0;
+            msc::MSCompressor c; msc::Settings st; st.on = true; c.prepare (48000.0); c.set (st, true);
+            auto z = pinkish (48000.0, 20.0, 4);
+            t0 = nowMs();
+            for (int pos = 0; pos + 256 <= z.getNumSamples(); pos += 256)
+                c.process (z.getReadPointer (0, pos), z.getReadPointer (1, pos), z.getWritePointer (0, pos), z.getWritePointer (1, pos), 256, 0);
+            const double tC = nowMs() - t0;
+            std::printf ("     20 s at 48 kHz: plugin %.0f ms, with WET ONLY compressor %.0f ms; the compressor alone %.1f ms = %.2f %% of real time\n",
+                         tOff, tOn, tC, tC / 200.0);
+            check (tC < 0.02 * 20000.0, "compressor cost < 2 % of one core in real time (" + juce::String (tC / 200.0, 2) + " %)");
+        }
+    }
+   #endif
 
     //==========================================================================
     section ("1.7d DYNAMIC CUT: opt-in attenuation and transparent bypass");
