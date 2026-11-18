@@ -145,6 +145,7 @@ jobs:
     name: sound identity (macOS arm64, Apple clang, optional)
     runs-on: macos-15
     continue-on-error: true   # arm64 runners are often short; Apple clang contracts FMA on arm64
+    if: github.event_name == 'workflow_dispatch'   # run by hand: GitHub cancels it when no arm64 runner is free
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4

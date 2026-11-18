@@ -18,7 +18,7 @@
 | MASTER SPACE 1.5 EQ LAB | MSp5 | `feature/eq-lab` (`353ee11`) | заморожена, точка сохранения |
 | MASTER SPACE STUDIO TEST 1.6.0 | MSp6 | `feature/ui-redesign-studio` (`16a6459`) | собрана (Claude), auval + pluginval OK, звук = 1.5 бит в бит; **ждёт отзыва владельца из DAW** |
 | MASTER SPACE 1.7d DYNAMIC TEST | MS7d | `claude/1.7d-dynamic` (на основе PR #2), PR #5 → `feature/ui-redesign-studio` | Claude: Dynamic Cut, PEAK DETECT, лампы, **SIGNAL RAILS** (`091af45`); 184 проверки, OFF = 1.6 = 1.5 бит в бит; **ждёт ревью ChatGPT и проверки владельцем в DAW** |
-| MASTER SPACE 1.8 STUDIO | MS18 | `claude/1.8-studio`, PR #8 (черновик) → `claude/1.7d-dynamic` | Claude: M/S OUTPUT COMPRESSOR, M/S HARMONIC COLOR, компоновка 1.8, слоган; 279 проверок, OFF = код до 1.8 = 1.7d = 1.6 = 1.5 бит в бит; **ждёт ревью ChatGPT и прослушивания владельцем** |
+| MASTER SPACE 1.8 STUDIO | MS18 | `claude/1.8-studio`, PR #8 (черновик) → `claude/1.7d-dynamic` | Claude: M/S OUTPUT COMPRESSOR, M/S HARMONIC COLOR, компоновка 1.8, слоган; 279 проверок; OFF = код до 1.8 = 1.7d = 1.6 = 1.5 бит в бит (Apple clang, GCC 13); CI зелёный, ZIP для macOS готов; **ждёт ревью ChatGPT и прослушивания владельцем** |
 | — | — | `chatgpt/ci-fix-numpy-eq-lab`, PR #1 | правка CI (numpy) для 1.4 / 1.5; ждёт слияния владельцем |
 | — | — | `claude/collab-rules`, PR #3 | правила совместной работы; ждёт проверки и слияния владельцем |
 
@@ -37,6 +37,23 @@
 - **Claude:** исправления по ревью; ничего не сливать без разрешения владельца.
 
 ## Журнал
+
+### 18.11.2026 — Claude: 1.8, проверка тождественности звука и выпуск
+- 48 эталонных рендеров 1.8 (новые модули OFF, HC в STEREO) = код до 1.8 (`d3f2153`) бит в бит:
+  - Apple clang 17 на macOS — компилятор продукта;
+  - GCC 13 (ubuntu-24.04), GCC 14, clang 18.
+- GCC 15.2 (ubuntu-26.04): в сборке 1.8 сценарий `hc-pre-tube-live` отличается на −85 дБ от пика; 1.7d на том же компиляторе совпадает.
+  - ASan, UBSan и valgrind на этом сценарии чистые.
+  - Это округление при кодогенерации GCC 15; продукт им не собирается.
+  - В CI это информационная проверка с порогом −80 дБ.
+- CI `build-18.yml`:
+  - строгие проверки на ubuntu-24.04 и macOS (Apple clang);
+  - проверка arm64 — вручную, через workflow_dispatch (GitHub не выделял раннер);
+  - в лог пишется величина любого различия.
+- ZIP `MASTER-SPACE-1.8-STUDIO-macOS`, сборка `53e8d37`:
+  - universal x86_64 + arm64, AU + VST3, установщик;
+  - auval SUCCEEDED; pluginval AU и VST3 SUCCESS (2 штатных предупреждения AU, как в 1.7d).
+- Коммиты: `df2f477`, `fd29659`, `53e8d37`. Ничего не слито.
 
 ### 14.11.2026 — Claude: MASTER SPACE 1.8 STUDIO (ветка `claude/1.8-studio`, PR #8)
 - Отдельный продукт MS18 / `com.masterastakhovsound.masterspace18` / 1.8.0, своя папка пресетов. Весь код — под `MAS_STUDIO_18`; 1.6 и 1.7d не меняются.
