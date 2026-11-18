@@ -539,6 +539,8 @@ static int refHashes (const juce::File& dumpDir)
         for (const auto& sc : scs)
             for (int v = 0; v < (int) std::size (variants); ++v)
             {
+                // optional filter (diagnostics, e.g. under valgrind): MAS_REFHASH_ONLY=<scenario name>
+                if (auto* only = std::getenv ("MAS_REFHASH_ONLY")) if (juce::String (sc.name) != only || v > 0 || fs > 48000.0) continue;
                 auto p = makeProcessor (fs, 256);
                 if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
                 setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);

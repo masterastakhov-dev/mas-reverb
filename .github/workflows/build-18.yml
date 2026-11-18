@@ -64,6 +64,48 @@ jobs:
             snapshots
           retention-days: 30
 
+  identity-macos:
+    # The sound identity on the compiler the product is built with: Apple clang, Apple Silicon (arm64, FMA).
+    name: sound identity (macOS arm64, Apple clang)
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build 1.8 / 1.7d tests and the pre-1.8 reference (d3f2153)
+        run: |
+          cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON
+          cmake --build build -j 4 --target MasterSpace18Tests MasterSpace17dTests
+          git worktree add ../ref d3f2153
+          cp tests/space_plugin_tests.cpp ../ref/tests/
+          cmake -S ../ref -B build-ref -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON -DFETCHCONTENT_SOURCE_DIR_JUCE="$PWD/build/_deps/juce-src"
+          cmake --build build-ref -j 4 --target MasterSpace17dTests
+      - name: Compare (pre-1.8 code = 1.7d = 1.8 with the new modules OFF)
+        run: |
+          clang++ --version | head -1
+          uname -m
+          T=$(find build-ref -type f -name MasterSpace17dTests -perm -u+x | head -1)
+          N7=$(find build -type f -name MasterSpace17dTests -perm -u+x | head -1)
+          N8=$(find build -type f -name MasterSpace18Tests -perm -u+x | head -1)
+          "$T" --refhash | grep REF > href.txt
+          "$N7" --refhash | grep REF > h17d.txt
+          "$N8" --refhash | grep REF > h18.txt
+          echo "macOS: pre-1.8 vs 1.7d: $(diff href.txt h17d.txt | grep -c '^>') / $(wc -l < href.txt);  pre-1.8 vs 1.8: $(diff href.txt h18.txt | grep -c '^>') / $(wc -l < href.txt)" | tee identity-macos.log
+          diff href.txt h17d.txt
+          diff href.txt h18.txt
+          echo "IDENTICAL on macOS arm64 (Apple clang): $(wc -l < href.txt) renders" | tee -a identity-macos.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: identity-macos
+          path: |
+            identity-macos.log
+            href.txt
+            h17d.txt
+            h18.txt
+          retention-days: 30
+
   build:
     name: build (${{ matrix.name }})
     runs-on: macos-15-intel
