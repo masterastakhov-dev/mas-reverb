@@ -56,6 +56,13 @@ public:
     void resized() override;
     void saveAs();     // also used by the browser
     void flash (const juce::String& message, bool isError = false);
+   #ifdef MAS_STUDIO_18
+    // 1.8 layout: the preset field (< NAME >) stays in this bar; the preset tools (favourite, SAVE, SAVE AS,
+    // A, B, A->B, UNDO, MATCH) are placed by the host: in the bottom strip on MAIN, next to the name elsewhere.
+    // Moving them changes nothing in what they do.
+    void placeTools (juce::Component& host, int x, int y, int h);
+    int toolsWidth() const;
+   #endif
 
 private:
     void timerCallback() override;

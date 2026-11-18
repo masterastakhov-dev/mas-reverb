@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #if defined (MAS_STUDIO_DYN)
+   #if defined (MAS_STUDIO_18)
+    const char* product = "MASTER SPACE 1.8 STUDIO";        // 1.8: its own library, 1.6 / 1.7d untouched
+   #elif defined (MAS_STUDIO_DYN)
     const char* product = "MASTER SPACE 1.7d DYNAMIC TEST"; // 1.7d: its own library, 1.6 untouched
    #elif defined (MAS_STUDIO)
     const char* product = "MASTER SPACE STUDIO TEST"; // studio test build: its own library, 1.5 untouched
@@ -225,6 +227,9 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                #endif
                #ifdef MAS_EQ
                 addedLater = addedLater || ParamIDs::isEqParam (pi.id);   // REVERB EQ: older presets load with it off
+               #endif
+               #ifdef MAS_STUDIO_18
+                for (const char* id : ParamIDs::studio18Params) addedLater = addedLater || pi.id == id;   // 1.8: older presets load STEREO, comp off
                #endif
                #else
                 const bool addedLater = false;
