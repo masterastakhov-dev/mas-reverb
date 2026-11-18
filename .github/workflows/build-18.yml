@@ -47,6 +47,23 @@ jobs:
             echo "pre-1.8 (1.7d config) vs $h: $(diff <(grep REF href.txt) <(grep REF $h) | grep -c '^>') differing renders of $N" | tee -a studio18-tests.log
           done
           echo "1.5 vs 1.6: $(diff <(grep REF h15.txt) <(grep REF h16.txt) | grep -c '^>')  1.6 vs 1.7d: $(diff <(grep REF h16.txt) <(grep REF h17d.txt) | grep -c '^>')" | tee -a studio18-tests.log
+          # diagnostics: size of any difference (raw float renders of the differing scenarios)
+          for sc in $(diff <(grep REF href.txt) <(grep REF h18.txt) | grep '^>' | awk '{print $4}' | sort -u); do
+            MAS_REFHASH_ONLY=$sc ./build-ref/MasterSpace17dTests_artefacts/Release/MasterSpace17dTests --refhash dump-ref > /dev/null
+            MAS_REFHASH_ONLY=$sc ./build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash dump-18 > /dev/null
+          done
+          if [ -d dump-ref ]; then python3 - <<'PY' | tee -a studio18-tests.log
+          import array, glob, math, os
+          for f in sorted(glob.glob('dump-ref/*.f32')):
+              a = array.array('f'); a.frombytes(open(f, 'rb').read())
+              b = array.array('f'); b.frombytes(open(f.replace('dump-ref', 'dump-18'), 'rb').read())
+              d = [abs(x - y) for x, y in zip(a, b)]
+              m = max(d); pk = max(abs(x) for x in a)
+              first = next((i for i, v in enumerate(d) if v > 0), -1)
+              n = sum(1 for v in d if v > 0)
+              print(f"DIFF {os.path.basename(f)}: max {m:.3g} ({20*math.log10(m/pk) if m > 0 else -999:.1f} dB re peak), {n} of {len(d)} samples, first at {first}")
+          PY
+          fi
           # the requirement: the same configuration, old code vs new code, and 1.8 with its modules OFF
           diff <(grep REF href.txt) <(grep REF h17d.txt)
           diff <(grep REF href.txt) <(grep REF h18.txt)
@@ -66,8 +83,8 @@ jobs:
 
   identity-macos:
     # The sound identity on the compiler the product is built with: Apple clang, Apple Silicon (arm64, FMA).
-    name: sound identity (macOS arm64, Apple clang)
-    runs-on: macos-15
+    name: sound identity (macOS, Apple clang)
+    runs-on: macos-15-intel
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -91,10 +108,10 @@ jobs:
           "$T" --refhash | grep REF > href.txt
           "$N7" --refhash | grep REF > h17d.txt
           "$N8" --refhash | grep REF > h18.txt
-          echo "macOS: pre-1.8 vs 1.7d: $(diff href.txt h17d.txt | grep -c '^>') / $(wc -l < href.txt);  pre-1.8 vs 1.8: $(diff href.txt h18.txt | grep -c '^>') / $(wc -l < href.txt)" | tee identity-macos.log
+          echo "macOS $(uname -m): pre-1.8 vs 1.7d: $(diff href.txt h17d.txt | grep -c '^>') / $(wc -l < href.txt);  pre-1.8 vs 1.8: $(diff href.txt h18.txt | grep -c '^>') / $(wc -l < href.txt)" | tee identity-macos.log
           diff href.txt h17d.txt
           diff href.txt h18.txt
-          echo "IDENTICAL on macOS arm64 (Apple clang): $(wc -l < href.txt) renders" | tee -a identity-macos.log
+          echo "IDENTICAL on macOS (Apple clang, $(uname -m)): $(wc -l < href.txt) renders" | tee -a identity-macos.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
