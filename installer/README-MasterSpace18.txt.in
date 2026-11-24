@@ -1,0 +1,83 @@
+__NAME__ (версия сборки 1.8.0) — AU + VST3 для macOS (Intel и Apple Silicon)
+"DON'T ADD REVERB. CREATE SPACE."
+
+ВАЖНО
+Это ОТДЕЛЬНЫЙ плагин со своим именем, AU/VST3-кодом (MS18),
+Bundle ID (com.masterastakhovsound.masterspace18) и папкой пресетов
+«MASTER SPACE 1.8 STUDIO». Он устанавливается рядом с 1.6 STUDIO TEST,
+1.7d DYNAMIC TEST и более ранними версиями и ничего не заменяет.
+Перед работой в важных проектах проверьте его в своей DAW.
+
+Установка
+1. Распакуйте архив ZIP.
+2. Нажмите правой кнопкой на «Install __NAME__.command», затем «Открыть».
+3. Если macOS блокирует запуск, разрешите его в Системных настройках,
+   раздел «Конфиденциальность и безопасность». Сборка подписана ad-hoc,
+   но не нотариализирована Apple.
+4. В конце установщик предложит проверить AU через auval (Enter — да,
+   «n» — пропустить) и напишет результат: «AU ПРОВЕРЕН: OK»,
+   «AU НЕ прошёл проверку» (отчёт будет на Рабочем столе) или «auval
+   недоступен». В любом случае плагины уже установлены: из-за этой
+   проверки установка не завершается ошибкой.
+5. Перезапустите REAPER или Logic. Плагин называется «__NAME__».
+   AU:   ~/Library/Audio/Plug-Ins/Components/__NAME__.component
+   VST3: ~/Library/Audio/Plug-Ins/VST3/__NAME__.vst3
+
+Если REAPER показывает только VST3, а AU нет
+- REAPER > Preferences > Plug-ins > AU: включите «Enable inserting AU
+  plug-ins» и нажмите «Re-scan» (или «Clear cache / re-scan»).
+- Если файлы копировали вручную, а не установщиком, выполните в
+  Терминале:
+    xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"__NAME__.component"
+    killall -9 AudioComponentRegistrar
+    auval -v aufx MS18 Mast
+  Последняя строка должна закончиться словами «AU VALIDATION SUCCEEDED».
+
+Что нового в 1.8
+1. M/S OUTPUT COMPRESSOR (кнопка M/S COMP на MAIN, настройки: PRO > COMP,
+   или правый клик по кнопке). По умолчанию выключен.
+   - MID и SIDE сжимаются независимо. У каждого свои THRESHOLD, RATIO,
+     ATTACK, RELEASE, KNEE, MAKEUP и индикатор GR.
+   - Общие настройки: PARALLEL MIX и SC HPF (фильтр только в детекторе,
+     в звук не попадает).
+   - WET ONLY (по умолчанию): сжимается только реверберация, прямой звук
+     в INSERT не меняется. FULL OUTPUT: сжимается весь выход.
+   - Нет задержки и lookahead. Включение, выключение и смена режима
+     проходят плавно, без щелчков.
+   - Порог считается по уровню на выходе (как на индикаторе OUTPUT).
+   - Под кнопкой M/S COMP — две тонкие полосы GR: MID (холодная)
+     и SIDE (тёплая), шкала 0..12 dB.
+2. M/S HARMONIC COLOR (PRO > COLOR, переключатель MODE).
+   - STEREO (по умолчанию) звучит точно как раньше.
+   - В M/S центр и стороны насыщаются независимо: MID DRIVE, MID MIX,
+     SIDE DRIVE, SIDE MIX.
+   - SATURATION MIX на MAIN остаётся общей глубиной: при 0 % сатурации
+     нет нигде, а MID MIX и SIDE MIX задают пропорции.
+   - Из моно-сигнала стороны не появляются. Ширина и уровень не плывут.
+   - PRE/POST, SOFT/TUBE/TAPE, LIVE/HQ и LEVEL COMP работают как раньше.
+3. Новая компоновка MAIN, кнопки и их действия те же:
+   - слева вверху — слоган DON'T ADD REVERB. CREATE SPACE.;
+   - сверху — крупное ИМЯ пресета (категория — в подсказке и браузере),
+     рядом STUDIO ROOM / CHAMBER / HALL / ATMOS TAIL;
+   - внизу — ★ SAVE SAVE AS, A B A→B UNDO MATCH, INSERT AUX IR,
+     SMART DUCKER, RESONANCE GUARD, HARMONIC COLOR (+ SATURATION MIX),
+     M/S COMP;
+   - на страницах REVERB EQ и PRO инструменты пресета стоят рядом с именем.
+4. SIGNAL RAILS: после возврата на MAIN старый красный пик больше
+   не показывается.
+5. Всё, что было в 1.7d, сохранено: Dynamic Cut, PEAK DETECT, лампы,
+   SIGNAL RAILS, DEPTH VIEW, темы, пресеты.
+
+Совместимость
+- Когда новые модули выключены, звук совпадает бит в бит с 1.7d, 1.6
+  и 1.5 (проверено эталонными рендерами в CI).
+- Старые пресеты и проекты загружаются с выключенным компрессором
+  и HARMONIC COLOR в режиме STEREO.
+- Все новые параметры поддерживают автоматизацию.
+- Задержка не меняется: LIVE — 0, STUDIO HQ — как раньше.
+
+Проверки CI
+Архив собран после сборки универсальных x86_64 + arm64 AU/VST3
+и автоматических тестов. Отчёты — в auval-report.txt и
+pluginval-*-report.txt, а также в результатах workflow на GitHub.
+Проверка в вашей DAW и прослушивание всё равно необходимы.

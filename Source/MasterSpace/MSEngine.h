@@ -24,6 +24,9 @@
 #include <atomic>
 #include <functional>
 #include "HarmonicColor.h"
+#ifdef MAS_STUDIO_18
+ #include "HarmonicColorMS.h"
+#endif
 #endif
 #ifdef MAS_EQ
 #include "ReverbEQ.h"
@@ -336,6 +339,11 @@ struct Params
     float hcDrive = 0.3f, hcColor = 0.0f, hcMix = 1.0f;
     bool  hcLevelComp = true;
     int   hcPos = 0;                            // 0 POST (on the formed wet), 1 PRE (on the signal that feeds the reverb)
+#ifdef MAS_STUDIO_18
+    // 1.8 M/S HARMONIC COLOR (STEREO by default, also for old projects / presets)
+    int   hcMode = 0;                           // 0 STEREO, 1 M/S
+    float hcMidDrive = 0.3f, hcSideDrive = 0.3f, hcMidMix = 1.0f, hcSideMix = 1.0f;
+#endif
 #endif
 #ifdef MAS_EQ
     // REVERB EQ (1.5 EQ LAB): off by default, also for old projects / presets
@@ -1098,11 +1106,20 @@ public:
 
    #ifdef MAS_RI
     // scL / scR: external sidechain (host bus), nullptr = none; used when params.scExternal is on
+#ifdef MAS_STUDIO_18
+    // 1.8 M/S OUTPUT COMPRESSOR, WET ONLY: while set, process() also writes the wet part of its output (the
+    // same gains as in the mix) to these buffers. The output itself is not changed in any way.
+    void setWetTap (float* l, float* r) { tapL = l; tapR = r; }
+#endif
     void process (float* left, float* right, int numSamples, const float* scL = nullptr, const float* scR = nullptr)
     {
         for (int pos = 0; pos < numSamples; pos += kChunk)
         {
             const int n = std::min (kChunk, numSamples - pos);
+#ifdef MAS_STUDIO_18
+            chunkTapL = tapL != nullptr ? tapL + pos : nullptr;
+            chunkTapR = tapR != nullptr ? tapR + pos : nullptr;
+#endif
             processChunk (left + pos, right + pos, n, scL != nullptr ? scL + pos : nullptr, scR != nullptr ? scR + pos : nullptr);
         }
     }
@@ -1115,7 +1132,12 @@ public:
     int latencySamples() const { return curQuality == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
     int latencyForQuality (int q) const { return q == 1 ? rg.latencyHQ() + hc::HarmonicColor::kLatencyHQ : 0; }
     static int hqLatencyFor (double sampleRate) { return ri::ResonanceGuard::hqLatencyFor (sampleRate) + hc::HarmonicColor::kLatencyHQ; }
+#ifdef MAS_STUDIO_18
+    const hc::HarmonicColor& colorMeters() const { return curHcPos == 1 ? hcPre.meters() : hcLate.meters(); }
+    const hc::ColorSlot& colorSlot() const { return curHcPos == 1 ? hcPre : hcLate; }
+#else
     const hc::HarmonicColor& colorMeters() const { return curHcPos == 1 ? hcPre : hcLate; }
+#endif
     // Quality change applied at once, with no internal fade: the plugin fades its whole output around
     // the switch (all paths change latency together). Audio thread, no allocation.
     void switchQualityNow (int q)
@@ -1239,10 +1261,19 @@ private:
             hc::HarmonicColor::Settings h;
             h.character = std::clamp (params.hcChar, 0, 2); h.drive = params.hcDrive; h.color = params.hcColor;
             h.mix = params.hcMix; h.levelComp = params.hcLevelComp; h.quality = curQuality;
+           #ifdef MAS_STUDIO_18
+            const hc::ColorSlot::MS ms { params.hcMidDrive, params.hcSideDrive, params.hcMidMix, params.hcSideMix };
+            const bool msMode = params.hcMode == 1;
+            h.on = params.hcOn && curHcPos == 0;
+            hcEarly.set (h, msMode, ms, force); hcLate.set (h, msMode, ms, force);
+            h.on = params.hcOn && curHcPos == 1;
+            hcPre.set (h, msMode, ms, force);
+           #else
             h.on = params.hcOn && curHcPos == 0;
             hcEarly.set (h, force); hcLate.set (h, force);
             h.on = params.hcOn && curHcPos == 1;
             hcPre.set (h, force);
+           #endif
         }
        #endif
        #ifdef MAS_EQ
@@ -1295,6 +1326,9 @@ private:
         curTone += 0.25f * (targetTone - curTone);
         if (force) curTone = targetTone;
         for (int c = 0; c < 2; ++c) toneShelf[c].set (2500.0, curTone * curTone, fs, true);
+#ifdef MAS_STUDIO_18
+        for (int c = 0; c < 2; ++c) toneShelfTap[c].set (2500.0, curTone * curTone, fs, true);
+#endif
 
         // ---- Level lock: keep the output energy of the reference depth
         targetMakeup = 1.0f;
@@ -1367,7 +1401,15 @@ private:
        #ifdef MAS_RI
         // HARMONIC COLOR, PRE: colours the signal that feeds the reverb (the dry / direct path stays untouched).
         // In STUDIO HQ the module (or its plain delay when off) sits in exactly one place: PRE or POST.
+#ifdef MAS_STUDIO_18
+        if (curHcPos == 1 && (curQuality == 1 || hcPre.isActive()))
+        {
+            if (hcPre.steadyStereo()) hcPre.stereo().process (inL, inR, n, 1.0f);     // the 1.7d call, as it was
+            else hcPre.process (inL, inR, n, 1.0f);
+        }
+#else
         if (curHcPos == 1 && (curQuality == 1 || hcPre.isActive())) hcPre.process (inL, inR, n, 1.0f);
+#endif
        #endif
         er.process (inL, inR, erL, erR, n);
        #ifdef MAS_ATMOS
@@ -1418,8 +1460,21 @@ private:
         // the ducker; the drive is relative to the level each part is heard at.
         if (curHcPos == 0)
         {
+#ifdef MAS_STUDIO_18
+            if (curQuality == 1 || hcEarly.isActive())
+            {
+                if (hcEarly.steadyStereo()) hcEarly.stereo().process (erL, erR, n, curEr);
+                else hcEarly.process (erL, erR, n, curEr);
+            }
+            if (curQuality == 1 || hcLate.isActive())
+            {
+                if (hcLate.steadyStereo()) hcLate.stereo().process (ltL, ltR, n, curLate * algoGain);
+                else hcLate.process (ltL, ltR, n, curLate * algoGain);
+            }
+#else
             if (curQuality == 1 || hcEarly.isActive()) hcEarly.process (erL, erR, n, curEr);
             if (curQuality == 1 || hcLate.isActive()) hcLate.process (ltL, ltR, n, curLate * algoGain);
+#endif
         }
         // RESONANCE GUARD on the formed wet; its source reference is the signal that feeds the reverb.
         float* dEL = ltR + kChunk; float* dER = dEL + kChunk; float* dLL = dER + kChunk; float* dLR = dLL + kChunk;
@@ -1609,6 +1664,14 @@ private:
             float orr = (dr * dryAmt + wr * wetAmt) * g;
             if (params.lockTone || std::abs (curTone - 1.0f) > 1e-3f) { ol = toneShelf[0].process (ol); orr = toneShelf[1].process (orr); }
             left[i] = ol; right[i] = orr;
+#ifdef MAS_STUDIO_18
+            if (chunkTapL != nullptr)
+            {
+                float tl = wl * wetAmt * g, tr = wr * wetAmt * g;
+                if (params.lockTone || std::abs (curTone - 1.0f) > 1e-3f) { tl = toneShelfTap[0].process (tl); tr = toneShelfTap[1].process (tr); }
+                chunkTapL[i] = tl; chunkTapR[i] = tr;
+            }
+#endif
         }
     }
 
@@ -1617,6 +1680,10 @@ private:
     DelayLine preDelay[2];
     Biquad lowCut[2], highCut[2];
     Shelf directAir[2], toneShelf[2];
+#ifdef MAS_STUDIO_18
+    Shelf toneShelfTap[2];
+    float* tapL = nullptr; float* tapR = nullptr; float* chunkTapL = nullptr; float* chunkTapR = nullptr;
+#endif
     SpatialEarly er;
     LateReverb late;
    #ifdef MAS_ATMOS
@@ -1646,7 +1713,11 @@ private:
     ri::SmartDucker ducker;
     ri::ResonanceGuard rg;
     DelayLine directDelay[2], scDelay[2];
+#ifdef MAS_STUDIO_18
+    hc::ColorSlot hcEarly, hcLate, hcPre;      // STEREO (the 1.7d instance) or M/S (two mono processors)
+#else
     hc::HarmonicColor hcEarly, hcLate, hcPre;
+#endif
     int curHcPos = 0;
     int curQuality = 0;
     float deltaMix = 0.0f, qGain = 1.0f;

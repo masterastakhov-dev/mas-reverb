@@ -258,6 +258,59 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
         ch (hcPos, "Color Position", { "Post (wet)", "Pre (reverb input)" }, 0, false);
     }
    #endif
+   #ifdef MAS_STUDIO_18
+    // ---- 1.8 STUDIO. New IDs with their own version hint; old states / presets load with the defaults
+    // (STEREO colour, compressor OFF): nothing of the old sound changes.
+    {
+        constexpr int kHint18 = 6;
+        auto pct18 = [] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; };
+        auto pf = [&p, pct18] (const char* id, const char* name, float def)
+        {
+            p.push_back (std::make_unique<APF> (juce::ParameterID { id, kHint18 }, name, juce::NormalisableRange<float> (0.0f, 100.0f), def,
+                                                Attr().withStringFromValueFunction (pct18)));
+        };
+        p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { hcMode, kHint18 }, "Color Mode",
+                                                                   juce::StringArray { "Stereo", "M/S" }, 0));
+        pf (hcMidDrive,  "Color Mid Drive",  30.0f);
+        pf (hcSideDrive, "Color Side Drive", 30.0f);
+        pf (hcMidMix,    "Color Mid Mix",    100.0f);
+        pf (hcSideMix,   "Color Side Mix",   100.0f);
+
+        // M/S OUTPUT COMPRESSOR
+        auto f18 = [&p] (const char* id, const char* name, juce::NormalisableRange<float> r, float def, std::function<juce::String (float)> fmt)
+        {
+            p.push_back (std::make_unique<APF> (juce::ParameterID { id, kHint18 }, name, r, def,
+                                                Attr().withStringFromValueFunction ([fmt] (float v, int) { return fmt (v); })));
+        };
+        auto skew = [] (float lo, float hi, float centre) { juce::NormalisableRange<float> r (lo, hi); r.setSkewForCentre (centre); return r; };
+        auto dB1 = [] (float v) { return juce::String (v, 1) + " dB"; };
+        auto dBFS = [] (float v) { return juce::String (v, 1) + " dBFS"; };
+        auto ms = [] (float v) { return v < 10.0f ? juce::String (v, 1) + " ms" : juce::String (juce::roundToInt (v)) + " ms"; };
+        auto rt = [] (float v) { return juce::String (v, v < 10.0f ? 1 : 0) + ":1"; };
+        auto hz = [] (float v) { return juce::String (juce::roundToInt (v)) + " Hz"; };
+        auto pc = [] (float v) { return juce::String (juce::roundToInt (v)) + " %"; };
+        p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { cpOn, kHint18 }, "Comp On", false));
+        p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { cpRouting, kHint18 }, "Comp Routing",
+                                                                   juce::StringArray { "Wet Only", "Full Output" }, 0));
+        f18 (cpMix, "Comp Parallel Mix", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f, pc);
+        p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { cpHpfOn, kHint18 }, "Comp SC HPF On", true));
+        f18 (cpHpf, "Comp SC HPF", skew (20.0f, 500.0f, 120.0f), 120.0f, hz);
+        const char* nm[2] = { "Comp Mid ", "Comp Side " };
+        const char* ids[2][6] = { { cpMidThr, cpMidRatio, cpMidAtk, cpMidRel, cpMidKnee, cpMidGain },
+                                  { cpSideThr, cpSideRatio, cpSideAtk, cpSideRel, cpSideKnee, cpSideGain } };
+        const float atk[2] = { 20.0f, 30.0f }, rel[2] = { 250.0f, 400.0f };
+        for (int b = 0; b < 2; ++b)
+        {
+            const juce::String base (nm[b]);
+            f18 (ids[b][0], (base + "Threshold").toRawUTF8(), juce::NormalisableRange<float> (-60.0f, 0.0f), -24.0f, dBFS);
+            f18 (ids[b][1], (base + "Ratio").toRawUTF8(),     skew (1.0f, 10.0f, 3.0f), 2.0f, rt);
+            f18 (ids[b][2], (base + "Attack").toRawUTF8(),    skew (0.1f, 100.0f, 10.0f), atk[b], ms);
+            f18 (ids[b][3], (base + "Release").toRawUTF8(),   skew (30.0f, 3000.0f, 300.0f), rel[b], ms);
+            f18 (ids[b][4], (base + "Knee").toRawUTF8(),      juce::NormalisableRange<float> (0.0f, 12.0f), 6.0f, dB1);
+            f18 (ids[b][5], (base + "Makeup").toRawUTF8(),    juce::NormalisableRange<float> (-12.0f, 12.0f), 0.0f, dB1);
+        }
+    }
+   #endif
    #ifdef MAS_EQ
     // ---- 1.5 EQ LAB: REVERB EQ. Off by default; states / presets without it load with the EQ off.
     {
@@ -500,6 +553,13 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
         p.hcMix         = get (hcMix) * 0.01f;
         p.hcLevelComp   = get (hcComp) > 0.5f;
         p.hcPos         = juce::roundToInt (get (hcPos)) > 0 ? 1 : 0;
+       #ifdef MAS_STUDIO_18
+        p.hcMode        = juce::roundToInt (get (hcMode)) > 0 ? 1 : 0;
+        p.hcMidDrive    = get (hcMidDrive) * 0.01f;
+        p.hcSideDrive   = get (hcSideDrive) * 0.01f;
+        p.hcMidMix      = get (hcMidMix) * 0.01f;
+        p.hcSideMix     = get (hcSideMix) * 0.01f;
+       #endif
     }
    #endif
 }
@@ -563,6 +623,12 @@ void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     irDry.setSize (2, chunkSize);
     irWet.setSize (2, chunkSize);
     monoScratch.setSize (1, chunkSize);
+   #ifdef MAS_STUDIO_18
+    wetTap.setSize (2, chunkSize); txTap.setSize (2, chunkSize); irTap.setSize (2, chunkSize);
+    for (auto& d : irTapAlign) d.allocate (mspace::Engine::hqLatencyFor (sampleRate) + chunkSize + 16);
+    comp.prepare (sampleRate);
+    comp.set (readComp(), true);
+   #endif
 
     irCurLowCut  = get (ParamIDs::lowCut);
     irCurHighCut = get (ParamIDs::highCut);
@@ -606,6 +672,9 @@ void MasterSpaceAudioProcessor::resetIRPath()
        #ifdef MAS_RI
         irAlign[c].clear();
        #endif
+       #ifdef MAS_STUDIO_18
+        irTapAlign[c].clear();
+       #endif
     }
 }
 
@@ -629,6 +698,9 @@ void MasterSpaceAudioProcessor::setAlignment (int latency)
     alignL = juce::jmax (0, latency);
     for (auto& path : paths) path.setAlignment (alignL);
     for (auto& d : irAlign) d.clear();
+   #ifdef MAS_STUDIO_18
+    for (auto& d : irTapAlign) d.clear();
+   #endif
     txAlign.clear();
     modeGainOut = modeGain;
     modeRingSteady = false;
@@ -638,6 +710,9 @@ void AlgoPath::setAlignment (int latency)
 {
     alignLatency = latency;
     for (auto& d : legacyAlign) d.clear();
+   #ifdef MAS_STUDIO_18
+    for (auto& d : legacyTapAlign) d.clear();
+   #endif
     // gains already on the output side of a running cross-fade are lost: restart from the steady state
     for (int i = 0; i <= latency + 1 && i < gainAlign.capacity(); ++i) gainAlign.push (engineGain);
     engineGainOut = engineGain;
@@ -735,6 +810,22 @@ void MasterSpaceAudioProcessor::takePendingIR() noexcept
     retiredIR = std::move (pendingIR);   // freed later on the message thread
 }
 
+#ifdef MAS_STUDIO_18
+msc::Settings MasterSpaceAudioProcessor::readComp() const
+{
+    using namespace ParamIDs;
+    msc::Settings c;
+    c.on = get (cpOn) > 0.5f;
+    c.routing = juce::roundToInt (get (cpRouting)) > 0 ? 1 : 0;
+    c.mix = get (cpMix) * 0.01f;
+    c.hpfOn = get (cpHpfOn) > 0.5f;
+    c.hpfHz = get (cpHpf);
+    c.mid  = { get (cpMidThr),  get (cpMidRatio),  get (cpMidAtk),  get (cpMidRel),  get (cpMidKnee),  get (cpMidGain) };
+    c.side = { get (cpSideThr), get (cpSideRatio), get (cpSideAtk), get (cpSideRel), get (cpSideKnee), get (cpSideGain) };
+    return c;
+}
+#endif
+
 void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -829,6 +920,11 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     riMeters.scExternalLive.store (scSrc[0] != nullptr, std::memory_order_relaxed);
 
     const float qStep = (float) (1.0 / (0.012 * sampleRateHz));
+   #ifdef MAS_STUDIO_18
+    // M/S OUTPUT COMPRESSOR: settings of this block; in WET ONLY the wet part of the output is tapped
+    comp.set (readComp());
+    const bool tapOn = comp.isActive() && comp.routing() == 0;
+   #endif
     for (int pos = 0; pos < n; pos += chunkSize)
     {
         const int len = juce::jmin (chunkSize, n - pos);
@@ -849,6 +945,10 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
         float* r = numOut >= 2 ? buffer.getWritePointer (1, pos) : monoScratch.getWritePointer (0);
         if (numOut < 2) juce::FloatVectorOperations::copy (r, l, len);
+       #ifdef MAS_STUDIO_18
+        curTapL = tapOn ? wetTap.getWritePointer (0) : nullptr;
+        curTapR = tapOn ? wetTap.getWritePointer (1) : nullptr;
+       #endif
         processStereo (l, r, len, scL, scR);
 
         // LIVE <-> STUDIO HQ: fade out, switch all paths (latency changes together), fade in
@@ -862,6 +962,9 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
                 else                 qFade = juce::jmin (1.0f, qFade + qStep);
                 l[i] *= qFade;
                 r[i] *= qFade;
+               #ifdef MAS_STUDIO_18
+                if (curTapL != nullptr) { curTapL[i] *= qFade; curTapR[i] *= qFade; }
+               #endif
             }
             if (qSwitchPending && qFade <= 0.0f)
             {
@@ -873,6 +976,11 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
                 qSwitchPending = false;
             }
         }
+       #ifdef MAS_STUDIO_18
+        // WET ONLY: the change the compressor makes to the wet is added to the output (the dry is not touched)
+        if (curTapL != nullptr) comp.process (curTapL, curTapR, l, r, len, 0);
+        curTapL = curTapR = nullptr;
+       #endif
     }
     publishMeters (n);
    #ifdef MAS_EQ
@@ -931,6 +1039,26 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         curTrim = std::abs (g - tTrim) < 1.0e-5f ? tTrim : g;
     }
 
+   #ifdef MAS_STUDIO_18
+    // FULL OUTPUT: the whole output, after dry / wet, OUTPUT and A/B MATCH (in place)
+    if (comp.isActive() && comp.routing() == 1 && numOut > 0)
+    {
+        float* oL = buffer.getWritePointer (0);
+        if (numOut > 1) comp.process (oL, buffer.getReadPointer (1), oL, buffer.getWritePointer (1), n, 1);
+        else
+        {
+            // mono output: S = 0; the change is taken on L only (the R slot is scratch)
+            float* sc = monoScratch.getWritePointer (0);
+            for (int pos = 0; pos < n; pos += chunkSize)
+            {
+                const int len = juce::jmin (chunkSize, n - pos);
+                juce::FloatVectorOperations::clear (sc, len);
+                comp.process (oL + pos, oL + pos, oL + pos, sc, len, 1);
+            }
+        }
+    }
+   #endif
+
    #ifdef MAS_STUDIO_DYN
     // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
     if (ioOn && numOut > 0)
@@ -973,6 +1101,13 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n,
         irDry.copyFrom (0, 0, left, n);
         irDry.copyFrom (1, 0, right, n);
     }
+   #ifdef MAS_STUDIO_18
+    if (curTapL != nullptr && ! needAlgo)            // only the IR path: the algorithmic part of the tap is silence
+    {
+        juce::FloatVectorOperations::clear (curTapL, n);
+        juce::FloatVectorOperations::clear (curTapR, n);
+    }
+   #endif
 
     if (needAlgo)
     {
@@ -1006,6 +1141,17 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n,
             auto& dl = irAlign[c];
             for (int i = 0; i < n; ++i) { const float y = dl.read (alignL); dl.push (d[i]); d[i] = y; }
         }
+   #ifdef MAS_STUDIO_18
+    if (curTapL != nullptr && alignL > 0)            // the IR tap is delayed exactly like the IR output
+        for (int c = 0; c < 2; ++c)
+        {
+            float* d = irTap.getWritePointer (c);
+            auto& dl = irTapAlign[c];
+            for (int i = 0; i < n; ++i) { const float y = dl.read (alignL); dl.push (d[i]); d[i] = y; }
+        }
+    const float* itL = irTap.getReadPointer (0);
+    const float* itR = irTap.getReadPointer (1);
+   #endif
 
     const float step = (float) (1.0 / (kModeFadeSec * sampleRateHz));
     const float* irL = irDry.getReadPointer (0);
@@ -1023,6 +1169,13 @@ void MasterSpaceAudioProcessor::processStereo (float* left, float* right, int n,
         modeGainOut = gOut;
         left[i]  = left[i]  * (1.0f - gOut) + irL[i] * gOut;
         right[i] = right[i] * (1.0f - gOut) + irR[i] * gOut;
+       #ifdef MAS_STUDIO_18
+        if (curTapL != nullptr)
+        {
+            curTapL[i] = curTapL[i] * (1.0f - gOut) + itL[i] * gOut;
+            curTapR[i] = curTapR[i] * (1.0f - gOut) + itR[i] * gOut;
+        }
+       #endif
     }
 }
 #else
@@ -1085,11 +1238,18 @@ void AlgoPath::prepare (double fs, int maxBlock, const mspace::Params& p, const 
     legacy.setParams (lp);
     legacy.prepare (fs);
    #ifdef MAS_RI
+   #ifdef MAS_STUDIO_18
+    scratch.setSize (10, maxBlock);           // + the wet taps of both engines while they cross-fade
+   #else
     scratch.setSize (6, maxBlock);
+   #endif
     {
         const int hq = mspace::Engine::hqLatencyFor (fs);
         for (auto& d : legacyAlign) d.allocate (hq + maxBlock + 16);
         gainAlign.allocate (hq + maxBlock + 16);
+       #ifdef MAS_STUDIO_18
+        for (auto& d : legacyTapAlign) d.allocate (hq + maxBlock + 16);
+       #endif
     }
    #else
     scratch.setSize (5, maxBlock);
@@ -1136,6 +1296,18 @@ void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, dou
             l[i] = yl; r[i] = yr;
         }
     };
+   #ifdef MAS_STUDIO_18
+    auto alignLegacyTap = [this, L] (float* l, float* r, int len)
+    {
+        if (L <= 0) return;
+        for (int i = 0; i < len; ++i)
+        {
+            const float yl = legacyTapAlign[0].read (L), yr = legacyTapAlign[1].read (L);
+            legacyTapAlign[0].push (l[i]); legacyTapAlign[1].push (r[i]);
+            l[i] = yl; r[i] = yr;
+        }
+    };
+   #endif
 
     const float target = legacyTarget ? 0.0f : 1.0f;
     const bool needNew = target > 0.0f || engineGain > 0.0f || engineGainOut > 0.0f;
@@ -1145,14 +1317,27 @@ void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, dou
     {
         if (! newRunning) { engine.reset(); newRunning = true; }
         legacyRunning = false;
+       #ifdef MAS_STUDIO_18
+        engine.setWetTap (tapL, tapR);
         engine.process (left, right, n, scL, scR);
+        engine.setWetTap (nullptr, nullptr);
+       #else
+        engine.process (left, right, n, scL, scR);
+       #endif
         return;
     }
     if (needOld && ! needNew)
     {
         if (! legacyRunning) { legacy.reset(); for (auto& d : legacyAlign) d.clear(); legacyRunning = true; }
         newRunning = false;
+       #ifdef MAS_STUDIO_18
+        legacy.setWetTap (tapL, tapR);
         legacy.process (left, right, n);
+        legacy.setWetTap (nullptr, nullptr);
+        if (tapL != nullptr) alignLegacyTap (tapL, tapR, n);
+       #else
+        legacy.process (left, right, n);
+       #endif
         alignLegacy (left, right, n);
         return;
     }
@@ -1182,6 +1367,13 @@ void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, dou
         nL[i] = left[i] * (newComesIn ? gNew : 1.0f);  nR[i] = right[i] * (newComesIn ? gNew : 1.0f);
         oL[i] = left[i] * (newComesIn ? 1.0f : gOld);  oR[i] = right[i] * (newComesIn ? 1.0f : gOld);
     }
+   #ifdef MAS_STUDIO_18
+    float* tnL = tapL != nullptr ? scratch.getWritePointer (6) : nullptr;
+    float* tnR = tapL != nullptr ? scratch.getWritePointer (7) : nullptr;
+    float* toL = tapL != nullptr ? scratch.getWritePointer (8) : nullptr;
+    float* toR = tapL != nullptr ? scratch.getWritePointer (9) : nullptr;
+    engine.setWetTap (tnL, tnR); legacy.setWetTap (toL, toR);
+   #endif
     engine.process (nL, nR, n, scL, scR);
     legacy.process (oL, oR, n);
     alignLegacy (oL, oR, n);
@@ -1191,6 +1383,19 @@ void AlgoPath::process (float* left, float* right, int n, bool legacyTarget, dou
         left[i]  = nL[i] * (newComesIn ? 1.0f : gNew) + oL[i] * (newComesIn ? gOld : 1.0f);
         right[i] = nR[i] * (newComesIn ? 1.0f : gNew) + oR[i] * (newComesIn ? gOld : 1.0f);
     }
+   #ifdef MAS_STUDIO_18
+    engine.setWetTap (nullptr, nullptr); legacy.setWetTap (nullptr, nullptr);
+    if (tapL != nullptr)
+    {
+        alignLegacyTap (toL, toR, n);
+        for (int i = 0; i < n; ++i)
+        {
+            const float gNew = gOut[i], gOld = 1.0f - gOut[i];
+            tapL[i] = tnL[i] * (newComesIn ? 1.0f : gNew) + toL[i] * (newComesIn ? gOld : 1.0f);
+            tapR[i] = tnR[i] * (newComesIn ? 1.0f : gNew) + toR[i] * (newComesIn ? gOld : 1.0f);
+        }
+    }
+   #endif
 }
 #else
 // Runs the 1.2 engine, the frozen 1.1 engine, or both while cross-fading after a switch.
@@ -1262,7 +1467,13 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, c
         paths[1 - activePath].engine.setAnalyzer (nullptr);
         paths[activePath].engine.setAnalyzer (&analyzer);
        #endif
+       #ifdef MAS_STUDIO_18
+        paths[activePath].setWetTap (curTapL, curTapR);
         paths[activePath].process (left, right, n, txState == Tx::holding ? frozenLegacy : curLegacy, sampleRateHz, scL, scR);
+        paths[activePath].setWetTap (nullptr, nullptr);
+       #else
+        paths[activePath].process (left, right, n, txState == Tx::holding ? frozenLegacy : curLegacy, sampleRateHz, scL, scR);
+       #endif
         return;
     }
 
@@ -1284,6 +1495,12 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, c
     paths[activePath].engine.setAnalyzer (nullptr);            // during a transition the incoming path feeds the analyzer
     paths[1 - activePath].engine.setAnalyzer (&analyzer);
    #endif
+   #ifdef MAS_STUDIO_18
+    float* toL = curTapL != nullptr ? txTap.getWritePointer (0) : nullptr;
+    float* toR = curTapL != nullptr ? txTap.getWritePointer (1) : nullptr;
+    paths[activePath].setWetTap (toL, toR);
+    paths[1 - activePath].setWetTap (curTapL, curTapR);
+   #endif
     paths[activePath].process (oL, oR, n, frozenLegacy, sampleRateHz, scL, scR);      // outgoing
     paths[1 - activePath].process (left, right, n, curLegacy, sampleRateHz, scL, scR);   // incoming (faded-in input)
     for (int i = 0; i < n; ++i)
@@ -1291,6 +1508,15 @@ void MasterSpaceAudioProcessor::processAlgo (float* left, float* right, int n, c
         left[i]  += oL[i] * (1.0f - g[i]);
         right[i] += oR[i] * (1.0f - g[i]);
     }
+   #ifdef MAS_STUDIO_18
+    for (auto& path : paths) path.setWetTap (nullptr, nullptr);
+    if (curTapL != nullptr)
+        for (int i = 0; i < n; ++i)
+        {
+            curTapL[i] += toL[i] * (1.0f - g[i]);
+            curTapR[i] += toR[i] * (1.0f - g[i]);
+        }
+   #endif
     if (txGain >= 1.0f && g[n - 1] >= 1.0f)
     {
         activePath = 1 - activePath;
@@ -1409,6 +1635,9 @@ void MasterSpaceAudioProcessor::processIRPath (int n)
         const float dryAmt = std::cos (irCurMix * 1.5707963f);
         outL[i] = (outL[i] * dryAmt + wl * wetAmt) * irCurOut;
         outR[i] = (outR[i] * dryAmt + wr * wetAmt) * irCurOut;
+       #ifdef MAS_STUDIO_18
+        if (curTapL != nullptr) { irTap.setSample (0, i, wl * wetAmt * irCurOut); irTap.setSample (1, i, wr * wetAmt * irCurOut); }
+       #endif
     }
 }
 
@@ -1987,6 +2216,13 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
    #ifdef MAS_RI
     // states written before 1.4: SMART DUCKER and RESONANCE GUARD off, every new parameter at its default
     for (const char* id : ParamIDs::riParams)
+        if (! presentIDs.contains (id))
+            if (auto* prm = apvts.getParameter (id))
+                prm->setValueNotifyingHost (prm->getDefaultValue());
+   #endif
+   #ifdef MAS_STUDIO_18
+    // states written before 1.8: STEREO colour, compressor off, every new parameter at its default
+    for (const char* id : ParamIDs::studio18Params)
         if (! presentIDs.contains (id))
             if (auto* prm = apvts.getParameter (id))
                 prm->setValueNotifyingHost (prm->getDefaultValue());

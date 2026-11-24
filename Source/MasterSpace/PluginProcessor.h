@@ -6,6 +6,9 @@
 #include "MSEngine.h"
 #include "legacy/MSEngine11.h"
 #include "IOMeters.h"
+#ifdef MAS_STUDIO_18
+ #include "MSCompressor.h"
+#endif
 #include <map>
 
 namespace mspreset { class PresetManager; }
@@ -144,6 +147,37 @@ namespace ParamIDs
                                                 rgMax, rgLow, rgHigh, rgTarget, rgEarly, rgLate, rgMatch, quality,
                                                 hcOn, hcChar, hcDrive, hcColor, hcMix, hcComp, hcPos };
    #endif
+   #ifdef MAS_STUDIO_18
+    // 1.8 STUDIO: M/S HARMONIC COLOR (STEREO by default)
+    inline constexpr const char* hcMode      = "hcmode";       // 0 STEREO, 1 M/S
+    inline constexpr const char* hcMidDrive  = "hcmdrive";
+    inline constexpr const char* hcSideDrive = "hcsdrive";
+    inline constexpr const char* hcMidMix    = "hcmmix";
+    inline constexpr const char* hcSideMix   = "hcsmix";
+    // 1.8 STUDIO: M/S OUTPUT COMPRESSOR (OFF by default)
+    inline constexpr const char* cpOn        = "cpon";
+    inline constexpr const char* cpRouting   = "cprouting";    // 0 WET ONLY, 1 FULL OUTPUT
+    inline constexpr const char* cpMix       = "cpmix";        // PARALLEL MIX
+    inline constexpr const char* cpHpfOn     = "cphpfon";
+    inline constexpr const char* cpHpf       = "cphpf";        // side-chain high-pass
+    inline constexpr const char* cpMidThr    = "cpmthr";
+    inline constexpr const char* cpMidRatio  = "cpmratio";
+    inline constexpr const char* cpMidAtk    = "cpmatk";
+    inline constexpr const char* cpMidRel    = "cpmrel";
+    inline constexpr const char* cpMidKnee   = "cpmknee";
+    inline constexpr const char* cpMidGain   = "cpmgain";
+    inline constexpr const char* cpSideThr   = "cpsthr";
+    inline constexpr const char* cpSideRatio = "cpsratio";
+    inline constexpr const char* cpSideAtk   = "cpsatk";
+    inline constexpr const char* cpSideRel   = "cpsrel";
+    inline constexpr const char* cpSideKnee  = "cpsknee";
+    inline constexpr const char* cpSideGain  = "cpsgain";
+    // every 1.8 parameter: states and presets without them load with the defaults (STEREO, compressor OFF)
+    inline constexpr const char* studio18Params[] = { hcMode, hcMidDrive, hcSideDrive, hcMidMix, hcSideMix,
+                                                      cpOn, cpRouting, cpMix, cpHpfOn, cpHpf,
+                                                      cpMidThr, cpMidRatio, cpMidAtk, cpMidRel, cpMidKnee, cpMidGain,
+                                                      cpSideThr, cpSideRatio, cpSideAtk, cpSideRel, cpSideKnee, cpSideGain };
+   #endif
    #ifdef MAS_EQ
     // REVERB EQ (1.5 EQ LAB): "eqon" and, per bank (w = WET, e = EARLY, l = LATE) and band (1..8):
     // u = used, b = bypass, t = type, f = frequency, g = gain, q = Q, s = slope  ->  e.g. "eqw3f".
@@ -195,6 +229,13 @@ struct AlgoPath
     int alignLatency = 0;
     mspace::DelayLine legacyAlign[2], gainAlign;
     float engineGainOut = 1.0f;
+   #ifdef MAS_STUDIO_18
+    // M/S OUTPUT COMPRESSOR, WET ONLY: while set, process() also writes the wet part of its output here,
+    // through the same cross-fade and alignment as the output itself
+    void setWetTap (float* l, float* r) { tapL = l; tapR = r; }
+    float* tapL = nullptr; float* tapR = nullptr;
+    mspace::DelayLine legacyTapAlign[2];
+   #endif
    #else
     void process (float* left, float* right, int n, bool legacyTarget, double fs);
    #endif
@@ -259,6 +300,7 @@ public:
     // Impulse responses (call from the message thread)
     bool loadImpulseResponse (const juce::File& file);
     juce::String getIRDisplayName() const { return irDisplayName; }
+    bool isIRActiveOnAudio() const { return irActiveOnAudio.load(); }      // the IR has reached the audio thread
     bool hasImpulseResponse() const { return irOriginal.getNumSamples() > 0; }
     juce::File getLastIRFolder() const { return lastIRFolder; }
     static bool isSupportedIRFile (const juce::String& path);
@@ -418,6 +460,20 @@ private:
     mspace::DelayLine irPreDelay[2];
     mspace::Biquad irLowCut[2], irHighCut[2];
     juce::AudioBuffer<float> irDry, irWet, monoScratch;
+   #ifdef MAS_STUDIO_18
+    // M/S OUTPUT COMPRESSOR: one instance. WET ONLY uses a tap of the wet part of the output (wetTap), carried
+    // through every cross-fade with the same gains as the output (txTap: outgoing path of a state transition,
+    // irTap: the IR path, delayed like it in STUDIO HQ).
+    msc::MSCompressor comp;
+    juce::AudioBuffer<float> wetTap, txTap, irTap;
+    mspace::DelayLine irTapAlign[2];
+    float* curTapL = nullptr; float* curTapR = nullptr;       // set for the chunk being processed (nullptr = no tap)
+    msc::Settings readComp() const;
+   public:
+    float compGrDb (bool side) const { return (side ? comp.grSide : comp.grMid).load (std::memory_order_relaxed); }
+    bool compActive() const { return comp.isActive(); }
+   private:
+   #endif
     float irCurPre = 0.0f, irCurMix = 0.3f, irCurWidth = 1.0f, irCurOut = 1.0f;
     double irCurLowCut = 80.0, irCurHighCut = 20000.0;
     std::atomic<bool> irActiveOnAudio { false };

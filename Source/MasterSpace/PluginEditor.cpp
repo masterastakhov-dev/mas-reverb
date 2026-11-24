@@ -21,6 +21,9 @@ namespace
    #if defined (MAS_EQ)
     constexpr int kEqPage = 12;
     constexpr int kPresetsPage = 13;
+   #ifdef MAS_STUDIO_18
+    constexpr int kCompPage = 14;
+   #endif
    #else
     constexpr int kPresetsPage = 12;
    #endif
@@ -619,6 +622,7 @@ ControlPage::ControlPage (juce::AudioProcessorValueTreeState& s, MASLookAndFeel&
             if (spec.kind == Kind::empty) { cells.push_back (std::move (cell)); continue; }
 
             styleLabel (cell->label, spec.title);
+            if (spec.accent != 0) cell->label.setColour (juce::Label::textColourId, juce::Colour (spec.accent).withAlpha (0.92f));
             addAndMakeVisible (cell->label);
 
             switch (spec.kind)
@@ -630,6 +634,7 @@ ControlPage::ControlPage (juce::AudioProcessorValueTreeState& s, MASLookAndFeel&
                     cell->slider = std::make_unique<juce::Slider>();
                    #endif
                     styleKnob (*cell->slider, lnf, 96, 20);
+                    if (spec.accent != 0) cell->slider->getProperties().set ("arc", (juce::int64) spec.accent);
                     addAndMakeVisible (*cell->slider);
                     cell->sAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, spec.paramID, *cell->slider);
                     setDefaultOnDoubleClick (*cell->slider, apvts, spec.paramID);
@@ -1198,6 +1203,137 @@ private:
 
 // COLOR page, left block: the transfer curve of the current character at the current DRIVE (TAPE: the
 // hysteresis loop of one sine cycle), and what the module adds / how LEVEL COMP holds the level.
+#ifdef MAS_STUDIO_18
+//==============================================================================
+// COMP page, left block (1.8): the gain reduction of MID (cool) and SIDE (warm) now, and the two static curves
+// (input -> output, dBFS) with the point the compressor is working at. Display only.
+class CompView : public juce::Component, private juce::Timer
+{
+public:
+    explicit CompView (MasterSpaceAudioProcessor& p) : processor (p) { startTimerHz (30); }
+    ~CompView() override { stopTimer(); }
+
+    static juce::Colour midColour()  { return juce::Colour (0xff3cc4e6); }
+    static juce::Colour sideColour() { return juce::Colour (0xffe2a44a); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (8.0f, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 8.0f);
+        r.reduce (14.0f, 10.0f);
+        auto& s = processor.apvts;
+        const bool on = rawParam (s, ParamIDs::cpOn) > 0.5f;
+        const bool full = rawParam (s, ParamIDs::cpRouting) > 0.5f;
+        g.setFont (uiFont (11.5f, true).withExtraKerningFactor (0.12f));
+        g.setColour (MASColours::textDim);
+        const juce::String dot (juce::CharPointer_UTF8 ("  \xc2\xb7  "));
+        g.drawText ("M/S OUTPUT COMPRESSOR" + dot + (full ? "FULL OUTPUT" : "WET ONLY") + (on ? juce::String() : dot + "OFF"),
+                    r.removeFromTop (16.0f), juce::Justification::centredLeft);
+        r.removeFromTop (10.0f);
+
+        // gain-reduction meters: 0 .. 24 dB down
+        auto meters = r.removeFromRight (86.0f);
+        r.removeFromRight (14.0f);
+        const float grDb[2] = { shown[0], shown[1] };
+        const char* names[2] = { "MID", "SIDE" };
+        for (int b = 0; b < 2; ++b)
+        {
+            auto col = meters.removeFromLeft (36.0f);
+            meters.removeFromLeft (14.0f);
+            g.setFont (uiFont (10.5f, true).withExtraKerningFactor (0.12f));
+            g.setColour (b == 0 ? midColour() : sideColour());
+            g.drawText (names[b], col.removeFromTop (14.0f), juce::Justification::centred);
+            const float barH = col.getHeight() - 18.0f;
+            auto bar = col.removeFromTop (barH).withSizeKeepingCentre (14.0f, barH);
+            g.setColour (juce::Colour (0xff111318)); g.fillRoundedRectangle (bar, 4.0f);
+            const float frac = juce::jlimit (0.0f, 1.0f, grDb[b] / 24.0f);
+            if (frac > 0.002f)
+            {
+                auto fill = bar.withHeight (bar.getHeight() * frac);
+                g.setColour ((b == 0 ? midColour() : sideColour()).withAlpha (on ? 0.9f : 0.35f));
+                g.fillRoundedRectangle (fill, 4.0f);
+            }
+            g.setColour (juce::Colours::white.withAlpha (0.18f));
+            for (int db : { 3, 6, 12, 18 })
+            {
+                const float y = bar.getY() + bar.getHeight() * (float) db / 24.0f;
+                g.drawHorizontalLine (juce::roundToInt (y), bar.getX() - 3.0f, bar.getX());
+            }
+            g.setFont (uiFont (10.0f));
+            g.setColour (MASColours::textDim);
+            g.drawText ((grDb[b] >= 0.05f ? "-" : "") + juce::String (grDb[b], 1), col.removeFromTop (16.0f).withWidth (col.getWidth() + 10.0f).translated (-5.0f, 0.0f),
+                        juce::Justification::centred);
+        }
+
+        // static curves, -60 .. 0 dBFS in and out
+        auto plot = r.withSizeKeepingCentre (juce::jmin (r.getWidth(), r.getHeight()), juce::jmin (r.getWidth(), r.getHeight()));
+        g.setColour (juce::Colour (0xff1f2229));
+        g.fillRect (plot);
+        g.setColour (juce::Colours::white.withAlpha (0.06f));
+        for (int db = -48; db < 0; db += 12)
+        {
+            const float f = (float) (db + 60) / 60.0f;
+            g.drawHorizontalLine (juce::roundToInt (plot.getBottom() - f * plot.getHeight()), plot.getX(), plot.getRight());
+            g.drawVerticalLine (juce::roundToInt (plot.getX() + f * plot.getWidth()), plot.getY(), plot.getBottom());
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        g.drawLine (plot.getX(), plot.getBottom(), plot.getRight(), plot.getY(), 1.0f);
+        auto toX = [&] (float db) { return plot.getX() + (db + 60.0f) / 60.0f * plot.getWidth(); };
+        auto toY = [&] (float db) { return plot.getBottom() - juce::jlimit (-0.05f, 1.05f, (db + 60.0f) / 60.0f) * plot.getHeight(); };
+        const char* ids[2][6] = { { ParamIDs::cpMidThr, ParamIDs::cpMidRatio, ParamIDs::cpMidKnee, ParamIDs::cpMidGain, nullptr, nullptr },
+                                  { ParamIDs::cpSideThr, ParamIDs::cpSideRatio, ParamIDs::cpSideKnee, ParamIDs::cpSideGain, nullptr, nullptr } };
+        for (int b = 1; b >= 0; --b)
+        {
+            const float thr = rawParam (s, ids[b][0]), ratio = rawParam (s, ids[b][1]), knee = rawParam (s, ids[b][2]), mk = rawParam (s, ids[b][3]);
+            const float slope = 1.0f - 1.0f / juce::jmax (1.0f, ratio);
+            auto outOf = [&] (float x)
+            {
+                const float over = x - thr;
+                float gr;
+                if (2.0f * over <= -knee) gr = 0.0f;
+                else if (knee > 0.0f && 2.0f * std::abs (over) < knee) { const float t = over + 0.5f * knee; gr = slope * t * t / (2.0f * knee); }
+                else gr = slope * over;
+                return x - juce::jmax (0.0f, gr) + mk;
+            };
+            juce::Path curve;
+            for (int k = 0; k <= 120; ++k)
+            {
+                const float x = -60.0f + 60.0f * (float) k / 120.0f;
+                if (k == 0) curve.startNewSubPath (toX (x), toY (outOf (x))); else curve.lineTo (toX (x), toY (outOf (x)));
+            }
+            const auto c = b == 0 ? midColour() : sideColour();
+            g.setColour (c.withAlpha (on ? 0.95f : 0.4f));
+            g.strokePath (curve, juce::PathStrokeType (b == 0 ? 2.0f : 1.6f));
+            g.setColour (c.withAlpha (0.5f));
+            g.drawVerticalLine (juce::roundToInt (toX (thr)), plot.getBottom() - 6.0f, plot.getBottom());
+        }
+        g.setFont (uiFont (10.0f));
+        g.setColour (MASColours::textDim);
+        g.drawText ("IN  dBFS", plot.withTop (plot.getBottom() + 2.0f).withHeight (14.0f), juce::Justification::centredRight);
+    }
+
+private:
+    void timerCallback() override
+    {
+        const float target[2] = { processor.compGrDb (false), processor.compGrDb (true) };
+        bool changed = false;
+        for (int b = 0; b < 2; ++b)
+        {
+            // fast up, ~300 ms down: readable, never jumpy
+            const float v = target[b] > shown[b] ? target[b] : shown[b] + 0.12f * (target[b] - shown[b]);
+            changed = changed || std::abs (v - shown[b]) > 0.02f;
+            shown[b] = v;
+        }
+        if (changed || ++slow % 15 == 0) repaint();
+    }
+
+    MasterSpaceAudioProcessor& processor;
+    float shown[2] = { 0.0f, 0.0f };
+    int slow = 0;
+};
+#endif
+
 class ColorView : public juce::Component, private juce::Timer
 {
 public:
@@ -1453,18 +1589,51 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
     pages.add (new ControlPage (processor.apvts, lnf, guardRows, 4, std::make_unique<GuardView> (processor, lnf), 470));
 
     // HARMONIC COLOR: character, drive, colour, mix, level compensation (position: ADVANCED)
+   #ifdef MAS_STUDIO_18
+    // 1.8: STEREO / M/S; in M/S the MIX above is the master (SATURATION MIX on MAIN), MID / SIDE MIX its proportions
+    const juce::uint32 mid = 0xff3cc4e6, side = 0xffe2a44a;
+    const std::vector<std::vector<ControlPage::Spec>> colorRows {
+        { { K::toggle, hcOn, "HARMONIC COLOR", true }, { K::choice, hcChar, "CHARACTER", true }, { K::toggle, hcComp, "LEVEL COMP", true },
+          { K::choice, hcMode, "MODE", true } },
+        { { K::knob, hcDrive, "DRIVE", true }, { K::knob, hcColor, "COLOR", true }, { K::knob, hcMix, "MIX", true }, { K::empty } },
+        { { K::knob, hcMidDrive, "MID DRIVE", true, nullptr, nullptr, mid }, { K::knob, hcMidMix, "MID MIX", true, nullptr, nullptr, mid },
+          { K::knob, hcSideDrive, "SIDE DRIVE", true, nullptr, nullptr, side }, { K::knob, hcSideMix, "SIDE MIX", true, nullptr, nullptr, side } } };
+    pages.add (new ControlPage (processor.apvts, lnf, colorRows, 4, std::make_unique<ColorView> (processor), 360));
+   #else
     const std::vector<std::vector<ControlPage::Spec>> colorRows {
         { { K::toggle, hcOn, "HARMONIC COLOR", true }, { K::choice, hcChar, "CHARACTER", true }, { K::toggle, hcComp, "LEVEL COMP", true } },
         { { K::knob, hcDrive, "DRIVE", true }, { K::knob, hcColor, "COLOR", true }, { K::knob, hcMix, "MIX", true } } };
     pages.add (new ControlPage (processor.apvts, lnf, colorRows, 3, std::make_unique<ColorView> (processor), 420));
    #endif
+   #endif
    #ifdef MAS_EQ
     // REVERB EQ + spectral analyzer (1.5 EQ LAB): one custom block over the whole page
     pages.add (new ControlPage (processor.apvts, lnf, {}, 1, std::make_unique<eqlab::Page> (processor), baseWidth - 60));
     jassert (pages.size() - 1 == kEqPage);
+   #ifdef MAS_STUDIO_18
+    // 1.8 M/S OUTPUT COMPRESSOR page, after PRESETS in the index order (13 is the preset browser, not a page)
+    pages.add (new ControlPage (processor.apvts, lnf, {}, 1));
+    {
+        const juce::uint32 mid = 0xff3cc4e6, side = 0xffe2a44a;
+        const std::vector<std::vector<ControlPage::Spec>> compRows {
+            { { K::toggle, cpOn, "M/S COMP", false }, { K::choice, cpRouting, "ROUTING", false }, { K::knob, cpMix, "PARALLEL MIX", false },
+              { K::toggle, cpHpfOn, "SC HPF", false }, { K::knob, cpHpf, "SC HPF FREQ", false }, { K::empty } },
+            { { K::knob, cpMidThr, "MID THRESHOLD", false, nullptr, nullptr, mid }, { K::knob, cpMidRatio, "MID RATIO", false, nullptr, nullptr, mid },
+              { K::knob, cpMidAtk, "MID ATTACK", false, nullptr, nullptr, mid }, { K::knob, cpMidRel, "MID RELEASE", false, nullptr, nullptr, mid },
+              { K::knob, cpMidKnee, "MID KNEE", false, nullptr, nullptr, mid }, { K::knob, cpMidGain, "MID MAKEUP", false, nullptr, nullptr, mid } },
+            { { K::knob, cpSideThr, "SIDE THRESHOLD", false, nullptr, nullptr, side }, { K::knob, cpSideRatio, "SIDE RATIO", false, nullptr, nullptr, side },
+              { K::knob, cpSideAtk, "SIDE ATTACK", false, nullptr, nullptr, side }, { K::knob, cpSideRel, "SIDE RELEASE", false, nullptr, nullptr, side },
+              { K::knob, cpSideKnee, "SIDE KNEE", false, nullptr, nullptr, side }, { K::knob, cpSideGain, "SIDE MAKEUP", false, nullptr, nullptr, side } } };
+        pages.add (new ControlPage (processor.apvts, lnf, compRows, 6, std::make_unique<CompView> (processor), 300));
+    }
+    jassert (pages.size() - 1 == kCompPage);
+   #endif
    #endif
 
-   #if defined (MAS_EQ)
+   #if defined (MAS_STUDIO_18)
+    const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MOD", "STEREO", "ADVANCED", "ATMOS",
+                                       "DUCKER", "GUARD", "COLOR", "REVERB EQ", "PRESETS", "COMP" };
+   #elif defined (MAS_EQ)
     const juce::StringArray tabNames { "MAIN", "SPACE", "EARLY", "LATE", "DECAY EQ", "MOD", "STEREO", "ADVANCED", "ATMOS",
                                        "DUCKER", "GUARD", "COLOR", "REVERB EQ", "PRESETS" };
    #elif defined (MAS_RI)

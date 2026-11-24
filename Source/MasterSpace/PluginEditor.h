@@ -88,6 +88,7 @@ public:
         bool algoOnly = false;              // dimmed in IR mode
         const char* irParamID = nullptr;    // shown instead in IR mode
         const char* irTitle = nullptr;
+        juce::uint32 accent = 0;            // optional label / knob accent (ARGB); 0 = the theme
     };
 
     ControlPage (juce::AudioProcessorValueTreeState&, MASLookAndFeel&, std::vector<std::vector<Spec>> rows,

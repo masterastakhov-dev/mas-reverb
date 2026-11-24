@@ -129,6 +129,15 @@ target_sources(MasterSpace17d PRIVATE Source/MasterSpace/PresetManager.cpp Sourc
 target_compile_definitions(MasterSpace17d PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1)
 target_link_libraries(MasterSpace17d PRIVATE MasterSpaceStudioPresets MasStudioFonts)
 
+# MASTER SPACE 1.8 STUDIO: isolated AU/VST3 identity and preset folder. Everything of 1.7d plus the
+# M/S OUTPUT COMPRESSOR, M/S HARMONIC COLOR and the 1.8 layout (MAS_STUDIO_18). 1.6 / 1.7d stay untouched.
+mas_add_plugin(MasterSpace18 "MASTER SPACE 1.8 STUDIO" MS18 com.masterastakhovsound.masterspace18 1.8.0
+               Source/MasterSpace "MASTER SPACE 1.8 STUDIO: spatial reverb with M/S output compressor and M/S harmonic color")
+target_sources(MasterSpace18 PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp
+               Source/MasterSpace/StudioLook.cpp Source/MasterSpace/StudioEditor.cpp)
+target_compile_definitions(MasterSpace18 PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1 MAS_STUDIO_18=1)
+target_link_libraries(MasterSpace18 PRIVATE MasterSpaceStudioPresets MasStudioFonts)
+
 
 # MASTER SPACE 1.1 frozen (release-1.1 sources, unchanged) under its own name and code, for A/B against 1.2.
 mas_add_plugin(MasterSpace11 "MASTER SPACE 1.1" MSp1 com.masterastakhovsound.masterspace11 1.1.0
@@ -240,6 +249,24 @@ if(MAS_BUILD_TESTS)
         MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1
         JucePlugin_Name="MASTER SPACE 1.7d DYNAMIC TEST" JucePlugin_VersionString="1.7.0")
     target_link_libraries(MasterSpace17dTests PRIVATE
+        MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # 1.8 STUDIO tests: everything of 1.7d + M/S compressor / M/S colour / 1.8 layout.
+    juce_add_console_app(MasterSpace18Tests PRODUCT_NAME "MasterSpace18Tests")
+    target_sources(MasterSpace18Tests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp
+        Source/MasterSpace/StudioLook.cpp
+        Source/MasterSpace/StudioEditor.cpp)
+    target_compile_definitions(MasterSpace18Tests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1 MAS_STUDIO_18=1
+        JucePlugin_Name="MASTER SPACE 1.8 STUDIO" JucePlugin_VersionString="1.8.0")
+    target_link_libraries(MasterSpace18Tests PRIVATE
         MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()
