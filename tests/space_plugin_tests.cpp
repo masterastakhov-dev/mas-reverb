@@ -582,6 +582,146 @@ static int refHashes (const juce::File& dumpDir)
 }
 #endif
 
+
+#ifdef MAS_STUDIO_18
+// --levels: how loud INSERT is against BYPASS (the input), per factory preset and kind of material.
+// BS.1770 integrated loudness (K-weighting, 400 ms blocks, 75 % overlap, -70 LUFS / -10 LU gates), sample peak.
+// Diagnostics for the AUTO LEVEL MATCH design (PR #8); changes nothing.
+namespace lvl
+{
+    struct KW
+    {
+        double b[2][3], a[2][3], z[2][2][2] {};
+        explicit KW (double fs)
+        {
+            { const double f0 = 1681.974450955533, G = 3.999843853973347, Q = 0.7071752369554196;
+              const double K = std::tan (juce::MathConstants<double>::pi * f0 / fs), Vh = std::pow (10.0, G / 20.0), Vb = std::pow (Vh, 0.4996667741545416);
+              const double a0 = 1.0 + K / Q + K * K;
+              b[0][0] = (Vh + Vb * K / Q + K * K) / a0; b[0][1] = 2.0 * (K * K - Vh) / a0; b[0][2] = (Vh - Vb * K / Q + K * K) / a0;
+              a[0][1] = 2.0 * (K * K - 1.0) / a0; a[0][2] = (1.0 - K / Q + K * K) / a0; }
+            { const double f0 = 38.13547087602444, Q = 0.5003270373238773;
+              const double K = std::tan (juce::MathConstants<double>::pi * f0 / fs), a0 = 1.0 + K / Q + K * K;
+              b[1][0] = 1.0; b[1][1] = -2.0; b[1][2] = 1.0; a[1][1] = 2.0 * (K * K - 1.0) / a0; a[1][2] = (1.0 - K / Q + K * K) / a0; }
+        }
+        double run (int c, double x)
+        {
+            for (int s = 0; s < 2; ++s)
+            {
+                auto& zz = z[c][s];
+                const double y = b[s][0] * x + zz[0];
+                zz[0] = b[s][1] * x - a[s][1] * y + zz[1];
+                zz[1] = b[s][2] * x - a[s][2] * y;
+                x = y;
+            }
+            return x;
+        }
+    };
+    // integrated loudness (LUFS) of [from, end)
+    static double lufs (const juce::AudioBuffer<float>& x, double fs, int from)
+    {
+        KW k (fs);
+        std::vector<double> e ((size_t) x.getNumSamples());
+        for (int i = 0; i < x.getNumSamples(); ++i)
+        {
+            const double l = k.run (0, x.getSample (0, i)), r = k.run (1, x.getSample (1, i));
+            e[(size_t) i] = l * l + r * r;
+        }
+        const int B = (int) (0.4 * fs), H = B / 4;
+        std::vector<double> blocks;
+        for (int s = from; s + B <= x.getNumSamples(); s += H)
+        {
+            double a = 0; for (int i = s; i < s + B; ++i) a += e[(size_t) i];
+            blocks.push_back (a / B);
+        }
+        auto L = [] (double ms) { return -0.691 + 10.0 * std::log10 (std::max (ms, 1e-30)); };
+        double sum = 0; int n = 0;
+        for (auto m : blocks) if (L (m) > -70.0) { sum += m; ++n; }
+        if (n == 0) return -100.0;
+        const double rel = L (sum / n) - 10.0;
+        sum = 0; n = 0;
+        for (auto m : blocks) if (L (m) > -70.0 && L (m) > rel) { sum += m; ++n; }
+        return n ? L (sum / n) : -100.0;
+    }
+    static float peak (const juce::AudioBuffer<float>& x, int from)
+    {
+        float m = 0; for (int c = 0; c < 2; ++c) for (int i = from; i < x.getNumSamples(); ++i) m = std::max (m, std::abs (x.getSample (c, i)));
+        return m;
+    }
+    // test material, about -20 LUFS
+    static juce::AudioBuffer<float> material (int kind, double fs, double secs)
+    {
+        juce::AudioBuffer<float> b (2, (int) (fs * secs));
+        juce::Random r (77 + kind);
+        double p[2][7] {};
+        auto pink = [&] (int c)
+        {
+            const double w = r.nextDouble() * 2.0 - 1.0; auto& q = p[c];
+            q[0] = 0.99886 * q[0] + w * 0.0555179; q[1] = 0.99332 * q[1] + w * 0.0750759; q[2] = 0.96900 * q[2] + w * 0.1538520;
+            q[3] = 0.86650 * q[3] + w * 0.3104856; q[4] = 0.55000 * q[4] + w * 0.5329522; q[5] = -0.7616 * q[5] - w * 0.0168980;
+            const double v = (q[0] + q[1] + q[2] + q[3] + q[4] + q[5] + q[6] + w * 0.5362) * 0.11; q[6] = w * 0.115926;
+            return v;
+        };
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            const double t = i / fs;
+            double l = 0, rr = 0;
+            switch (kind)
+            {
+                case 0: l = rr = pink (0); break;                                         // centred source (vocal-like spectrum)
+                case 1: l = pink (0); rr = pink (1); break;                               // wide stereo
+                case 2: { const double ph = std::fmod (t, 0.5), env = std::exp (-ph / 0.045);   // drums: hits every 500 ms
+                          l = rr = 3.0 * env * pink (0); break; }
+                default: { const double ph = std::fmod (t, 2.0);                          // phrases: 1 s on / 1 s off
+                           const double env = ph < 1.0 ? std::min (1.0, std::min (ph, 1.0 - ph) / 0.02) : 0.0;
+                           l = rr = env * pink (0); break; }
+            }
+            b.setSample (0, i, (float) (l * 0.35)); b.setSample (1, i, (float) (rr * 0.35));
+        }
+        return b;
+    }
+}
+
+static int levelSurvey()
+{
+    using namespace lvl;
+    const double fs = 48000.0; const int block = 256;
+    auto probe = std::make_unique<MasterSpaceAudioProcessor>();
+    const auto& all = probe->getPresetManager().getPresets();
+    std::vector<int> idx { -1 };
+    for (int i = 0; i < (int) all.size(); ++i) if (all[(size_t) i].source == mspreset::Source::factory) idx.push_back (i);
+    std::printf ("LEVELS preset | routing mix depth lock | INSERT-BYPASS LU: centre wide drums phrases | peak dB (out vs in) per kind\n");
+    for (int pi : idx)
+    {
+        float d[4], pk[4];
+        juce::String name = "(default state)", info;
+        for (int k = 0; k < 4; ++k)
+        {
+            auto p = std::make_unique<MasterSpaceAudioProcessor>();
+            p->setRateAndBufferSizeDetails (fs, block); p->prepareToPlay (fs, block);
+            if (pi >= 0) { p->getPresetManager().load (pi); name = all[(size_t) pi].category + "/" + all[(size_t) pi].name; }
+            for (int w = 0; w < 10; ++w) juce::MessageManager::getInstance()->runDispatchLoopUntil (30);
+            auto v = [&] (const char* id) { return p->apvts.getRawParameterValue (id)->load(); };
+            info = juce::String (v (ParamIDs::routing) > 0.5f ? "AUX" : "INS") + " " + juce::String (v (ParamIDs::mix), 2) + " "
+                 + juce::String (v (ParamIDs::depth), 2) + " " + (v (ParamIDs::lockLevel) > 0.5f ? "L" : "-");
+            auto in = material (k, fs, 12.0);
+            auto out = in; juce::MidiBuffer midi;
+            for (int pos = 0; pos < out.getNumSamples(); pos += block)
+            {
+                const int n = juce::jmin (block, out.getNumSamples() - pos);
+                juce::AudioBuffer<float> view (out.getArrayOfWritePointers(), 2, pos, n);
+                p->processBlock (view, midi);
+            }
+            const int from = (int) (4.0 * fs);
+            d[k] = (float) (lufs (out, fs, from) - lufs (in, fs, from));
+            pk[k] = 20.0f * std::log10 (peak (out, from) / peak (in, from));
+        }
+        std::printf ("LEVELS %-44s | %s | %6.2f %6.2f %6.2f %6.2f | %5.1f %5.1f %5.1f %5.1f\n", name.toRawUTF8(), info.toRawUTF8(),
+                     d[0], d[1], d[2], d[3], pk[0], pk[1], pk[2], pk[3]);
+    }
+    return 0;
+}
+#endif
+
 int main (int argc, char** argv)
 {
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
@@ -592,6 +732,14 @@ int main (int argc, char** argv)
         const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-ref-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
+    }
+   #endif
+   #ifdef MAS_STUDIO_18
+    if (argc > 1 && juce::String (argv[1]) == "--levels")
+    {
+        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-lvl-presets");
+        setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
+        return levelSurvey();
     }
    #endif
    #ifdef MAS_STUDIO_DYN
