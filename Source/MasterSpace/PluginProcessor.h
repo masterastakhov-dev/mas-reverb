@@ -14,6 +14,10 @@
 namespace mspreset { class PresetManager; }
 
 // Complete sound state: plain (denormalised) value of every parameter, by parameter ID.
+#ifdef MAS_LEVEL_MATCH
+#include "AutoLevelMatch.h"
+#endif
+
 using ParamMap = std::map<juce::String, float>;
 
 namespace ParamIDs
@@ -260,9 +264,12 @@ struct RIMeters
 //==============================================================================
 class MasterSpaceAudioProcessor : public juce::AudioProcessor,
                                  private juce::Timer
+                                #ifdef MAS_LEVEL_MATCH
+                               , private juce::AudioProcessorParameter::Listener
+                                #endif
 {
 public:
-    MasterSpaceAudioProcessor();
+    explicit MasterSpaceAudioProcessor (bool startMaintenanceTimer = true);
     ~MasterSpaceAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -317,6 +324,7 @@ public:
     // the running path keeps the old state and fades out, a second path starts from a clean,
     // fully re-initialised engine with the new state and fades in.
     ParamMap captureParamMap() const;
+    ParamMap captureCompareSlot() const;
     void applyParamMap (const ParamMap&, const juce::String& irPath = {});
     ParamMap defaultParamMap() const;
     juce::String getIRPath() const { return apvts.state.getProperty ("irPath").toString(); }
@@ -341,7 +349,12 @@ public:
     void refreshLevelMatch();                    // re-measures when the slots changed (call from a UI timer)
 
     // loudness (LUFS-like, K-weighted) of a state for pink noise, rendered offline (any thread but audio)
-    static double measureLoudness (const ParamMap&, double sampleRate);
+    using ReferenceRender = std::function<void (juce::AudioBuffer<float>&, int)>;
+    static double measureLoudness (const ParamMap&, double sampleRate, double* inputLoudness = nullptr,
+                                   const ReferenceRender& offlineIR = {}, bool monoOutput = false);
+   #ifdef MAS_LEVEL_MATCH
+    std::atomic<float> insertGainDb { 0 };
+   #endif
 
    #ifdef MAS_RI
     // ---- 1.4: SMART DUCKER / RESONANCE GUARD
@@ -448,6 +461,43 @@ private:
     juce::String matchStatus;
     juce::int64 matchedHash = 0, pendingMatchHash = 0;
     std::atomic<int> matchGeneration { 0 };
+   #ifdef MAS_LEVEL_MATCH
+    void refreshInsertCalibration();
+    static double referenceRatio (ParamMap, double, std::shared_ptr<const PendingIR>, bool monoOutput = false);
+    static mas::alm::Estimate insertEstimate (const mas::alm::Calibration&, float mixPercent);
+    std::array<std::atomic<double>, 3> mixTerms {};
+    static_assert (std::atomic<double>::is_always_lock_free);
+    bool cachedIR = false;
+    float cachedMix = -1;
+    uint64_t cachedRevision = 0;
+    mas::alm::Estimate cachedEstimate;
+    std::shared_ptr<const PendingIR> referenceIR;
+
+    mas::alm::StereoGain insertGain;
+    void parameterValueChanged (int, float) override
+    {
+        parameterRevision.fetch_add (1);
+        insertIsDefault.store (false, std::memory_order_relaxed);
+        insertRevision.fetch_add (1, std::memory_order_release);
+    }
+    std::atomic<bool> insertIsDefault { true };
+    std::atomic<uint64_t> parameterRevision { 1 }, restoredRevision { 0 };
+    std::array<std::atomic<double>, 3> restoredTerms {};
+    std::atomic<double> restoredRate { 0 };
+    std::atomic<int> restoredChannels { 0 };
+    void parameterGestureChanged (int, bool) override {}
+    std::vector<juce::AudioProcessorParameter*> insertListeners;
+    std::atomic<uint64_t> insertRevision { 1 }, calibratedRevision { 0 };
+    uint64_t pendingRevision = 0;
+    std::atomic<int> insertStatus { 0 };
+   public:
+    int getInsertStatus() const { return insertStatus.load(); }
+    bool hasInsertReference() const;
+   private:
+    std::atomic<bool> insertEnabled { true };
+    double insertChangedAt = 0;
+    bool insertSubmitted = false;
+   #endif
     juce::ThreadPool matchPool { 1 };
     void storeCompareState (juce::ValueTree& state) const;
     void restoreCompareState (const juce::XmlElement& xml);

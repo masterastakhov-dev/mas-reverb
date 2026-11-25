@@ -100,7 +100,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     addF (shape,     "Shape",       range (0.0f, 100.0f),       35.0f, pct);
     addF (spread,    "Spread",      range (0.0f, 500.0f, 100.0f), 60.0f, fmtMs);
     addF (width,     "Width",       range (0.0f, 200.0f),       100.0f, pct);
-    addF (mix,       "Mix",         range (0.0f, 100.0f),       35.0f, pct);
+   #ifdef MAS_LEVEL_MATCH
+    addF (mix, "Mix", range (0.0f, 100.0f), 100.0f, pct);
+   #else
+    addF (mix, "Mix", range (0.0f, 100.0f), 35.0f, pct);
+   #endif
     addF (output,    "Output",      range (-24.0f, 12.0f),      0.0f,  fmtDb, parseDb);
 
     // ---- locks
@@ -356,7 +360,27 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     return { p.begin(), p.end() };
 }
 
-MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
+#ifdef MAS_LEVEL_MATCH
+// Reproduce with MasterSpaceMatchTests --default-calibration. Only the untouched
+// factory initialization can use this table; changed structures are measured.
+static const mas::alm::Calibration* defaultInsertModel (double rate, bool mono) noexcept
+{
+    struct Entry { int rate; bool mono; mas::alm::Calibration model; };
+    static constexpr Entry entries[] = {
+        { 44100, false, {1.0, {0.353360854848, 0.496447350936, 0.0, -0.00113411826512, 0.0, 0.0}} },
+        { 44100, true, {1.0, {0.353360854848, 0.499000785432, 0.0, -0.00223156104066, 0.0, 0.0}} },
+        { 48000, false, {1.0, {0.35309535382, 0.494367807431, 0.0, 0.00120151247888, 0.0, 0.0}} },
+        { 48000, true, {1.0, {0.35309535382, 0.492441617727, 0.0, 0.00312445127386, 0.0, 0.0}} },
+        { 96000, false, {1.0, {0.351025587193, 0.482082897339, 0.0, -0.00110134589758, 0.0, 0.0}} },
+        { 96000, true, {1.0, {0.351025587193, 0.483185834898, 0.0, -0.000837681111584, 0.0, 0.0}} },
+    };
+    for (const auto& entry : entries)
+        if (rate == entry.rate && mono == entry.mono) return &entry.model;
+    return nullptr;
+}
+#endif
+
+MasterSpaceAudioProcessor::MasterSpaceAudioProcessor (bool startMaintenanceTimer)
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
@@ -374,14 +398,30 @@ MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
             for (int f = 0; f < ParamIDs::eqNumFields; ++f)
                 eqRaw[b][i][f] = apvts.getRawParameterValue (ParamIDs::eqId (b, i, f));
    #endif
-    startTimerHz (10);
+   #ifdef MAS_LEVEL_MATCH
+    if (startMaintenanceTimer)
+        for (auto* param : getParameters())
+            if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
+            {
+                const auto id = p->getParameterID();
+                if (id == ParamIDs::mix || id == ParamIDs::output || id == ParamIDs::depth || id.startsWith ("cp") ||
+                    id.startsWith ("duck") || id.startsWith ("rg")) continue;
+                p->addListener (this);
+                insertListeners.push_back (p);
+            }
+   #endif
+    if (startMaintenanceTimer) startTimerHz (10);
 }
 
 MasterSpaceAudioProcessor::~MasterSpaceAudioProcessor()
 {
     stopTimer();
+   #ifdef MAS_LEVEL_MATCH
+    insertRevision.fetch_add (1);
+    for (auto* p : insertListeners) p->removeListener (this);
+   #endif
     matchGeneration.fetch_add (1);
-    matchPool.removeAllJobs (true, 10000);
+    matchPool.removeAllJobs (true, -1);
     presetManager.reset();
 }
 
@@ -567,6 +607,12 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
 //==============================================================================
 void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+   #ifdef MAS_LEVEL_MATCH
+    insertGain.prepare (sampleRate);
+    cachedEstimate = {};
+    cachedRevision = 0;
+    insertRevision.fetch_add (1, std::memory_order_release);
+   #endif
     sampleRateHz = sampleRate;
     if (std::abs (hostRate.load() - sampleRate) > 1.0)
     {
@@ -1060,6 +1106,40 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
    #endif
 
    #ifdef MAS_STUDIO_DYN
+   #ifdef MAS_LEVEL_MATCH
+    const bool insertActive = insertEnabled.load (std::memory_order_relaxed) && p.routing == mspace::Insert;
+    const auto revision = insertRevision.load (std::memory_order_acquire);
+    const auto* initial = insertIsDefault.load() ? defaultInsertModel (sampleRateHz, numOut == 1) : nullptr;
+    const auto parameterVersion = parameterRevision.load();
+    const bool liveModel = calibratedRevision.load (std::memory_order_acquire) == revision;
+    const bool restored = !liveModel && restoredRevision.load() == parameterVersion
+                          && restoredRate.load() == sampleRateHz && restoredChannels.load() == numOut;
+    const bool fresh = initial != nullptr || restored || liveModel;
+    const auto mix = p.mix * 100.0f;
+    if (fresh && (cachedRevision != revision || cachedMix != mix))
+    {
+        mas::alm::Calibration model;
+        model.inputEnergy = 1;
+        const auto& terms = restored ? restoredTerms : mixTerms;
+        model.q = {terms[0].load(), terms[1].load(), 0, terms[2].load(), 0, 0};
+        if (initial != nullptr) model = *initial;
+        if (initial != nullptr || (restored && restoredRevision.load() == parameterVersion) || (!restored && calibratedRevision.load() == revision))
+        {
+            cachedEstimate = insertEstimate (model, mix);
+            cachedRevision = revision;
+            cachedMix = mix;
+        }
+    }
+    const bool ir = modeGainOut > 0.5f;
+    if (!insertActive || ir != cachedIR) { cachedRevision = 0; cachedEstimate = {}; }
+    cachedIR = ir;
+    auto result = cachedEstimate;
+    const bool applying = insertActive && !deltaListen.load();
+    insertGain.setTarget (result, applying, true);
+    insertStatus.store (!applying ? 0 : !fresh ? 1 : !result.valid ? 2 : result.limited ? 3 : 4, std::memory_order_relaxed);
+    insertGain.process (buffer.getWritePointer (0), numOut > 1 ? buffer.getWritePointer (1) : nullptr, n);
+    insertGainDb.store (juce::Decibels::gainToDecibels (insertGain.gain()), std::memory_order_relaxed);
+   #endif
     // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
     if (ioOn && numOut > 0)
     {
@@ -1703,7 +1783,7 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     const float gLate  = get (lateOn) > 0.5f ? mspace::dbToGain (get (lateLevel)) : 0.0f;
 
     const int total = irOriginal.getNumSamples();
-    const int keep = juce::jmax (64, (int) std::round (total * lengthPct * 0.01f));
+    const int keep = juce::jmin (total, juce::jmax (64, (int) std::round (total * lengthPct * 0.01f)));
     const int numCh = irOriginal.getNumChannels();
 
     auto pending = std::make_unique<PendingIR>();
@@ -1763,6 +1843,10 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     pending->stereo = numCh > 1;
     irSeconds = (double) keep / irOriginalRate;
     appliedShape = irShapeSignature();
+   #ifdef MAS_LEVEL_MATCH
+    referenceIR = std::make_shared<PendingIR> (*pending);
+    insertRevision.fetch_add (1, std::memory_order_release);
+   #endif
 
     std::unique_ptr<PendingIR> toFree;
     {
@@ -1772,8 +1856,137 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     }
 }
 
+#ifdef MAS_LEVEL_MATCH
+mas::alm::Estimate MasterSpaceAudioProcessor::insertEstimate (const mas::alm::Calibration& model, float mixPercent)
+{
+    const double theta = juce::jlimit (0.0f, 100.0f, mixPercent) * (juce::MathConstants<double>::pi / 200.0);
+    return mas::alm::estimate (model, std::max (0.0, std::cos (theta)), std::sin (theta), 0);
+}
+
+double MasterSpaceAudioProcessor::referenceRatio (ParamMap state, double fs, std::shared_ptr<const PendingIR> impulse, bool monoOutput)
+{
+    using namespace ParamIDs;
+    state[depth] = 35.0f;
+    state[output] = state[duckOn] = state[rgOn] = state[cpOn] = 0;
+    for (int bank = 0; bank < req::numBanks; ++bank)
+        for (int band = 0; band < req::kBands; ++band)
+            state[eqId (bank, band, eqDynOn)] = 0;
+    double input = 0;
+    ReferenceRender render;
+    std::unique_ptr<juce::dsp::Convolution> convolution;
+    juce::AudioBuffer<float> wet;
+    mspace::DelayLine delay[2];
+    mspace::Biquad hp[2], lp[2];
+    if (state[mode] > 0.5f)
+    {
+        if (!impulse) return std::numeric_limits<double>::quiet_NaN();
+        // Worker-owned DSP only. A processor would create a message-thread
+        // APVTS timer even with its own maintenance timer disabled.
+        constexpr int block = 512;
+        convolution = std::make_unique<juce::dsp::Convolution>();
+        convolution->loadImpulseResponse (juce::AudioBuffer<float> (impulse->buffer), impulse->sampleRate,
+            impulse->stereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
+            juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
+        convolution->prepare ({fs, block, 2});
+        wet.setSize (2, block);
+        const float pre = std::clamp (state[preDelay], 0.0f, 500.0f) * 0.001f * float (fs);
+        const float stereoWidth = state[width] * 0.01f;
+        const float theta = state[mix] * 0.01f * 1.5707963f;
+        const float dryGain = std::cos (theta), wetGain = std::sin (theta);
+        const bool highCutActive = state[highCut] < 19900.0f;
+        for (int c = 0; c < 2; ++c)
+        {
+            delay[c].allocate (int (std::ceil (pre)) + 8);
+            hp[c].setHighPass (std::clamp (state[lowCut], 20.0f, 2000.0f), fs);
+            lp[c].setLowPass (std::clamp (state[highCut], 1000.0f, 20000.0f), fs);
+        }
+        render = [&, pre, stereoWidth, dryGain, wetGain, highCutActive] (juce::AudioBuffer<float>& buffer, int n)
+        {
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < n; ++i)
+                {
+                    const float input = hp[c].process (buffer.getSample (c, i));
+                    const float delayed = pre < 1 ? input : delay[c].readLinear (pre);
+                    delay[c].push (input);
+                    wet.setSample (c, i, delayed);
+                }
+            auto sub = juce::dsp::AudioBlock<float> (wet).getSubBlock (0, size_t (n));
+            convolution->process (juce::dsp::ProcessContextReplacing<float> (sub));
+            for (int i = 0; i < n; ++i)
+            {
+                float l = wet.getSample (0, i) * kIRWetTrim;
+                float r = wet.getSample (1, i) * kIRWetTrim;
+                if (highCutActive) { l = lp[0].process (l); r = lp[1].process (r); }
+                const float mid = 0.5f * (l + r), side = 0.5f * (l - r) * stereoWidth;
+                buffer.setSample (0, i, buffer.getSample (0, i) * dryGain + (mid + side) * wetGain);
+                buffer.setSample (1, i, buffer.getSample (1, i) * dryGain + (mid - side) * wetGain);
+            }
+        };
+    }
+    const double measured = measureLoudness (state, fs, &input, render, monoOutput);
+    return measured < -110 ? 0.0 : std::pow (10.0, (measured - input) * 0.1);
+}
+
+bool MasterSpaceAudioProcessor::hasInsertReference() const
+{
+    return (insertIsDefault.load() && defaultInsertModel (hostRate.load(), getMainBusNumOutputChannels() == 1))
+           || calibratedRevision.load() == insertRevision.load();
+}
+
+void MasterSpaceAudioProcessor::refreshInsertCalibration()
+{
+    const auto revision = insertRevision.load (std::memory_order_acquire);
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (revision != pendingRevision)
+    {
+        pendingRevision = revision;
+        insertChangedAt = now;
+        insertSubmitted = false;
+
+    }
+    if (insertIsDefault.load() && defaultInsertModel (hostRate.load(), getMainBusNumOutputChannels() == 1)) return;
+    if (insertSubmitted || now - insertChangedAt < 250 || matchPool.getNumJobs() != 0
+        || !insertEnabled.load() || get (ParamIDs::routing) > 0.5f) return;
+    auto state = captureParamMap();
+    const auto fs = hostRate.load();
+    if (fs < 8000 || revision != insertRevision.load (std::memory_order_acquire)) return;
+    auto impulse = state[ParamIDs::mode] > 0.5f ? referenceIR : nullptr;
+    // Multiple instances share CPU headroom. The message timer retries the latest
+    // revision when a slot is busy. Destruction of a queued job releases its slot.
+    static std::atomic<int> running { 0 };
+    int active = running.load();
+    if (active >= 2 || !running.compare_exchange_strong (active, active + 1)) return;
+    struct Slot { ~Slot() { running.fetch_sub (1); } };
+    const auto slot = std::make_shared<Slot>();
+    insertSubmitted = true;
+    const bool monoOutput = getMainBusNumOutputChannels() == 1;
+    matchPool.addJob ([this, revision, state, fs, impulse, monoOutput, slot] () mutable {
+        juce::ignoreUnused (slot);
+        // Three aligned full renders recover the dry/wet cross term. The wet
+        // render includes both reflections and their mutual correlation.
+        std::array<double, 3> energy {};
+        constexpr float positions[] = {0, 100, 50};
+        for (unsigned i = 0; i < energy.size(); ++i)
+        {
+            if (revision != insertRevision.load()) return;
+            state[ParamIDs::mix] = positions[i];
+            energy[i] = referenceRatio (state, fs, impulse, monoOutput);
+        }
+        if (revision != insertRevision.load()) return;
+        calibratedRevision.store (0);
+        mixTerms[0].store (energy[0]);
+        mixTerms[1].store (energy[1]);
+        mixTerms[2].store (energy[2] - 0.5 * (energy[0] + energy[1]));
+        calibratedRevision.store (revision);
+    });
+}
+#endif
+
 void MasterSpaceAudioProcessor::timerCallback()
 {
+   #ifdef MAS_LEVEL_MATCH
+    refreshInsertCalibration();
+   #endif
    #ifdef MAS_RI
     // STUDIO HQ latency: reported from the message thread when the quality changes
     {
@@ -1828,6 +2041,15 @@ ParamMap MasterSpaceAudioProcessor::captureParamMap() const
     return m;
 }
 
+ParamMap MasterSpaceAudioProcessor::captureCompareSlot() const
+{
+    auto m = captureParamMap();
+   #ifdef MAS_LEVEL_MATCH
+    m["alm"] = insertEnabled.load() ? 1.0f : 0.0f;
+   #endif
+    return m;
+}
+
 ParamMap MasterSpaceAudioProcessor::defaultParamMap() const
 {
     ParamMap m;
@@ -1843,6 +2065,10 @@ void MasterSpaceAudioProcessor::applyParamMap (const ParamMap& values, const juc
              || juce::MessageManager::getInstance()->isThisTheMessageThread());
 
     beginStateTransition();
+   #ifdef MAS_LEVEL_MATCH
+    const auto recall = values.find ("alm");
+    if (recall != values.end()) insertEnabled.store (recall->second > 0.5f);
+   #endif
     for (auto* prm : getParameters())
     {
         auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm);
@@ -1893,7 +2119,7 @@ bool MasterSpaceAudioProcessor::slotHasState (int slot) const
 void MasterSpaceAudioProcessor::captureLiveInto (CompareContext& c) const
 {
     const int a = c.active;
-    c.slot[a] = captureParamMap();
+    c.slot[a] = captureCompareSlot();
     c.has[a] = true;
     c.irPath[a] = getIRPath();
     c.presetKey[a] = apvts.state.getProperty ("presetKey").toString();
@@ -2003,8 +2229,8 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
     {
         const juce::ScopedLock sl (compareLock);
         if (! compare.has[1 - compare.active]) { matchStatus = "MATCH: set up B first"; matchTrimDb = 0.0f; return; }
-        a = compare.active == 0 ? captureParamMap() : compare.slot[0];
-        b = compare.active == 1 ? captureParamMap() : compare.slot[1];
+        a = compare.active == 0 ? captureCompareSlot() : compare.slot[0];
+        b = compare.active == 1 ? captureCompareSlot() : compare.slot[1];
     }
     const auto h = hashOf (a) ^ (hashOf (b) * 31);
     if (h == matchedHash) return;
@@ -2016,12 +2242,24 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
 
     matchStatus = "MATCH: measuring...";
     const int gen = matchGeneration.fetch_add (1) + 1;
-    const double fs = sampleRateHz > 0 ? sampleRateHz : 48000.0;
+    const double fs = hostRate.load();
     matchPool.addJob ([this, a, b, gen, fs, alive = std::weak_ptr<bool> (aliveFlag)]
     {
-        const double la = measureLoudness (a, fs);
+        auto loudness = [fs] (const ParamMap& m) {
+            auto value = measureLoudness (m, fs);
+           #ifdef MAS_LEVEL_MATCH
+            if (m.count ("alm") && m.at ("alm") > 0.5f && m.at (ParamIDs::routing) < 0.5f)
+            {
+                const auto ratio = referenceRatio (m, fs, {});
+                if (ratio > 1e-12 && std::isfinite (ratio))
+                    value += std::clamp (-10.0 * std::log10 (ratio), -6.0, 12.0);
+            }
+           #endif
+            return value;
+        };
+        const double la = loudness (a);
         if (matchGeneration.load() != gen) return;
-        const double lb = measureLoudness (b, fs);
+        const double lb = loudness (b);
         if (matchGeneration.load() != gen) return;
         const float trim = (float) juce::jlimit (-12.0, 12.0, la - lb);
         juce::MessageManager::callAsync ([this, gen, trim, alive]
@@ -2033,7 +2271,7 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
     });
 }
 
-double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
+double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs, double* inputLoudness, const ReferenceRender& offlineIR, bool monoOutput)
 {
     auto getter = [&m] (const char* id) { const auto it = m.find (id); return it != m.end() ? it->second : 0.0f; };
     mspace::Params p; fillParamsWith (p, getter);
@@ -2057,8 +2295,12 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
     const bool legacy = getter (ParamIDs::engine) < 0.5f;
 
     constexpr int block = 512;
-    auto path = std::make_unique<AlgoPath>();
-    path->prepare (fs, block, p, lp, legacy);
+    std::unique_ptr<AlgoPath> path;
+    if (!offlineIR)
+    {
+        path = std::make_unique<AlgoPath>();
+        path->prepare (fs, block, p, lp, legacy);
+    }
 
     // K-weighting (ITU-R BS.1770), coefficients for any sample rate
     struct BQ { double b0, b1, b2, a1, a2, z1 = 0, z2 = 0;
@@ -2075,13 +2317,16 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
           f[1] = { 1.0, -2.0, 1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0 }; }
         return f;
     };
-    auto kL = kw(), kR = kw();
+    auto kL = kw(), kR = kw(), inputFilter = kw();
+    double inputSum = 0;
 
     // pink noise (Paul Kellet), same signal on both channels like a centred source, -18 dBFS RMS
     juce::Random rng (0x5eed1234);
     double b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
     juce::AudioBuffer<float> buf (2, block);
-    const int total = (int) (3.0 * fs), skip = (int) (1.0 * fs);
+    const double warmup = inputLoudness != nullptr ? juce::jlimit (1.0, 30.0, double (p.decay)) : 1.0;
+    const int skip = (int) (warmup * fs);
+    const int total = skip + (int) ((inputLoudness != nullptr ? 4.0 : 2.0) * fs);
     double sum = 0.0; long long count = 0;
     for (int pos = 0; pos < total; pos += block)
     {
@@ -2092,9 +2337,17 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
             b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
             b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
             const double pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+            if (inputLoudness != nullptr)
+            {
+                double x = static_cast<float> (pink * 0.5);
+                for (auto& filter : inputFilter) x = filter.run (x);
+                if (pos + i >= skip) inputSum += 2 * x * x;
+            }
             buf.setSample (0, i, (float) (pink * 0.5));
             buf.setSample (1, i, (float) (pink * 0.5));
         }
+        if (offlineIR) offlineIR (buf, n);
+        else
        #ifdef MAS_RI
         path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs, nullptr, nullptr);
        #else
@@ -2103,11 +2356,13 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
         for (int i = 0; i < n; ++i)
         {
             double l = buf.getSample (0, i), r = buf.getSample (1, i);
+            if (monoOutput) r = l;
             for (auto& f : kL) l = f.run (l);
             for (auto& f : kR) r = f.run (r);
             if (pos + i >= skip) { sum += l * l + r * r; ++count; }
         }
     }
+    if (inputLoudness != nullptr) *inputLoudness = -0.691 + 10.0 * std::log10 (inputSum / static_cast<double> (count));
     return -0.691 + 10.0 * std::log10 (std::max (1.0e-12, sum / (double) std::max (1LL, count)));
 }
 
@@ -2148,6 +2403,9 @@ void MasterSpaceAudioProcessor::restoreCompareState (const juce::XmlElement& xml
         {
             const int i = slot->getIntAttribute ("index", 0) & 1;
             ParamMap m = defaults;
+           #ifdef MAS_LEVEL_MATCH
+            m["alm"] = 0.0f; // Older inactive A/B slot retains its mix on recall.
+           #endif
             for (auto& [id, v] : m)
                 if (slot->hasAttribute (id)) v = (float) slot->getDoubleAttribute (id, v);
             compare.slot[i] = m;
@@ -2169,7 +2427,33 @@ void MasterSpaceAudioProcessor::restoreCompareState (const juce::XmlElement& xml
 //==============================================================================
 void MasterSpaceAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+   #ifdef MAS_LEVEL_MATCH
+    const auto revision = insertRevision.load();
+    const auto parameterVersion = parameterRevision.load();
+   #endif
     auto state = apvts.copyState();
+   #ifdef MAS_LEVEL_MATCH
+    state.setProperty ("automaticReference", insertEnabled.load(), nullptr);
+    // An optional versioned cache makes algorithmic session recall work before a
+    // host gives its message loop any time. IR files can change on disk.
+    if (get (ParamIDs::mode) < 0.5f)
+    {
+        juce::ValueTree cache ("InsertReference1");
+        const auto rate = hostRate.load();
+        const int channels = getMainBusNumOutputChannels();
+        const auto* initial = insertIsDefault.load() ? defaultInsertModel (rate, channels == 1) : nullptr;
+        const bool recalled = !initial && calibratedRevision.load() != revision && restoredRevision.load() == parameterVersion
+                              && restoredRate.load() == rate && restoredChannels.load() == channels;
+        const auto& terms = recalled ? restoredTerms : mixTerms;
+        cache.setProperty ("dry", initial ? initial->q[0] : terms[0].load(), nullptr);
+        cache.setProperty ("wet", initial ? initial->q[1] : terms[1].load(), nullptr);
+        cache.setProperty ("cross", initial ? initial->q[3] : terms[2].load(), nullptr);
+        cache.setProperty ("rate", rate, nullptr);
+        cache.setProperty ("channels", channels, nullptr);
+        if (insertRevision.load() == revision && (initial || recalled || calibratedRevision.load() == revision))
+            state.appendChild (cache, nullptr);
+    }
+   #endif
     state.setProperty ("stateVersion", 2, nullptr);       // 2 = MASTER SPACE 1.2 (engine parameter, A/B, preset info)
     state.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
     storeCompareState (state);
@@ -2202,9 +2486,23 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
 
     auto tree = juce::ValueTree::fromXml (*xml);
     tree.removeChild (tree.getChildWithName ("ABCompare"), nullptr);
+   #ifdef MAS_LEVEL_MATCH
+    restoredRevision.store (0);
+    const auto reference = tree.getChildWithName ("InsertReference1");
+    tree.removeChild (reference, nullptr);
+   #endif
 
     beginStateTransition();
     apvts.replaceState (tree);
+   #ifdef MAS_LEVEL_MATCH
+    bool automatic = xml->getBoolAttribute ("automaticReference", false);
+    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        if (e->getStringAttribute ("id") == "alm") automatic = e->getBoolAttribute ("value", false);
+    insertEnabled.store (automatic);
+    if (!presentIDs.contains (ParamIDs::mix))
+        if (auto* wet = apvts.getParameter (ParamIDs::mix))
+            wet->setValueNotifyingHost (wet->convertTo0to1 (35.0f));
+   #endif
     if (! hasEngine)
         if (auto* prm = apvts.getParameter (ParamIDs::engine))
             prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));
@@ -2236,6 +2534,18 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
    #endif
     endStateTransition();
 
+   #ifdef MAS_LEVEL_MATCH
+    if (reference.isValid() && insertEnabled.load() && get (ParamIDs::mode) < 0.5f)
+    {
+        const auto version = parameterRevision.load();
+        restoredTerms[0].store (double (reference["dry"]));
+        restoredTerms[1].store (double (reference["wet"]));
+        restoredTerms[2].store (double (reference["cross"]));
+        restoredRate.store (double (reference["rate"]));
+        restoredChannels.store (int (reference["channels"]));
+        restoredRevision.store (version);
+    }
+   #endif
     restoreCompareState (*xml);
     if (presetManager != nullptr) presetManager->stateReplaced();
 

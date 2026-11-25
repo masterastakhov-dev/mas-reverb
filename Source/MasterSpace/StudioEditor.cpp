@@ -305,6 +305,7 @@ public:
             };
         }
         algo[3]->setTooltip ("ATMOSPHERIC TAIL (late engine); its own controls are on the ATMOS page in PRO");
+       #ifndef MAS_LEVEL_MATCH
         const char* routeNames[] = { "INSERT", "AUX" };
         for (int i = 0; i < 2; ++i)
         {
@@ -313,6 +314,7 @@ public:
             b->setBounds (440 + i * 66, 340, 62, 32);
             b->onClick = [this, i] { setPlain (proc.apvts, ParamIDs::routing, (float) i); sync(); };
         }
+       #endif
         makeKey (*this, irKey, false, true);
         irKey.setBounds (578, 340, 52, 32);
         irKey.setTooltip ("Impulse-response mode. Click: switch ALGO / IR (asks for a file if none is loaded); drop a WAV / AIFF / FLAC on the window to load one");
@@ -355,7 +357,9 @@ public:
        #ifdef MAS_STUDIO_18
         // 1.8 bottom strip: [preset tools, placed by the panel] [INSERT AUX IR] [SMART DUCKER RESONANCE GUARD
         // HARMONIC COLOR M/S COMP]; the space types moved up next to the preset name. Same buttons, same actions.
+       #ifndef MAS_LEVEL_MATCH
         route[0]->setBounds (428, 340, 58, 32); route[1]->setBounds (490, 340, 46, 32);
+       #endif
         irKey.setBounds (540, 340, 40, 32);
         mods[0]->setBounds (594, 340, 116, 32); mods[1]->setBounds (714, 340, 134, 32); mods[2]->setBounds (852, 340, 126, 32);
         makeKey (*this, compKey, false, true);
@@ -465,7 +469,7 @@ public:
             algo[i]->setToggleState (i == 3 ? atmos : (! atmos && i == a), juce::dontSendNotification);
             algo[i]->setEnabled (! ir);
         }
-        for (int i = 0; i < 2; ++i) route[i]->setToggleState (i == r, juce::dontSendNotification);
+        for (int i = 0; i < route.size(); ++i) route[i]->setToggleState (i == r, juce::dontSendNotification);
         irKey.setToggleState (ir, juce::dontSendNotification);
         depthView.setToggleState (panel.isDrawerOpen(), juce::dontSendNotification);
 
