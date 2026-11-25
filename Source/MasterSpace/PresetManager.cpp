@@ -236,6 +236,9 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                #else
                 const bool addedLater = false;
                #endif
+               #ifdef MAS_LEVEL_MATCH
+                addedLater = addedLater || pi.id == "alm";
+               #endif
                 if (! addedLater) missing.add (pi.id);
             }
         }

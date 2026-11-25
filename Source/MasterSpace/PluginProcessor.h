@@ -15,7 +15,7 @@ namespace mspreset { class PresetManager; }
 
 // Complete sound state: plain (denormalised) value of every parameter, by parameter ID.
 #ifdef MAS_LEVEL_MATCH
-#include "ALMCalibrationMailbox.h"
+#include "AutoLevelMatch.h"
 #endif
 
 using ParamMap = std::map<juce::String, float>;
@@ -349,7 +349,7 @@ public:
 
     // loudness (LUFS-like, K-weighted) of a state for pink noise, rendered offline (any thread but audio)
     static double measureLoudness (const ParamMap&, double sampleRate, double* inputLoudness = nullptr,
-                                   MasterSpaceAudioProcessor* offlineIR = nullptr);
+                                   MasterSpaceAudioProcessor* offlineIR = nullptr, bool monoOutput = false);
    #ifdef MAS_LEVEL_MATCH
     std::atomic<float> insertGainDb { 0 };
    #endif
@@ -461,11 +461,23 @@ private:
     std::atomic<int> matchGeneration { 0 };
    #ifdef MAS_LEVEL_MATCH
     void refreshInsertCalibration();
-    static mas::alm::Estimate calibrateInsert (ParamMap, double, std::shared_ptr<const PendingIR> = {});
+    static double referenceRatio (ParamMap, double, std::shared_ptr<const PendingIR>, bool monoOutput = false);
+    static mas::alm::Estimate insertEstimate (const mas::alm::Calibration&, float mixPercent);
+    std::array<std::atomic<double>, 3> mixTerms {};
+    static_assert (std::atomic<double>::is_always_lock_free);
+    bool cachedIR = false;
+    float cachedMix = -1;
+    uint64_t cachedRevision = 0;
+    mas::alm::Estimate cachedEstimate;
     std::shared_ptr<const PendingIR> referenceIR;
-    mas::alm::CalibrationMailbox insertMailbox;
+
     mas::alm::StereoGain insertGain;
-    void parameterValueChanged (int, float) override { insertRevision.fetch_add (1, std::memory_order_release); }
+    void parameterValueChanged (int, float) override
+    {
+        insertIsDefault.store (false, std::memory_order_relaxed);
+        insertRevision.fetch_add (1, std::memory_order_release);
+    }
+    std::atomic<bool> insertIsDefault { true };
     void parameterGestureChanged (int, bool) override {}
     std::vector<juce::AudioProcessorParameter*> insertListeners;
     std::atomic<uint64_t> insertRevision { 1 }, calibratedRevision { 0 };
@@ -474,6 +486,7 @@ private:
    public:
     int getInsertStatus() const { return insertStatus.load(); }
    private:
+    std::atomic<float>* insertEnabled = nullptr;
     double insertChangedAt = 0;
     bool insertSubmitted = false;
    #endif

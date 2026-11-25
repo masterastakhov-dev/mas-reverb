@@ -734,6 +734,7 @@ int main (int argc, char** argv)
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
    #ifdef MAS_LEVEL_MATCH
+    if (argc > 1 && juce::String (argv[1]) == "--default-calibration") return printDefaultInsertCalibration();
     if (argc > 1 && juce::String (argv[1]) == "--insert-match") return testInsertMatch();
    #endif
    #ifdef MAS_RI
@@ -2380,6 +2381,10 @@ int main (int argc, char** argv)
             for (int k = 0; k < 400 && kind == 2 && ! q->isIRActiveOnAudio(); ++k) { auto w0 = silence (48000.0, 0.01); run (*q, w0, 256); pump (20); }
             // juce::dsp::Convolution swaps the IR on its own thread and cross-fades to it: let that finish too
             for (int k = 0; k < 60 && kind == 2; ++k) { auto w1 = silence (48000.0, 0.01); run (*q, w1, 256); pump (15); }
+           #ifdef MAS_LEVEL_MATCH
+            if (routing == 0)
+                check (settleInsert (*q, 48000, 256), "INSERT reference available before compressor comparison");
+           #endif
             auto w = silence (48000.0, 0.3); run (*q, w, 256); pump (100);
             return q;
         };
