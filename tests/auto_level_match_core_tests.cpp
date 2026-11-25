@@ -1,4 +1,4 @@
-#include "../Source/MasterSpace/AutoLevelMatch.h"
+#include "../Source/MasterSpace/ALMCalibration.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +17,16 @@ static bool near(double a,double b,double tol=1e-5) { return std::abs(a-b)<tol; 
 
 int main()
 {
+    CalibrationAccumulator acc;
+    acc.add(1,1,2,-1);
+    acc.add(-1,-1,-2,1);
+    auto measured=acc.finish();
+    check(measured.inputEnergy==1 && measured.q==std::array<double,6>{1,4,1,2,-1,-2},"measured Gram matrix");
+    check(near(estimate(measured,1,0.5,0).db,-6.0),"measured coherent clamp");
+    CalibrationAccumulator empty;
+    check(!estimate(empty.finish(),1,0,0).valid,"empty calibration");
+    acc.add(1,std::numeric_limits<double>::quiet_NaN(),0,0);
+    check(!estimate(acc.finish(),1,0,0).valid,"nonfinite calibration rejected");
     const Calibration unity {1.0,{1.0,1.0,1.0,0,0,0}};
     const Calibration coherent {1.0,{1.0,1.0,1.0,1,1,1}};
     const double h=std::sqrt(0.5);
