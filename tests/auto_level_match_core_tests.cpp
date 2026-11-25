@@ -52,7 +52,9 @@ int main()
         }
         check(std::memcmp(l.data(),m.data(),n*sizeof(float))==0 &&
               std::memcmp(r.data(),s.data(),n*sizeof(float))==0,"block partition exact");
-        check(a.gain()==2.0f && b.gain()==2.0f,"settled gain");
+        // dB is stored as float; converting 6.0205999 dB back to linear gain need not yield exactly 2.
+        const float expected = std::pow(10.0f,e.db/20.0f);
+        check(a.gain()==expected && b.gain()==expected && near(expected,2.0,1e-6),"settled gain");
         for(int i=0;i<n;++i)
         {
             if (r[i]!=-0.5f*l[i]) { check(false,"stereo ratio"); }
@@ -72,7 +74,7 @@ int main()
         check(a.gain()==1.0f,"invalid calibration returns unity");
         a.setTarget(e,true,true); a.process(l.data(),nullptr,n);
         float mono=0.25f; a.process(&mono,&mono,1);
-        check(mono==0.5f,"aliased mono not multiplied twice");
+        check(mono==0.25f*expected && near(mono,0.5,1e-6),"aliased mono not multiplied twice");
         float zero=0; a.process(&zero,nullptr,1);
         check(zero==0,"no generated signal");
     }
