@@ -8,7 +8,7 @@ verify() {
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" == "$bundle" ]]
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:subtype' "$1/Contents/Info.plist")" == ML18 ]]
     /usr/bin/codesign --verify --strict "$1"
-    /usr/bin/lipo -verify_arch arm64 x86_64 "$1/Contents/MacOS/MASTER SPACE 1.8.1 STUDIO"
+    /usr/bin/lipo "$1/Contents/MacOS/MASTER SPACE 1.8.1 STUDIO" -verify_arch arm64 x86_64
 }
 verify "$name"
 mkdir -p "$dir"
