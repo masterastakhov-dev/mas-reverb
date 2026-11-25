@@ -44,6 +44,13 @@
 
 ## Журнал
 
+### 25.11.2026 — ChatGPT: этап 1 LEVEL MATCH, отдельное ядро
+- Добавлен `Source/MasterSpace/AutoLevelMatch.h`: полная матрица энергии DIRECT/EARLY/LATE с cross terms, проверка корректности ковариаций, fallback unity при вырожденной/невалидной калибровке, диапазон -6…+12 dB.
+- Общий L/R gain после будущего DSP-тракта: sample-based ramp, отсутствие повторного старта при одинаковой цели, exact unity OFF после перехода, AUX exact unity; переключение INSERT/AUX должно быть согласовано с существующим crossfade при интеграции.
+- Добавлены standalone тесты `tests/auto_level_match_core_tests.cpp` и CI `.github/workflows/level-match-core.yml` (Linux/macOS, sanitizers на Linux). Не считать их пройденными до получения результата.
+- Ядро пока не подключено к процессору; источник реальной K-weighted калибровки, A/B MATCH, сохранение состояния, UI, отдельные ID AU, установщик и упаковка ещё не реализованы. Нет новой сборки плагина.
+- Следующий этап: измерить три пути отдельно на эталоне и внедрить safe snapshot publication, проверить A/B trim и compressor GR; затем интеграция и AU-only CI. Существующие сборки и утверждённая графика не тронуты.
+
 ### 25.11.2026 — Claude: замер громкости INSERT против BYPASS, предложение AUTO LEVEL MATCH
 - Новый режим тестов `MasterSpace18Tests --levels` — только диагностика, звук не меняет.
 - Результаты по заводским пресетам:
