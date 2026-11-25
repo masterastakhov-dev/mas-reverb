@@ -353,10 +353,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     }
    #endif
 
+   #ifdef MAS_LEVEL_MATCH
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "alm", 7 }, "LEVEL MATCH", true));
+   #endif
     return { p.begin(), p.end() };
 }
 
-MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
+MasterSpaceAudioProcessor::MasterSpaceAudioProcessor (bool startMaintenanceTimer)
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
@@ -374,12 +377,27 @@ MasterSpaceAudioProcessor::MasterSpaceAudioProcessor()
             for (int f = 0; f < ParamIDs::eqNumFields; ++f)
                 eqRaw[b][i][f] = apvts.getRawParameterValue (ParamIDs::eqId (b, i, f));
    #endif
-    startTimerHz (10);
+   #ifdef MAS_LEVEL_MATCH
+    if (startMaintenanceTimer)
+        for (auto* param : getParameters())
+            if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
+            {
+                const auto id = p->getParameterID();
+                if (id == ParamIDs::output || id == ParamIDs::depth || id.startsWith ("cp") ||
+                    id.startsWith ("duck") || id.startsWith ("rg")) continue;
+                p->addListener (this);
+                insertListeners.push_back (p);
+            }
+   #endif
+    if (startMaintenanceTimer) startTimerHz (10);
 }
 
 MasterSpaceAudioProcessor::~MasterSpaceAudioProcessor()
 {
     stopTimer();
+   #ifdef MAS_LEVEL_MATCH
+    for (auto* p : insertListeners) p->removeListener (this);
+   #endif
     matchGeneration.fetch_add (1);
     matchPool.removeAllJobs (true, 10000);
     presetManager.reset();
@@ -567,6 +585,10 @@ void MasterSpaceAudioProcessor::fillParamsWith (P& p, Get&& get)
 //==============================================================================
 void MasterSpaceAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+   #ifdef MAS_LEVEL_MATCH
+    insertGain.prepare (sampleRate);
+    insertRevision.fetch_add (1, std::memory_order_release);
+   #endif
     sampleRateHz = sampleRate;
     if (std::abs (hostRate.load() - sampleRate) > 1.0)
     {
@@ -1060,6 +1082,17 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
    #endif
 
    #ifdef MAS_STUDIO_DYN
+   #ifdef MAS_LEVEL_MATCH
+    const bool insertActive = get ("alm") > 0.5f && get (ParamIDs::routing) < 0.5f;
+    const auto revision = insertRevision.load (std::memory_order_acquire);
+    const bool fresh = calibratedRevision.load (std::memory_order_acquire) == revision;
+    auto result = fresh ? insertMailbox.read().estimate : mas::alm::Estimate {};
+    const bool applying = insertActive && !deltaListen.load();
+    insertGain.setTarget (result, applying, true);
+    insertStatus.store (!applying ? 0 : !fresh ? 1 : !result.valid ? 2 : result.limited ? 3 : 4, std::memory_order_relaxed);
+    insertGain.process (buffer.getWritePointer (0), numOut > 1 ? buffer.getWritePointer (1) : nullptr, n);
+    insertGainDb.store (juce::Decibels::gainToDecibels (insertGain.gain()), std::memory_order_relaxed);
+   #endif
     // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
     if (ioOn && numOut > 0)
     {
@@ -1703,7 +1736,7 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     const float gLate  = get (lateOn) > 0.5f ? mspace::dbToGain (get (lateLevel)) : 0.0f;
 
     const int total = irOriginal.getNumSamples();
-    const int keep = juce::jmax (64, (int) std::round (total * lengthPct * 0.01f));
+    const int keep = juce::jmin (total, juce::jmax (64, (int) std::round (total * lengthPct * 0.01f)));
     const int numCh = irOriginal.getNumChannels();
 
     auto pending = std::make_unique<PendingIR>();
@@ -1763,6 +1796,10 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     pending->stereo = numCh > 1;
     irSeconds = (double) keep / irOriginalRate;
     appliedShape = irShapeSignature();
+   #ifdef MAS_LEVEL_MATCH
+    referenceIR = std::make_shared<PendingIR> (*pending);
+    insertRevision.fetch_add (1, std::memory_order_release);
+   #endif
 
     std::unique_ptr<PendingIR> toFree;
     {
@@ -1772,8 +1809,67 @@ void MasterSpaceAudioProcessor::sendShapedIRToAudioThread()
     }
 }
 
+#ifdef MAS_LEVEL_MATCH
+mas::alm::Estimate MasterSpaceAudioProcessor::calibrateInsert (ParamMap state, double fs, std::shared_ptr<const PendingIR> impulse)
+{
+    using namespace ParamIDs;
+    state[depth] = 35.0f;
+    state[output] = state[duckOn] = state[rgOn] = state[cpOn] = 0;
+    for (int bank = 0; bank < req::numBanks; ++bank)
+        for (int band = 0; band < req::kBands; ++band)
+            state[eqId (bank, band, eqDynOn)] = 0;
+    double input = 0;
+    std::unique_ptr<MasterSpaceAudioProcessor> offlineIR;
+    if (state[mode] > 0.5f)
+    {
+        if (!impulse) return {};
+        offlineIR = std::make_unique<MasterSpaceAudioProcessor> (false);
+        for (const auto& [id, value] : state)
+            if (auto* param = offlineIR->apvts.getParameter (id))
+                param->setValueNotifyingHost (param->convertTo0to1 (value));
+        offlineIR->pendingIR = std::make_unique<PendingIR> (*impulse);
+        offlineIR->takePendingIR();
+        offlineIR->prepareToPlay (fs, 512);
+    }
+    const double measured = measureLoudness (state, fs, &input, offlineIR.get());
+    if (!std::isfinite (measured) || measured < -110 || !std::isfinite (input)) return {};
+    const auto db = static_cast<float> (input - measured);
+    return { std::clamp (db, -6.0f, 12.0f), true, db < -6 || db > 12 };
+}
+
+void MasterSpaceAudioProcessor::refreshInsertCalibration()
+{
+    const auto revision = insertRevision.load (std::memory_order_acquire);
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (revision != pendingRevision)
+    {
+        pendingRevision = revision;
+        insertChangedAt = now;
+        insertSubmitted = false;
+        insertMailbox.begin();
+    }
+    if (insertSubmitted || now - insertChangedAt < 250 || matchPool.getNumJobs() != 0
+        || get ("alm") < 0.5f || get (ParamIDs::routing) > 0.5f) return;
+    auto state = captureParamMap();
+    const auto fs = hostRate.load();
+    if (fs < 8000 || revision != insertRevision.load (std::memory_order_acquire)) return;
+    auto impulse = state[ParamIDs::mode] > 0.5f ? referenceIR : nullptr;
+    insertSubmitted = true;
+    const auto ticket = insertMailbox.read().ticket;
+    matchPool.addJob ([this, ticket, revision, state, fs, impulse] {
+        auto value = calibrateInsert (state, fs, impulse);
+        if (revision != insertRevision.load (std::memory_order_acquire)) return;
+        insertMailbox.publish (ticket, value);
+        calibratedRevision.store (revision, std::memory_order_release);
+    });
+}
+#endif
+
 void MasterSpaceAudioProcessor::timerCallback()
 {
+   #ifdef MAS_LEVEL_MATCH
+    refreshInsertCalibration();
+   #endif
    #ifdef MAS_RI
     // STUDIO HQ latency: reported from the message thread when the quality changes
     {
@@ -2016,12 +2112,20 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
 
     matchStatus = "MATCH: measuring...";
     const int gen = matchGeneration.fetch_add (1) + 1;
-    const double fs = sampleRateHz > 0 ? sampleRateHz : 48000.0;
+    const double fs = hostRate.load();
     matchPool.addJob ([this, a, b, gen, fs, alive = std::weak_ptr<bool> (aliveFlag)]
     {
-        const double la = measureLoudness (a, fs);
+        auto loudness = [fs] (const ParamMap& m) {
+            auto value = measureLoudness (m, fs);
+           #ifdef MAS_LEVEL_MATCH
+            if (m.count ("alm") && m.at ("alm") > 0.5f && m.at (ParamIDs::routing) < 0.5f)
+                value += calibrateInsert (m, fs).db;
+           #endif
+            return value;
+        };
+        const double la = loudness (a);
         if (matchGeneration.load() != gen) return;
-        const double lb = measureLoudness (b, fs);
+        const double lb = loudness (b);
         if (matchGeneration.load() != gen) return;
         const float trim = (float) juce::jlimit (-12.0, 12.0, la - lb);
         juce::MessageManager::callAsync ([this, gen, trim, alive]
@@ -2033,7 +2137,7 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
     });
 }
 
-double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
+double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs, double* inputLoudness, MasterSpaceAudioProcessor* offlineIR)
 {
     auto getter = [&m] (const char* id) { const auto it = m.find (id); return it != m.end() ? it->second : 0.0f; };
     mspace::Params p; fillParamsWith (p, getter);
@@ -2058,7 +2162,7 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
 
     constexpr int block = 512;
     auto path = std::make_unique<AlgoPath>();
-    path->prepare (fs, block, p, lp, legacy);
+    if (offlineIR == nullptr) path->prepare (fs, block, p, lp, legacy);
 
     // K-weighting (ITU-R BS.1770), coefficients for any sample rate
     struct BQ { double b0, b1, b2, a1, a2, z1 = 0, z2 = 0;
@@ -2075,7 +2179,8 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
           f[1] = { 1.0, -2.0, 1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0 }; }
         return f;
     };
-    auto kL = kw(), kR = kw();
+    auto kL = kw(), kR = kw(), inputFilter = kw();
+    double inputSum = 0;
 
     // pink noise (Paul Kellet), same signal on both channels like a centred source, -18 dBFS RMS
     juce::Random rng (0x5eed1234);
@@ -2092,9 +2197,22 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
             b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
             b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
             const double pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926;
+            if (inputLoudness != nullptr)
+            {
+                double x = static_cast<float> (pink * 0.5);
+                for (auto& filter : inputFilter) x = filter.run (x);
+                if (pos + i >= skip) inputSum += 2 * x * x;
+            }
             buf.setSample (0, i, (float) (pink * 0.5));
             buf.setSample (1, i, (float) (pink * 0.5));
         }
+        if (offlineIR != nullptr)
+        {
+            for (int c = 0; c < 2; ++c) offlineIR->irDry.copyFrom (c, 0, buf, c, 0, n);
+            offlineIR->processIRPath (n);
+            for (int c = 0; c < 2; ++c) buf.copyFrom (c, 0, offlineIR->irDry, c, 0, n);
+        }
+        else
        #ifdef MAS_RI
         path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs, nullptr, nullptr);
        #else
@@ -2108,6 +2226,7 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs)
             if (pos + i >= skip) { sum += l * l + r * r; ++count; }
         }
     }
+    if (inputLoudness != nullptr) *inputLoudness = -0.691 + 10.0 * std::log10 (inputSum / static_cast<double> (count));
     return -0.691 + 10.0 * std::log10 (std::max (1.0e-12, sum / (double) std::max (1LL, count)));
 }
 
@@ -2205,6 +2324,10 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
 
     beginStateTransition();
     apvts.replaceState (tree);
+   #ifdef MAS_LEVEL_MATCH
+    if (! presentIDs.contains ("alm"))
+        apvts.getParameter ("alm")->setValueNotifyingHost (0.0f);
+   #endif
     if (! hasEngine)
         if (auto* prm = apvts.getParameter (ParamIDs::engine))
             prm->setValueNotifyingHost (prm->convertTo0to1 ((float) engineLegacy11));

@@ -23,6 +23,8 @@ jobs:
           set -euo pipefail
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic tests/auto_level_match_core_tests.cpp -o alm-tests
           ./alm-tests
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic tests/alm_mailbox_tests.cpp -o mailbox-tests
+          ./mailbox-tests
       - name: Undefined behavior and address sanitizers (Linux)
         if: runner.os == 'Linux'
         shell: bash

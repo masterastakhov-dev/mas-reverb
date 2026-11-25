@@ -14,6 +14,10 @@
 namespace mspreset { class PresetManager; }
 
 // Complete sound state: plain (denormalised) value of every parameter, by parameter ID.
+#ifdef MAS_LEVEL_MATCH
+#include "ALMCalibrationMailbox.h"
+#endif
+
 using ParamMap = std::map<juce::String, float>;
 
 namespace ParamIDs
@@ -260,9 +264,12 @@ struct RIMeters
 //==============================================================================
 class MasterSpaceAudioProcessor : public juce::AudioProcessor,
                                  private juce::Timer
+                                #ifdef MAS_LEVEL_MATCH
+                               , private juce::AudioProcessorParameter::Listener
+                                #endif
 {
 public:
-    MasterSpaceAudioProcessor();
+    explicit MasterSpaceAudioProcessor (bool startMaintenanceTimer = true);
     ~MasterSpaceAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -341,7 +348,11 @@ public:
     void refreshLevelMatch();                    // re-measures when the slots changed (call from a UI timer)
 
     // loudness (LUFS-like, K-weighted) of a state for pink noise, rendered offline (any thread but audio)
-    static double measureLoudness (const ParamMap&, double sampleRate);
+    static double measureLoudness (const ParamMap&, double sampleRate, double* inputLoudness = nullptr,
+                                   MasterSpaceAudioProcessor* offlineIR = nullptr);
+   #ifdef MAS_LEVEL_MATCH
+    std::atomic<float> insertGainDb { 0 };
+   #endif
 
    #ifdef MAS_RI
     // ---- 1.4: SMART DUCKER / RESONANCE GUARD
@@ -448,6 +459,24 @@ private:
     juce::String matchStatus;
     juce::int64 matchedHash = 0, pendingMatchHash = 0;
     std::atomic<int> matchGeneration { 0 };
+   #ifdef MAS_LEVEL_MATCH
+    void refreshInsertCalibration();
+    static mas::alm::Estimate calibrateInsert (ParamMap, double, std::shared_ptr<const PendingIR> = {});
+    std::shared_ptr<const PendingIR> referenceIR;
+    mas::alm::CalibrationMailbox insertMailbox;
+    mas::alm::StereoGain insertGain;
+    void parameterValueChanged (int, float) override { insertRevision.fetch_add (1, std::memory_order_release); }
+    void parameterGestureChanged (int, bool) override {}
+    std::vector<juce::AudioProcessorParameter*> insertListeners;
+    std::atomic<uint64_t> insertRevision { 1 }, calibratedRevision { 0 };
+    uint64_t pendingRevision = 0;
+    std::atomic<int> insertStatus { 0 };
+   public:
+    int getInsertStatus() const { return insertStatus.load(); }
+   private:
+    double insertChangedAt = 0;
+    bool insertSubmitted = false;
+   #endif
     juce::ThreadPool matchPool { 1 };
     void storeCompareState (juce::ValueTree& state) const;
     void restoreCompareState (const juce::XmlElement& xml);

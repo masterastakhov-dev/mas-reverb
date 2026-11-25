@@ -543,6 +543,9 @@ static int refHashes (const juce::File& dumpDir)
                 if (auto* only = std::getenv ("MAS_REFHASH_ONLY")) if (juce::String (sc.name) != only || v > 0 || fs > 48000.0) continue;
                 auto p = makeProcessor (fs, 256);
                 if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
+               #ifdef MAS_LEVEL_MATCH
+                setP (*p, "alm", 0.0f);
+               #endif
                 setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);
                 setP (*p, ParamIDs::hcOn, (float) sc.hc); setP (*p, ParamIDs::quality, (float) sc.q);
                 setP (*p, ParamIDs::hcChar, (float) sc.hcChar); setP (*p, ParamIDs::hcPos, (float) sc.hcPos);
@@ -722,10 +725,17 @@ static int levelSurvey()
 }
 #endif
 
+#ifdef MAS_LEVEL_MATCH
+#include "alm_integration_tests.inc"
+#endif
+
 int main (int argc, char** argv)
 {
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
+   #ifdef MAS_LEVEL_MATCH
+    if (argc > 1 && juce::String (argv[1]) == "--insert-match") return testInsertMatch();
+   #endif
    #ifdef MAS_RI
     if (argc > 1 && juce::String (argv[1]) == "--refhash")
     {

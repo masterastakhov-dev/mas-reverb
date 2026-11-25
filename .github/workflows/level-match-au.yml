@@ -1,0 +1,51 @@
+name: LEVEL MATCH Universal AU
+on:
+  push:
+    branches: [chatgpt/1.8-level-match]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      NAME: MASTER SPACE 1.8 LEVEL MATCH
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AU and processor tests
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build --target MasterSpace18Match_AU MasterSpaceMatchTests MasterSpace18Tests -j 3
+      - name: Processor tests and OFF identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          t=build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests
+          "$t" --insert-match | tee insert-match.log
+          "$t" | tee regression.log
+          "$t" --refhash | grep '^REF ' > match-off.txt
+          build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash | grep '^REF ' > baseline.txt
+          test "$(wc -l < baseline.txt)" -eq 48
+          diff baseline.txt match-off.txt
+      - name: Install, validate and package AU
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/$NAME"
+          cp -R "build/MasterSpace18Match_artefacts/Release/AU/$NAME.component" "dist/$NAME/"
+          codesign --force --deep --sign - "dist/$NAME/$NAME.component"
+          cp installer/install-MasterSpace18Match.command "dist/$NAME/Install.command"
+          "dist/$NAME/Install.command"
+          auval -strict -v aufx ML18 Mast | tee auval.log
+          grep -q 'AU VALIDATION SUCCEEDED' auval.log
+          curl -fsSL https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip -o pluginval.zip
+          unzip -q pluginval.zip
+          pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 32,64,128,256,512 --validate "$HOME/Library/Audio/Plug-Ins/Components/$NAME.component" 2>&1 | tee pluginval.log
+          cp insert-match.log auval.log pluginval.log regression.log baseline.txt match-off.txt "dist/$NAME/"
+          cd dist
+          ditto -c -k --keepParent "$NAME" MASTER-SPACE-1.8-LEVEL-MATCH-AU.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MASTER-SPACE-1.8-LEVEL-MATCH-Universal-AU
+          path: dist/MASTER-SPACE-1.8-LEVEL-MATCH-AU.zip
