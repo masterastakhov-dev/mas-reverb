@@ -349,8 +349,9 @@ public:
     void refreshLevelMatch();                    // re-measures when the slots changed (call from a UI timer)
 
     // loudness (LUFS-like, K-weighted) of a state for pink noise, rendered offline (any thread but audio)
+    using ReferenceRender = std::function<void (juce::AudioBuffer<float>&, int)>;
     static double measureLoudness (const ParamMap&, double sampleRate, double* inputLoudness = nullptr,
-                                   MasterSpaceAudioProcessor* offlineIR = nullptr, bool monoOutput = false);
+                                   const ReferenceRender& offlineIR = {}, bool monoOutput = false);
    #ifdef MAS_LEVEL_MATCH
     std::atomic<float> insertGainDb { 0 };
    #endif

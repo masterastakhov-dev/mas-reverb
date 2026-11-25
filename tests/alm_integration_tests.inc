@@ -230,5 +230,21 @@ static int testRecordedMaterial (const juce::File& assets)
             errors += !(signal > 0 && residual < -90);
         }
     }
+    for (double fs : {44100., 48000., 96000.})
+    {
+        auto proc = makeProcessor (fs, 64);
+        auto state = proc->defaultParamMap();
+        state[ParamIDs::mix] = 45;
+        state[ParamIDs::mode] = 1;
+        proc->applyParamMap (state);
+        if (!proc->loadImpulseResponse (assets.getChildFile ("reverb_ir.wav"))) return 1;
+        if (!settleInsert (*proc, fs, 64)) return 1;
+        auto input = lvl::material (0, fs, 8.);
+        auto out = input;
+        run (*proc, out, 64);
+        const double error = lvl::lufs (out, fs, int (fs*4)) - lvl::lufs (input, fs, int (fs*4));
+        std::printf ("IR %.0f Hz block 64 gain %.3f dB measured %+.3f LU\n", fs, proc->insertGainDb.load(), error);
+        errors += !std::isfinite (error) || std::abs (error) > 0.5;
+    }
     return errors ? 1 : 0;
 }

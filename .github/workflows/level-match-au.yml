@@ -46,6 +46,13 @@ jobs:
           codesign --force --deep --sign - "dist/$NAME/$NAME.component"
           cp installer/install-MasterSpace18Match.command "dist/$NAME/Install.command"
           "dist/$NAME/Install.command"
+          # The registrar observes the atomic bundle move asynchronously.
+          for attempt in {1..15}; do
+            auval -a > installed-au.txt
+            if grep -Eq 'aufx[[:space:]]+ML18[[:space:]]+Mast' installed-au.txt; then break; fi
+            sleep 2
+          done
+          grep -Eq 'aufx[[:space:]]+ML18[[:space:]]+Mast' installed-au.txt
           auval -strict -v aufx ML18 Mast | tee auval.log
           grep -q 'AU VALIDATION SUCCEEDED' auval.log
           curl -fsSL https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip -o pluginval.zip

@@ -1872,19 +1872,58 @@ double MasterSpaceAudioProcessor::referenceRatio (ParamMap state, double fs, std
         for (int band = 0; band < req::kBands; ++band)
             state[eqId (bank, band, eqDynOn)] = 0;
     double input = 0;
-    std::unique_ptr<MasterSpaceAudioProcessor> offlineIR;
+    ReferenceRender render;
+    std::unique_ptr<juce::dsp::Convolution> convolution;
+    juce::AudioBuffer<float> wet;
+    mspace::DelayLine delay[2];
+    mspace::Biquad hp[2], lp[2];
     if (state[mode] > 0.5f)
     {
         if (!impulse) return std::numeric_limits<double>::quiet_NaN();
-        offlineIR = std::make_unique<MasterSpaceAudioProcessor> (false);
-        for (const auto& [id, value] : state)
-            if (auto* param = offlineIR->apvts.getParameter (id))
-                param->setValueNotifyingHost (param->convertTo0to1 (value));
-        offlineIR->pendingIR = std::make_unique<PendingIR> (*impulse);
-        offlineIR->takePendingIR();
-        offlineIR->prepareToPlay (fs, 512);
+        // Worker-owned DSP only. A processor would create a message-thread
+        // APVTS timer even with its own maintenance timer disabled.
+        constexpr int block = 512;
+        convolution = std::make_unique<juce::dsp::Convolution>();
+        convolution->loadImpulseResponse (juce::AudioBuffer<float> (impulse->buffer), impulse->sampleRate,
+            impulse->stereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
+            juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::no);
+        convolution->prepare ({fs, block, 2});
+        wet.setSize (2, block);
+        const float pre = std::clamp (state[preDelay], 0.0f, 500.0f) * 0.001f * float (fs);
+        const float stereoWidth = state[width] * 0.01f;
+        const float theta = state[mix] * 0.01f * 1.5707963f;
+        const float dryGain = std::cos (theta), wetGain = std::sin (theta);
+        const bool highCutActive = state[highCut] < 19900.0f;
+        for (int c = 0; c < 2; ++c)
+        {
+            delay[c].allocate (int (std::ceil (pre)) + 8);
+            hp[c].setHighPass (std::clamp (state[lowCut], 20.0f, 2000.0f), fs);
+            lp[c].setLowPass (std::clamp (state[highCut], 1000.0f, 20000.0f), fs);
+        }
+        render = [&, pre, stereoWidth, dryGain, wetGain, highCutActive] (juce::AudioBuffer<float>& buffer, int n)
+        {
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < n; ++i)
+                {
+                    const float input = hp[c].process (buffer.getSample (c, i));
+                    const float delayed = pre < 1 ? input : delay[c].readLinear (pre);
+                    delay[c].push (input);
+                    wet.setSample (c, i, delayed);
+                }
+            auto sub = juce::dsp::AudioBlock<float> (wet).getSubBlock (0, size_t (n));
+            convolution->process (juce::dsp::ProcessContextReplacing<float> (sub));
+            for (int i = 0; i < n; ++i)
+            {
+                float l = wet.getSample (0, i) * kIRWetTrim;
+                float r = wet.getSample (1, i) * kIRWetTrim;
+                if (highCutActive) { l = lp[0].process (l); r = lp[1].process (r); }
+                const float mid = 0.5f * (l + r), side = 0.5f * (l - r) * stereoWidth;
+                buffer.setSample (0, i, buffer.getSample (0, i) * dryGain + (mid + side) * wetGain);
+                buffer.setSample (1, i, buffer.getSample (1, i) * dryGain + (mid - side) * wetGain);
+            }
+        };
     }
-    const double measured = measureLoudness (state, fs, &input, offlineIR.get(), monoOutput);
+    const double measured = measureLoudness (state, fs, &input, render, monoOutput);
     return measured < -110 ? 0.0 : std::pow (10.0, (measured - input) * 0.1);
 }
 
@@ -2232,7 +2271,7 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
     });
 }
 
-double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs, double* inputLoudness, MasterSpaceAudioProcessor* offlineIR, bool monoOutput)
+double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs, double* inputLoudness, const ReferenceRender& offlineIR, bool monoOutput)
 {
     auto getter = [&m] (const char* id) { const auto it = m.find (id); return it != m.end() ? it->second : 0.0f; };
     mspace::Params p; fillParamsWith (p, getter);
@@ -2256,8 +2295,12 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs,
     const bool legacy = getter (ParamIDs::engine) < 0.5f;
 
     constexpr int block = 512;
-    auto path = std::make_unique<AlgoPath>();
-    if (offlineIR == nullptr) path->prepare (fs, block, p, lp, legacy);
+    std::unique_ptr<AlgoPath> path;
+    if (!offlineIR)
+    {
+        path = std::make_unique<AlgoPath>();
+        path->prepare (fs, block, p, lp, legacy);
+    }
 
     // K-weighting (ITU-R BS.1770), coefficients for any sample rate
     struct BQ { double b0, b1, b2, a1, a2, z1 = 0, z2 = 0;
@@ -2303,12 +2346,7 @@ double MasterSpaceAudioProcessor::measureLoudness (const ParamMap& m, double fs,
             buf.setSample (0, i, (float) (pink * 0.5));
             buf.setSample (1, i, (float) (pink * 0.5));
         }
-        if (offlineIR != nullptr)
-        {
-            for (int c = 0; c < 2; ++c) offlineIR->irDry.copyFrom (c, 0, buf, c, 0, n);
-            offlineIR->processIRPath (n);
-            for (int c = 0; c < 2; ++c) buf.copyFrom (c, 0, offlineIR->irDry, c, 0, n);
-        }
+        if (offlineIR) offlineIR (buf, n);
         else
        #ifdef MAS_RI
         path->process (buf.getWritePointer (0), buf.getWritePointer (1), n, legacy, fs, nullptr, nullptr);
