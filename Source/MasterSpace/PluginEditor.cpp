@@ -1176,7 +1176,7 @@ public:
         g.setFont (uiFont (11.0f));
         g.setColour (MASColours::textDim);
         juce::String info = qualityText (m.quality.load(), m.latency.load(), processor.getSampleRate());
-        if (on && rawParam (s, ParamIDs::rgMatch) > 0.5f) info << "    output match +" << juce::String (m.rgMakeupDb.load(), 1) << " dB";
+        if (on && rawParam (s, ParamIDs::rgMatch) > 0.5f) info << "    makeup +" << juce::String (m.rgMakeupDb.load(), 1) << " dB";
         if (delta.getToggleState()) info << "    DELTA LISTEN";
         g.drawText (info, footer, juce::Justification::centredLeft);
     }
@@ -1458,10 +1458,13 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
    #else
     makeGroup (algoButtons,  { "STUDIO ROOM", "CHAMBER", "HALL" }, ParamIDs::algorithm);
    #endif
+   #ifndef MAS_LEVEL_MATCH
     makeGroup (routeButtons, { "INSERT", "AUX" }, ParamIDs::routing);
-    makeGroup (modeButtons,  { "ALGO", "IR" }, ParamIDs::mode);
     routeButtons[0]->setTooltip ("Direct sound is moved into the space too");
     routeButtons[1]->setTooltip ("Space only, the direct sound stays untouched (100 % wet)");
+
+   #endif
+    makeGroup (modeButtons,  { "ALGO", "IR" }, ParamIDs::mode);
 
     loadButton.onClick = [this] { chooseIRFile(); };
     addChildComponent (loadButton);
@@ -1549,6 +1552,9 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
           { K::toggle, lockWidth, "WIDTH LOCK", true }, { K::choice, mode, "MODE" }, { K::choice, algorithm, "ALGORITHM", true } },
         { { K::choice, ParamIDs::engine, "DSP ENGINE" }, { K::empty }, { K::empty }, { K::empty }, { K::empty }, { K::empty } } };
    #ifdef MAS_RI
+   #ifdef MAS_LEVEL_MATCH
+    advRows[0][2] = { K::empty };
+   #endif
     advRows[2][1] = { K::choice, ParamIDs::hcPos, "COLOR POSITION", true };
    #endif
     pages.add (new ControlPage (processor.apvts, lnf, advRows, 6));
@@ -1581,7 +1587,13 @@ MASPanel::MASPanel (MasterSpaceAudioProcessor& p, MASLookAndFeel& lf)
         { { K::toggle, rgOn, "RESONANCE GUARD", true }, { K::choice, rgMode, "MODE", true }, { K::choice, quality, "QUALITY", true },
           { K::knob, rgMax, "MAX REDUCTION", true } },
         { { K::knob, rgSmooth, "SMOOTH", true }, { K::knob, rgDetail, "DETAIL", true }, { K::knob, rgSelect, "SELECTIVITY", true },
-          { K::toggle, rgMatch, "OUTPUT MATCH", true } },
+          { K::toggle, rgMatch,
+           #ifdef MAS_LEVEL_MATCH
+            "MAKEUP",
+           #else
+            "OUTPUT MATCH",
+           #endif
+            true } },
         { { K::knob, rgAttack, "ATTACK", true }, { K::knob, rgRelease, "RELEASE", true }, { K::knob, rgLow, "LOW", true },
           { K::knob, rgHigh, "HIGH", true } },
         { { K::choice, rgTarget, "TARGET", true }, { K::knob, rgEarly, "EARLY AMOUNT", true }, { K::knob, rgLate, "LATE AMOUNT", true },

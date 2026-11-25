@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-name='MASTER SPACE 1.8 LEVEL MATCH.component'
+name='MASTER SPACE 1.8.1 STUDIO.component'
 bundle='com.masterastakhovsound.masterspace18levelmatch'
 dir="${MAS_AU_INSTALL_DIR:-$HOME/Library/Audio/Plug-Ins/Components}"
 verify() {
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist")" == "$bundle" ]]
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:subtype' "$1/Contents/Info.plist")" == ML18 ]]
     /usr/bin/codesign --verify --strict "$1"
-    /usr/bin/lipo -verify_arch arm64 x86_64 "$1/Contents/MacOS/MASTER SPACE 1.8 LEVEL MATCH"
+    /usr/bin/lipo -verify_arch arm64 x86_64 "$1/Contents/MacOS/MASTER SPACE 1.8.1 STUDIO"
 }
 verify "$name"
 mkdir -p "$dir"

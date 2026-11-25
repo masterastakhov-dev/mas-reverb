@@ -474,10 +474,15 @@ private:
     mas::alm::StereoGain insertGain;
     void parameterValueChanged (int, float) override
     {
+        parameterRevision.fetch_add (1);
         insertIsDefault.store (false, std::memory_order_relaxed);
         insertRevision.fetch_add (1, std::memory_order_release);
     }
     std::atomic<bool> insertIsDefault { true };
+    std::atomic<uint64_t> parameterRevision { 1 }, restoredRevision { 0 };
+    std::array<std::atomic<double>, 3> restoredTerms {};
+    std::atomic<double> restoredRate { 0 };
+    std::atomic<int> restoredChannels { 0 };
     void parameterGestureChanged (int, bool) override {}
     std::vector<juce::AudioProcessorParameter*> insertListeners;
     std::atomic<uint64_t> insertRevision { 1 }, calibratedRevision { 0 };
@@ -485,8 +490,9 @@ private:
     std::atomic<int> insertStatus { 0 };
    public:
     int getInsertStatus() const { return insertStatus.load(); }
+    bool hasInsertReference() const;
    private:
-    std::atomic<float>* insertEnabled = nullptr;
+    std::atomic<bool> insertEnabled { true };
     double insertChangedAt = 0;
     bool insertSubmitted = false;
    #endif

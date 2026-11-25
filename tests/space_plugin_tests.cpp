@@ -14,6 +14,11 @@
 
 namespace
 {
+    juce::File testTempDirectory()
+    {
+        if (auto* dir = std::getenv ("MAS_TEST_TEMP")) return juce::File (dir);
+        return juce::File::getSpecialLocation (juce::File::tempDirectory);
+    }
     int failures = 0, checks = 0;
     void check (bool ok, const juce::String& what)
     {
@@ -244,17 +249,20 @@ static int snapshots (const juce::File& dir)
 
 #ifdef MAS_STUDIO
 // --studio-snapshot <dir>: the studio editor at 100 % and at 2x (Retina): MAIN, MAIN + DEPTH VIEW, REVERB EQ, PRO pages, themes
-static int studioSnapshots (const juce::File& dir)
+static int studioSnapshots (const juce::File& dir, bool fresh = false)
 {
     dir.createDirectory();
     auto p = std::make_unique<MasterSpaceAudioProcessor>();
     p->setRateAndBufferSizeDetails (48000, 512);
     p->prepareToPlay (48000, 512);
     auto& pm = p->getPresetManager();
-    pm.load (pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room 1.2 Open"));
     auto set = [&] (const juce::String& id, float plain) { if (auto* r = p->apvts.getParameter (id)) r->setValueNotifyingHost (r->convertTo0to1 (plain)); };
-    set (ParamIDs::algorithm, 2.0f); set (ParamIDs::decay, 2.8f); set (ParamIDs::mix, 32.0f); set (ParamIDs::depth, 42.0f);
-    set (ParamIDs::erLevel, -3.0f); set (ParamIDs::lateLevel, -1.5f); set (ParamIDs::preDelay, 18.0f); set (ParamIDs::rgOn, 1.0f);
+    if (!fresh)
+    {
+        pm.load (pm.indexOf ("factory:Vocal Spaces/LeadVox Studio Room 1.2 Open"));
+        set (ParamIDs::algorithm, 2.0f); set (ParamIDs::decay, 2.8f); set (ParamIDs::mix, 32.0f); set (ParamIDs::depth, 42.0f);
+        set (ParamIDs::erLevel, -3.0f); set (ParamIDs::lateLevel, -1.5f); set (ParamIDs::preDelay, 18.0f); set (ParamIDs::rgOn, 1.0f);
+    }
     pump (100);
     std::unique_ptr<juce::AudioProcessorEditor> edp (p->createEditor());
     auto* ed = dynamic_cast<studio::Editor*> (edp.get());
@@ -286,6 +294,7 @@ static int studioSnapshots (const juce::File& dir)
     };
     feed (20);
     shot ("01_MAIN");
+    if (fresh) return 0;
 #ifdef MAS_STUDIO_DYN
     {
         // brand emblem in place of the old wave: red disc above the wordmark, no cyan wave line left there
@@ -541,11 +550,18 @@ static int refHashes (const juce::File& dumpDir)
             {
                 // optional filter (diagnostics, e.g. under valgrind): MAS_REFHASH_ONLY=<scenario name>
                 if (auto* only = std::getenv ("MAS_REFHASH_ONLY")) if (juce::String (sc.name) != only || v > 0 || fs > 48000.0) continue;
-                auto p = makeProcessor (fs, 256);
-                if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
                #ifdef MAS_LEVEL_MATCH
-                setP (*p, "alm", 0.0f);
+                auto p = std::make_unique<MasterSpaceAudioProcessor>();
+                auto previous = p->defaultParamMap();
+                previous["alm"] = 0;
+                previous[ParamIDs::mix] = 35;
+                p->applyParamMap (previous);
+                p->setRateAndBufferSizeDetails (fs, 256);
+                p->prepareToPlay (fs, 256);
+               #else
+                auto p = makeProcessor (fs, 256);
                #endif
+                if (sc.preset != nullptr) p->getPresetManager().load (p->getPresetManager().indexOf (sc.preset));
                 setP (*p, ParamIDs::duckOn, (float) sc.duck); setP (*p, ParamIDs::rgOn, (float) sc.rg);
                 setP (*p, ParamIDs::hcOn, (float) sc.hc); setP (*p, ParamIDs::quality, (float) sc.q);
                 setP (*p, ParamIDs::hcChar, (float) sc.hcChar); setP (*p, ParamIDs::hcPos, (float) sc.hcPos);
@@ -734,13 +750,15 @@ int main (int argc, char** argv)
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
    #ifdef MAS_LEVEL_MATCH
+    if (argc == 3 && juce::String (argv[1]) == "--recordings") return testRecordedMaterial (juce::File (argv[2]));
+    if (argc == 3 && juce::String (argv[1]) == "--factory-insert") return surveyFactoryInsert (juce::String (argv[2]).getDoubleValue());
     if (argc > 1 && juce::String (argv[1]) == "--default-calibration") return printDefaultInsertCalibration();
     if (argc > 1 && juce::String (argv[1]) == "--insert-match") return testInsertMatch();
    #endif
    #ifdef MAS_RI
     if (argc > 1 && juce::String (argv[1]) == "--refhash")
     {
-        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-ref-presets");
+        const auto root0 = testTempDirectory().getChildFile ("ms-ref-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return refHashes (argc > 2 ? juce::File (juce::String (argv[2])) : juce::File());
     }
@@ -748,7 +766,7 @@ int main (int argc, char** argv)
    #ifdef MAS_STUDIO_18
     if (argc > 1 && juce::String (argv[1]) == "--levels")
     {
-        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-lvl-presets");
+        const auto root0 = testTempDirectory().getChildFile ("ms-lvl-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return levelSurvey();
     }
@@ -759,19 +777,19 @@ int main (int argc, char** argv)
    #ifdef MAS_STUDIO
     if (argc > 2 && juce::String (argv[1]) == "--studio-snapshot")
     {
-        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-snap-presets");
+        const auto root0 = testTempDirectory().getChildFile ("ms-snap-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
-        return studioSnapshots (juce::File (juce::String (argv[2])));
+        return studioSnapshots (juce::File (juce::String (argv[2])), argc > 3 && juce::String (argv[3]) == "--fresh");
     }
    #endif
     if (argc > 2 && juce::String (argv[1]) == "--snapshot")
     {
-        const auto root0 = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-snap-presets");
+        const auto root0 = testTempDirectory().getChildFile ("ms-snap-presets");
         setenv ("MASTER_SPACE_PRESET_ROOT", root0.getFullPathName().toRawUTF8(), 1);
         return snapshots (juce::File (juce::String (argv[2])));
     }
 
-    const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-preset-test-" + juce::String (juce::Time::currentTimeMillis()));
+    const auto root = testTempDirectory().getChildFile ("ms-preset-test-" + juce::String (juce::Time::currentTimeMillis()));
     root.createDirectory();
     setenv ("MASTER_SPACE_PRESET_ROOT", root.getFullPathName().toRawUTF8(), 1);
 
@@ -1291,7 +1309,7 @@ int main (int argc, char** argv)
             }
             // IR mode too
             {
-                const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms14-test-ir.wav");
+                const auto irFile = testTempDirectory().getChildFile ("ms14-test-ir.wav");
                 {
                     juce::AudioBuffer<float> ir (2, (int) (0.4 * fs));
                     juce::Random rng (5);
@@ -1311,6 +1329,9 @@ int main (int argc, char** argv)
                     auto w = silence (fs, 0.5); run (*q, w, 256);
                     pump (100);
                     w = silence (fs, 0.5); run (*q, w, 256);
+                   #ifdef MAS_LEVEL_MATCH
+                    check (settleInsert (*q, fs, 256), "IR calibration ready before impulse comparison");
+                   #endif
                 }
                 const auto x = impulseAfterReset (*live, fs, 256, 1.0), y = impulseAfterReset (*hq, fs, 256, 1.0);
                 const float d = diffFrom (x, y, 0, expected);
@@ -1325,7 +1346,7 @@ int main (int argc, char** argv)
             const double fs = 48000.0;
             const int L = mspace::Engine::hqLatencyFor (fs);
             auto live = makeProcessor (fs, 256), hq = makeProcessor (fs, 256);
-            const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms14-test-ir2.wav");
+            const auto irFile = testTempDirectory().getChildFile ("ms14-test-ir2.wav");
             {
                 juce::AudioBuffer<float> ir (2, (int) (0.3 * fs));
                 juce::Random rng (6);
@@ -2357,7 +2378,7 @@ int main (int argc, char** argv)
             setQ (q, ParamIDs::cpMidThr, -40.0f); setQ (q, ParamIDs::cpMidRatio, 8.0f); setQ (q, ParamIDs::cpMidAtk, 2.0f);
             setQ (q, ParamIDs::cpSideThr, -40.0f); setQ (q, ParamIDs::cpSideRatio, 8.0f); setQ (q, ParamIDs::cpSideAtk, 2.0f);
         };
-        const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms18-comp-ir.wav");
+        const auto irFile = testTempDirectory().getChildFile ("ms18-comp-ir.wav");
         {
             juce::AudioBuffer<float> ir (2, 19200);
             juce::Random rng (11);
@@ -2414,10 +2435,18 @@ int main (int argc, char** argv)
             for (auto* q : { a.get(), b.get(), c.get() }) setQ (*q, ParamIDs::mix, 0.0f);
             heavy (*b, 0); heavy (*c, 1);
             pump (50);
+            // The MIX change is smoothed by the engine on the audio clock.
+            // Compare steady 0% wet with aligned histories after all ramps finish.
+            for (auto* q : { a.get(), b.get(), c.get() })
+            {
+                q->reset();
+                auto settling = silence (48000, 1.0);
+                run (*q, settling, 256);
+            }
             auto x = pinkish (48000.0, 2.0, 6), y = x, z = x;
             run (*a, x, 256); run (*b, y, 256); run (*c, z, 256);
             check (maxAbsDiff (x, y) == 0.0f && maxAbsDiff (x, z) > 0.01f, "INSERT, reverb MIX 0 %: WET ONLY leaves the dry bit-identical; FULL OUTPUT compresses it (diff "
-                   + juce::String (maxAbsDiff (x, z), 3) + ")");
+                   + juce::String (maxAbsDiff (x, z), 3) + ", wet vs dry " + juce::String (maxAbsDiff (x, y), 9) + ")");
         }
         // the wet tap is the real wet: in AUX (output = wet) WET ONLY and FULL OUTPUT give the same result, in every path, LIVE and HQ
         for (int kind = 0; kind < 3; ++kind)

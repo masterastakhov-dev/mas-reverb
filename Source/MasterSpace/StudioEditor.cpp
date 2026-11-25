@@ -305,6 +305,7 @@ public:
             };
         }
         algo[3]->setTooltip ("ATMOSPHERIC TAIL (late engine); its own controls are on the ATMOS page in PRO");
+       #ifndef MAS_LEVEL_MATCH
         const char* routeNames[] = { "INSERT", "AUX" };
         for (int i = 0; i < 2; ++i)
         {
@@ -313,6 +314,7 @@ public:
             b->setBounds (440 + i * 66, 340, 62, 32);
             b->onClick = [this, i] { setPlain (proc.apvts, ParamIDs::routing, (float) i); sync(); };
         }
+       #endif
         makeKey (*this, irKey, false, true);
         irKey.setBounds (578, 340, 52, 32);
         irKey.setTooltip ("Impulse-response mode. Click: switch ALGO / IR (asks for a file if none is loaded); drop a WAV / AIFF / FLAC on the window to load one");
@@ -355,16 +357,11 @@ public:
        #ifdef MAS_STUDIO_18
         // 1.8 bottom strip: [preset tools, placed by the panel] [INSERT AUX IR] [SMART DUCKER RESONANCE GUARD
         // HARMONIC COLOR M/S COMP]; the space types moved up next to the preset name. Same buttons, same actions.
+       #ifndef MAS_LEVEL_MATCH
         route[0]->setBounds (428, 340, 58, 32); route[1]->setBounds (490, 340, 46, 32);
+       #endif
         irKey.setBounds (540, 340, 40, 32);
         mods[0]->setBounds (594, 340, 116, 32); mods[1]->setBounds (714, 340, 134, 32); mods[2]->setBounds (852, 340, 126, 32);
-       #ifdef MAS_LEVEL_MATCH
-        makeKey (*this, insertKey, false, true);
-        insertKey.setClickingTogglesState (true);
-        insertKey.setBounds (854, 302, 172, 25);
-        insertKey.setTooltip ("INSERT loudness against bypass. LEVEL LOCK follows depth. A/B MATCH compares slots.");
-        insertAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "alm", insertKey);
-       #endif
         makeKey (*this, compKey, false, true);
         compKey.setClickingTogglesState (true);
         compKey.setBounds (982, 340, 76, 32);
@@ -398,17 +395,6 @@ public:
         for (auto* c = static_cast<juce::Component*> (this); c != nullptr && show; c = c->getParentComponent()) show = c->isVisible();
         if (proc.ioMeters.wanted.load (std::memory_order_relaxed) != show) proc.ioMeters.wanted.store (show);
         if (! show) { railLastMs = 0.0; return; }
-       #ifdef MAS_LEVEL_MATCH
-        const bool insert = plainOf (proc.apvts, ParamIDs::routing) < 0.5f;
-        insertKey.setEnabled (insert);
-        const auto status = proc.getInsertStatus();
-        const auto db = proc.insertGainDb.load();
-        const juce::String amount = (db > 0 ? "+" : "") + juce::String (db, 1) + " dB";
-        insertKey.setButtonText (!insert ? "INSERT ONLY" : status == 1 ? "MATCH: MEASURING"
-                                 : status == 2 ? "MATCH: NO REFERENCE" : "LEVEL MATCH  " + amount);
-        insertKey.setTooltip (status == 3 ? "Gain limit reached. Check OUTPUT peak headroom."
-                             : "INSERT loudness against bypass. Positive gain uses output headroom.");
-       #endif
         const double nowMs = juce::Time::getMillisecondCounterHiRes();
         if (railLastMs <= 0.0)
         {
@@ -483,7 +469,7 @@ public:
             algo[i]->setToggleState (i == 3 ? atmos : (! atmos && i == a), juce::dontSendNotification);
             algo[i]->setEnabled (! ir);
         }
-        for (int i = 0; i < 2; ++i) route[i]->setToggleState (i == r, juce::dontSendNotification);
+        for (int i = 0; i < route.size(); ++i) route[i]->setToggleState (i == r, juce::dontSendNotification);
         irKey.setToggleState (ir, juce::dontSendNotification);
         depthView.setToggleState (panel.isDrawerOpen(), juce::dontSendNotification);
 
@@ -554,10 +540,6 @@ private:
     FineSlider satMix;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> satAtt;
    #ifdef MAS_STUDIO_18
-   #ifdef MAS_LEVEL_MATCH
-    juce::TextButton insertKey { "LEVEL MATCH" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> insertAtt;
-   #endif
     juce::TextButton compKey { "M/S COMP" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> compAtt;
     // under M/S COMP: the gain reduction of MID (upper, cool) and SIDE (lower, warm), 0 .. 12 dB

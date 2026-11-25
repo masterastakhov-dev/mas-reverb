@@ -100,7 +100,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     addF (shape,     "Shape",       range (0.0f, 100.0f),       35.0f, pct);
     addF (spread,    "Spread",      range (0.0f, 500.0f, 100.0f), 60.0f, fmtMs);
     addF (width,     "Width",       range (0.0f, 200.0f),       100.0f, pct);
-    addF (mix,       "Mix",         range (0.0f, 100.0f),       35.0f, pct);
+   #ifdef MAS_LEVEL_MATCH
+    addF (mix, "Mix", range (0.0f, 100.0f), 100.0f, pct);
+   #else
+    addF (mix, "Mix", range (0.0f, 100.0f), 35.0f, pct);
+   #endif
     addF (output,    "Output",      range (-24.0f, 12.0f),      0.0f,  fmtDb, parseDb);
 
     // ---- locks
@@ -353,9 +357,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout MasterSpaceAudioProcessor::c
     }
    #endif
 
-   #ifdef MAS_LEVEL_MATCH
-    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "alm", 7 }, "LEVEL MATCH", true));
-   #endif
     return { p.begin(), p.end() };
 }
 
@@ -398,13 +399,12 @@ MasterSpaceAudioProcessor::MasterSpaceAudioProcessor (bool startMaintenanceTimer
                 eqRaw[b][i][f] = apvts.getRawParameterValue (ParamIDs::eqId (b, i, f));
    #endif
    #ifdef MAS_LEVEL_MATCH
-    insertEnabled = apvts.getRawParameterValue ("alm");
     if (startMaintenanceTimer)
         for (auto* param : getParameters())
             if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
             {
                 const auto id = p->getParameterID();
-                if (id == ParamIDs::mix || id == "alm" || id == ParamIDs::output || id == ParamIDs::depth || id.startsWith ("cp") ||
+                if (id == ParamIDs::mix || id == ParamIDs::output || id == ParamIDs::depth || id.startsWith ("cp") ||
                     id.startsWith ("duck") || id.startsWith ("rg")) continue;
                 p->addListener (this);
                 insertListeners.push_back (p);
@@ -1107,18 +1107,23 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
    #ifdef MAS_STUDIO_DYN
    #ifdef MAS_LEVEL_MATCH
-    const bool insertActive = insertEnabled->load (std::memory_order_relaxed) > 0.5f && p.routing == mspace::Insert;
+    const bool insertActive = insertEnabled.load (std::memory_order_relaxed) && p.routing == mspace::Insert;
     const auto revision = insertRevision.load (std::memory_order_acquire);
     const auto* initial = insertIsDefault.load() ? defaultInsertModel (sampleRateHz, numOut == 1) : nullptr;
-    const bool fresh = initial != nullptr || calibratedRevision.load (std::memory_order_acquire) == revision;
+    const auto parameterVersion = parameterRevision.load();
+    const bool liveModel = calibratedRevision.load (std::memory_order_acquire) == revision;
+    const bool restored = !liveModel && restoredRevision.load() == parameterVersion
+                          && restoredRate.load() == sampleRateHz && restoredChannels.load() == numOut;
+    const bool fresh = initial != nullptr || restored || liveModel;
     const auto mix = p.mix * 100.0f;
     if (fresh && (cachedRevision != revision || cachedMix != mix))
     {
         mas::alm::Calibration model;
         model.inputEnergy = 1;
-        model.q = {mixTerms[0].load(), mixTerms[1].load(), 0, mixTerms[2].load(), 0, 0};
+        const auto& terms = restored ? restoredTerms : mixTerms;
+        model.q = {terms[0].load(), terms[1].load(), 0, terms[2].load(), 0, 0};
         if (initial != nullptr) model = *initial;
-        if (initial != nullptr || calibratedRevision.load() == revision)
+        if (initial != nullptr || (restored && restoredRevision.load() == parameterVersion) || (!restored && calibratedRevision.load() == revision))
         {
             cachedEstimate = insertEstimate (model, mix);
             cachedRevision = revision;
@@ -1883,6 +1888,12 @@ double MasterSpaceAudioProcessor::referenceRatio (ParamMap state, double fs, std
     return measured < -110 ? 0.0 : std::pow (10.0, (measured - input) * 0.1);
 }
 
+bool MasterSpaceAudioProcessor::hasInsertReference() const
+{
+    return (insertIsDefault.load() && defaultInsertModel (hostRate.load(), getMainBusNumOutputChannels() == 1))
+           || calibratedRevision.load() == insertRevision.load();
+}
+
 void MasterSpaceAudioProcessor::refreshInsertCalibration()
 {
     const auto revision = insertRevision.load (std::memory_order_acquire);
@@ -1896,14 +1907,22 @@ void MasterSpaceAudioProcessor::refreshInsertCalibration()
     }
     if (insertIsDefault.load() && defaultInsertModel (hostRate.load(), getMainBusNumOutputChannels() == 1)) return;
     if (insertSubmitted || now - insertChangedAt < 250 || matchPool.getNumJobs() != 0
-        || get ("alm") < 0.5f || get (ParamIDs::routing) > 0.5f) return;
+        || !insertEnabled.load() || get (ParamIDs::routing) > 0.5f) return;
     auto state = captureParamMap();
     const auto fs = hostRate.load();
     if (fs < 8000 || revision != insertRevision.load (std::memory_order_acquire)) return;
     auto impulse = state[ParamIDs::mode] > 0.5f ? referenceIR : nullptr;
+    // Multiple instances share CPU headroom. The message timer retries the latest
+    // revision when a slot is busy. Destruction of a queued job releases its slot.
+    static std::atomic<int> running { 0 };
+    int active = running.load();
+    if (active >= 2 || !running.compare_exchange_strong (active, active + 1)) return;
+    struct Slot { ~Slot() { running.fetch_sub (1); } };
+    const auto slot = std::make_shared<Slot>();
     insertSubmitted = true;
     const bool monoOutput = getMainBusNumOutputChannels() == 1;
-    matchPool.addJob ([this, revision, state, fs, impulse, monoOutput] () mutable {
+    matchPool.addJob ([this, revision, state, fs, impulse, monoOutput, slot] () mutable {
+        juce::ignoreUnused (slot);
         // Three aligned full renders recover the dry/wet cross term. The wet
         // render includes both reflections and their mutual correlation.
         std::array<double, 3> energy {};
@@ -1980,6 +1999,9 @@ ParamMap MasterSpaceAudioProcessor::captureParamMap() const
     for (auto* prm : getParameters())
         if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
             m[r->getParameterID()] = r->convertFrom0to1 (r->getValue());
+   #ifdef MAS_LEVEL_MATCH
+    m["alm"] = insertEnabled.load() ? 1.0f : 0.0f;
+   #endif
     return m;
 }
 
@@ -1989,6 +2011,9 @@ ParamMap MasterSpaceAudioProcessor::defaultParamMap() const
     for (auto* prm : getParameters())
         if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
             m[r->getParameterID()] = r->convertFrom0to1 (r->getDefaultValue());
+   #ifdef MAS_LEVEL_MATCH
+    m["alm"] = 1.0f;
+   #endif
     return m;
 }
 
@@ -1998,6 +2023,10 @@ void MasterSpaceAudioProcessor::applyParamMap (const ParamMap& values, const juc
              || juce::MessageManager::getInstance()->isThisTheMessageThread());
 
     beginStateTransition();
+   #ifdef MAS_LEVEL_MATCH
+    const auto recall = values.find ("alm");
+    if (recall != values.end()) insertEnabled.store (recall->second > 0.5f);
+   #endif
     for (auto* prm : getParameters())
     {
         auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm);
@@ -2357,7 +2386,33 @@ void MasterSpaceAudioProcessor::restoreCompareState (const juce::XmlElement& xml
 //==============================================================================
 void MasterSpaceAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+   #ifdef MAS_LEVEL_MATCH
+    const auto revision = insertRevision.load();
+    const auto parameterVersion = parameterRevision.load();
+   #endif
     auto state = apvts.copyState();
+   #ifdef MAS_LEVEL_MATCH
+    state.setProperty ("automaticReference", insertEnabled.load(), nullptr);
+    // An optional versioned cache makes algorithmic session recall work before a
+    // host gives its message loop any time. IR files can change on disk.
+    if (get (ParamIDs::mode) < 0.5f)
+    {
+        juce::ValueTree cache ("InsertReference1");
+        const auto rate = hostRate.load();
+        const int channels = getMainBusNumOutputChannels();
+        const auto* initial = insertIsDefault.load() ? defaultInsertModel (rate, channels == 1) : nullptr;
+        const bool recalled = !initial && calibratedRevision.load() != revision && restoredRevision.load() == parameterVersion
+                              && restoredRate.load() == rate && restoredChannels.load() == channels;
+        const auto& terms = recalled ? restoredTerms : mixTerms;
+        cache.setProperty ("dry", initial ? initial->q[0] : terms[0].load(), nullptr);
+        cache.setProperty ("wet", initial ? initial->q[1] : terms[1].load(), nullptr);
+        cache.setProperty ("cross", initial ? initial->q[3] : terms[2].load(), nullptr);
+        cache.setProperty ("rate", rate, nullptr);
+        cache.setProperty ("channels", channels, nullptr);
+        if (insertRevision.load() == revision && (initial || recalled || calibratedRevision.load() == revision))
+            state.appendChild (cache, nullptr);
+    }
+   #endif
     state.setProperty ("stateVersion", 2, nullptr);       // 2 = MASTER SPACE 1.2 (engine parameter, A/B, preset info)
     state.setProperty ("pluginVersion", JucePlugin_VersionString, nullptr);
     storeCompareState (state);
@@ -2390,12 +2445,22 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
 
     auto tree = juce::ValueTree::fromXml (*xml);
     tree.removeChild (tree.getChildWithName ("ABCompare"), nullptr);
+   #ifdef MAS_LEVEL_MATCH
+    restoredRevision.store (0);
+    const auto reference = tree.getChildWithName ("InsertReference1");
+    tree.removeChild (reference, nullptr);
+   #endif
 
     beginStateTransition();
     apvts.replaceState (tree);
    #ifdef MAS_LEVEL_MATCH
-    if (! presentIDs.contains ("alm"))
-        apvts.getParameter ("alm")->setValueNotifyingHost (0.0f);
+    bool automatic = xml->getBoolAttribute ("automaticReference", false);
+    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        if (e->getStringAttribute ("id") == "alm") automatic = e->getBoolAttribute ("value", false);
+    insertEnabled.store (automatic);
+    if (!presentIDs.contains (ParamIDs::mix))
+        if (auto* wet = apvts.getParameter (ParamIDs::mix))
+            wet->setValueNotifyingHost (wet->convertTo0to1 (35.0f));
    #endif
     if (! hasEngine)
         if (auto* prm = apvts.getParameter (ParamIDs::engine))
@@ -2428,6 +2493,18 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
    #endif
     endStateTransition();
 
+   #ifdef MAS_LEVEL_MATCH
+    if (reference.isValid() && insertEnabled.load() && get (ParamIDs::mode) < 0.5f)
+    {
+        const auto version = parameterRevision.load();
+        restoredTerms[0].store (double (reference["dry"]));
+        restoredTerms[1].store (double (reference["wet"]));
+        restoredTerms[2].store (double (reference["cross"]));
+        restoredRate.store (double (reference["rate"]));
+        restoredChannels.store (int (reference["channels"]));
+        restoredRevision.store (version);
+    }
+   #endif
     restoreCompareState (*xml);
     if (presetManager != nullptr) presetManager->stateReplaced();
 

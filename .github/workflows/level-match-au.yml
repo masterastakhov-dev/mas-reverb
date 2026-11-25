@@ -8,9 +8,9 @@ permissions:
 jobs:
   validate:
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
-      NAME: MASTER SPACE 1.8 LEVEL MATCH
+      NAME: MASTER SPACE 1.8.1 STUDIO
     steps:
       - uses: actions/checkout@v4
       - name: Build AU and processor tests
@@ -23,11 +23,20 @@ jobs:
           set -euo pipefail
           t=build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests
           "$t" --insert-match | tee insert-match.log
+          "$t" --recordings "$PWD/build/_deps/juce-src/examples/Assets" | tee recordings.log
           "$t" | tee regression.log
           "$t" --refhash | grep '^REF ' > match-off.txt
           build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash | grep '^REF ' > baseline.txt
           test "$(wc -l < baseline.txt)" -eq 48
           diff baseline.txt match-off.txt
+      - name: Factory reference and headroom at all supported rates
+        shell: bash
+        run: |
+          set -euo pipefail
+          t=build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests
+          for rate in 44100 48000 96000; do
+            "$t" --factory-insert "$rate" | tee "factory-$rate.log"
+          done
       - name: Install, validate and package AU
         shell: bash
         run: |
@@ -42,10 +51,11 @@ jobs:
           curl -fsSL https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip -o pluginval.zip
           unzip -q pluginval.zip
           pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 32,64,128,256,512 --validate "$HOME/Library/Audio/Plug-Ins/Components/$NAME.component" 2>&1 | tee pluginval.log
-          cp insert-match.log auval.log pluginval.log regression.log baseline.txt match-off.txt "dist/$NAME/"
+          cp insert-match.log auval.log pluginval.log regression.log recordings.log factory-*.log baseline.txt match-off.txt "dist/$NAME/"
+          cp installer/README-MasterSpace18Match.txt "dist/$NAME/README.txt"
           cd dist
-          ditto -c -k --keepParent "$NAME" MASTER-SPACE-1.8-LEVEL-MATCH-AU.zip
+          ditto -c -k --keepParent "$NAME" MASTER-SPACE-1.8.1-STUDIO-AU.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: MASTER-SPACE-1.8-LEVEL-MATCH-Universal-AU
-          path: dist/MASTER-SPACE-1.8-LEVEL-MATCH-AU.zip
+          name: MASTER-SPACE-1.8.1-STUDIO-Universal-AU
+          path: dist/MASTER-SPACE-1.8.1-STUDIO-AU.zip

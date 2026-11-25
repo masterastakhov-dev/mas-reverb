@@ -72,7 +72,7 @@ juce::File PresetManager::getRootFolder() const
     if (env.isNotEmpty())
         return juce::File (env);
    #if defined (MAS_LEVEL_MATCH)
-    const char* product = "MASTER SPACE 1.8 LEVEL MATCH";
+    const char* product = "MASTER SPACE 1.8.1 STUDIO";
    #elif defined (MAS_STUDIO_18)
     const char* product = "MASTER SPACE 1.8 STUDIO";        // 1.8: its own library, 1.6 / 1.7d untouched
    #elif defined (MAS_STUDIO_DYN)
@@ -235,9 +235,6 @@ bool PresetManager::fromJson (const juce::var& json, Preset& out, juce::String& 
                #endif
                #else
                 const bool addedLater = false;
-               #endif
-               #ifdef MAS_LEVEL_MATCH
-                addedLater = addedLater || pi.id == "alm";
                #endif
                 if (! addedLater) missing.add (pi.id);
             }
