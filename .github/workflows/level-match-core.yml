@@ -1,0 +1,32 @@
+name: LEVEL MATCH core tests (no plugin packaging)
+on:
+  push:
+    branches: [chatgpt/1.8-level-match]
+  pull_request:
+    branches: [claude/1.8-studio]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run core checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic tests/auto_level_match_core_tests.cpp -o alm-tests
+          ./alm-tests
+      - name: Undefined behavior and address sanitizers (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all tests/auto_level_match_core_tests.cpp -o alm-tests-sanitized
+          ./alm-tests-sanitized
