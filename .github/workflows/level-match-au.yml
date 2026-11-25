@@ -5,61 +5,122 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  NAME: MASTER SPACE 1.8.1 STUDIO
 jobs:
-  validate:
+  build:
     runs-on: macos-15-intel
-    timeout-minutes: 150
-    env:
-      NAME: MASTER SPACE 1.8.1 STUDIO
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Build AU and processor tests
+      - name: Build the Universal AU and native processor tests
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMAS_BUILD_TESTS=ON -DMAS_NATIVE_TEST_ARCH="$(uname -m)" -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           cmake --build build --target MasterSpace18Match_AU MasterSpaceMatchTests MasterSpace18Tests -j 4
-      - name: Processor tests and OFF identity
+          mkdir staging
+          cp -R "build/MasterSpace18Match_artefacts/Release/AU/$NAME.component" staging/
+          codesign --force --deep --sign - "staging/$NAME.component"
+          cp build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests staging/
+          cp build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests staging/
+          mkdir staging/Assets
+          cp build/_deps/juce-src/examples/Assets/{singing.ogg,cello.wav,reverb_ir.wav} staging/Assets/
+          tar -czf validated-inputs.tgz -C staging .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation-inputs
+          path: validated-inputs.tgz
+          retention-days: 1
+  test:
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [processor, factory-44100, factory-48000, factory-96000, AU]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: validation-inputs
+      - name: Unpack the binaries built by this run
+        run: |
+          mkdir inputs logs
+          tar -xzf validated-inputs.tgz -C inputs
+      - name: DSP, recordings and bit-exact identity
+        if: matrix.suite == 'processor'
         shell: bash
         run: |
           set -euo pipefail
-          t=build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests
-          "$t" --insert-match | tee insert-match.log
-          "$t" --recordings "$PWD/build/_deps/juce-src/examples/Assets" | tee recordings.log
-          "$t" | tee regression.log
-          "$t" --refhash | grep '^REF ' > match-off.txt
-          build/MasterSpace18Tests_artefacts/Release/MasterSpace18Tests --refhash | grep '^REF ' > baseline.txt
-          test "$(wc -l < baseline.txt)" -eq 48
-          diff baseline.txt match-off.txt
-      - name: Factory reference and headroom at all supported rates
+          inputs/MasterSpaceMatchTests --insert-match | tee logs/insert-match.log
+          inputs/MasterSpaceMatchTests --recordings "$PWD/inputs/Assets" | tee logs/recordings.log
+          inputs/MasterSpaceMatchTests | tee logs/regression.log
+          inputs/MasterSpaceMatchTests --refhash | grep '^REF ' > logs/match-off.txt
+          inputs/MasterSpace18Tests --refhash | grep '^REF ' > logs/baseline.txt
+          test "$(wc -l < logs/baseline.txt)" -eq 48
+          diff logs/baseline.txt logs/match-off.txt
+      - name: Factory reference and output peaks
+        if: startsWith(matrix.suite, 'factory-')
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          inputs/MasterSpaceMatchTests --factory-insert "${SUITE#factory-}" | tee "logs/$SUITE.log"
+      - name: Validate the installed AU
+        if: matrix.suite == 'AU'
         shell: bash
         run: |
           set -euo pipefail
-          t=build/MasterSpaceMatchTests_artefacts/Release/MasterSpaceMatchTests
-          for rate in 44100 48000 96000; do
-            "$t" --factory-insert "$rate" | tee "factory-$rate.log"
-          done
-      - name: Install, validate and package AU
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "dist/$NAME"
-          cp -R "build/MasterSpace18Match_artefacts/Release/AU/$NAME.component" "dist/$NAME/"
-          codesign --force --deep --sign - "dist/$NAME/$NAME.component"
-          cp installer/install-MasterSpace18Match.command "dist/$NAME/Install.command"
-          "dist/$NAME/Install.command"
-          # The registrar observes the atomic bundle move asynchronously.
+          cp installer/install-MasterSpace18Match.command inputs/Install.command
+          inputs/Install.command
+          component="$HOME/Library/Audio/Plug-Ins/Components/$NAME.component"
+          codesign --verify --deep --strict "$component"
+          lipo "$component/Contents/MacOS/$NAME" -verify_arch arm64 x86_64
+          # Refresh the registrar on this disposable runner after first installation.
+          touch "$HOME/Library/Audio/Plug-Ins/Components"
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
           for attempt in {1..15}; do
-            auval -a > installed-au.txt
-            if grep -Eq 'aufx[[:space:]]+ML18[[:space:]]+Mast' installed-au.txt; then break; fi
+            auval -a > logs/installed-au.txt
+            if grep -Eq 'aufx[[:space:]]+ML18[[:space:]]+Mast' logs/installed-au.txt; then break; fi
             sleep 2
           done
-          grep -Eq 'aufx[[:space:]]+ML18[[:space:]]+Mast' installed-au.txt
-          auval -strict -v aufx ML18 Mast | tee auval.log
-          grep -q 'AU VALIDATION SUCCEEDED' auval.log
+          cat logs/installed-au.txt
+          auval -strict -v aufx ML18 Mast | tee logs/auval.log
+          grep -q 'AU VALIDATION SUCCEEDED' logs/auval.log
           curl -fsSL https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip -o pluginval.zip
           unzip -q pluginval.zip
-          pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 32,64,128,256,512 --validate "$HOME/Library/Audio/Plug-Ins/Components/$NAME.component" 2>&1 | tee pluginval.log
-          cp insert-match.log auval.log pluginval.log regression.log recordings.log factory-*.log baseline.txt match-off.txt "dist/$NAME/"
+          pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --sample-rates 44100,48000,96000 --block-sizes 32,64,128,256,512 --validate "$component" 2>&1 | tee logs/pluginval.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.suite }}
+          path: logs/
+          retention-days: 7
+  package:
+    needs: test
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: validation-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: logs
+      - name: Package the validated binary with installer and reports
+        run: |
+          mkdir -p "dist/$NAME" inputs
+          tar -xzf validated-inputs.tgz -C inputs
+          ditto "inputs/$NAME.component" "dist/$NAME/$NAME.component"
+          codesign --verify --deep --strict "dist/$NAME/$NAME.component"
+          cp installer/install-MasterSpace18Match.command "dist/$NAME/Install.command"
           cp installer/README-MasterSpace18Match.txt "dist/$NAME/README.txt"
+          cp logs/{auval.log,pluginval.log,insert-match.log,regression.log,recordings.log,baseline.txt,match-off.txt,factory-*.log} "dist/$NAME/"
           cd dist
           ditto -c -k --keepParent "$NAME" MASTER-SPACE-1.8.1-STUDIO-AU.zip
       - uses: actions/upload-artifact@v4
