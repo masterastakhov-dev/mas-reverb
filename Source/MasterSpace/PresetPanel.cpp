@@ -230,6 +230,7 @@ PresetBar::PresetBar (MasterSpaceAudioProcessor& p, MASLookAndFeel& l, PresetDia
 
    #ifdef MAS_LEVEL_MATCH
     matchButton.setVisible (false);
+    copyButton.setVisible (false);
    #endif
     nameButton.getProperties().set ("presetName", true);
     nameButton.setButtonText ({});
@@ -551,8 +552,8 @@ void PresetBar::paint (juce::Graphics& g)
 #ifdef MAS_STUDIO_18
 static constexpr int kNameW18 = 290;
 #ifdef MAS_LEVEL_MATCH
-static const int kToolW18[] = { 26, 48, 62, 26, 26, 40, 50 };
-static const int kToolGap18[] = { 4, 4, 12, 4, 4, 4, 0 };
+static const int kToolW18[] = { 26, 48, 62, 26, 26, 50 };
+static const int kToolGap18[] = { 4, 4, 12, 4, 4, 0 };
 #else
 static const int kToolW18[]   = { 26, 48, 62, 26, 26, 40, 50, 54 };
 static const int kToolGap18[] = { 4, 4, 12, 4, 4, 4, 4, 0 };
@@ -568,7 +569,12 @@ int PresetBar::toolsWidth() const
 
 void PresetBar::placeTools (juce::Component& host, int x, int y, int h)
 {
+   #ifdef MAS_LEVEL_MATCH
+    juce::TextButton* tools[] = { &favButton, &saveButton, &saveAsButton, &slotA, &slotB, &undoButton };
+   #else
     juce::TextButton* tools[] = { &favButton, &saveButton, &saveAsButton, &slotA, &slotB, &copyButton, &undoButton, &matchButton };
+   #endif
+    static_assert (std::size (tools) == std::size (kToolW18));
     for (int i = 0; i < (int)std::size (kToolW18); ++i)
     {
         if (tools[i]->getParentComponent() != &host) host.addAndMakeVisible (*tools[i]);

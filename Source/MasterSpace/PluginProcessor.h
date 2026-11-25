@@ -324,6 +324,7 @@ public:
     // the running path keeps the old state and fades out, a second path starts from a clean,
     // fully re-initialised engine with the new state and fades in.
     ParamMap captureParamMap() const;
+    ParamMap captureCompareSlot() const;
     void applyParamMap (const ParamMap&, const juce::String& irPath = {});
     ParamMap defaultParamMap() const;
     juce::String getIRPath() const { return apvts.state.getProperty ("irPath").toString(); }

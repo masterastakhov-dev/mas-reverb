@@ -1999,6 +1999,12 @@ ParamMap MasterSpaceAudioProcessor::captureParamMap() const
     for (auto* prm : getParameters())
         if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
             m[r->getParameterID()] = r->convertFrom0to1 (r->getValue());
+    return m;
+}
+
+ParamMap MasterSpaceAudioProcessor::captureCompareSlot() const
+{
+    auto m = captureParamMap();
    #ifdef MAS_LEVEL_MATCH
     m["alm"] = insertEnabled.load() ? 1.0f : 0.0f;
    #endif
@@ -2011,9 +2017,6 @@ ParamMap MasterSpaceAudioProcessor::defaultParamMap() const
     for (auto* prm : getParameters())
         if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm))
             m[r->getParameterID()] = r->convertFrom0to1 (r->getDefaultValue());
-   #ifdef MAS_LEVEL_MATCH
-    m["alm"] = 1.0f;
-   #endif
     return m;
 }
 
@@ -2077,7 +2080,7 @@ bool MasterSpaceAudioProcessor::slotHasState (int slot) const
 void MasterSpaceAudioProcessor::captureLiveInto (CompareContext& c) const
 {
     const int a = c.active;
-    c.slot[a] = captureParamMap();
+    c.slot[a] = captureCompareSlot();
     c.has[a] = true;
     c.irPath[a] = getIRPath();
     c.presetKey[a] = apvts.state.getProperty ("presetKey").toString();
@@ -2187,8 +2190,8 @@ void MasterSpaceAudioProcessor::refreshLevelMatch()
     {
         const juce::ScopedLock sl (compareLock);
         if (! compare.has[1 - compare.active]) { matchStatus = "MATCH: set up B first"; matchTrimDb = 0.0f; return; }
-        a = compare.active == 0 ? captureParamMap() : compare.slot[0];
-        b = compare.active == 1 ? captureParamMap() : compare.slot[1];
+        a = compare.active == 0 ? captureCompareSlot() : compare.slot[0];
+        b = compare.active == 1 ? captureCompareSlot() : compare.slot[1];
     }
     const auto h = hashOf (a) ^ (hashOf (b) * 31);
     if (h == matchedHash) return;

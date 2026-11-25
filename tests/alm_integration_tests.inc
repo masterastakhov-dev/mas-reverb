@@ -49,7 +49,7 @@ static int testInsertMatch()
     {
         const int block = 32;
         auto proc = std::make_unique<MasterSpaceAudioProcessor>();
-        if (proc->apvts.getParameter ("alm") != nullptr || proc->captureParamMap()["alm"] != 1.0f
+        if (proc->apvts.getParameter ("alm") != nullptr || proc->captureCompareSlot()["alm"] != 1.0f
             || proc->captureParamMap()[ParamIDs::mix] != 100.0f) return 1;
         proc->setRateAndBufferSizeDetails (fs, block);
         proc->prepareToPlay (fs, block);
@@ -96,7 +96,7 @@ static int testInsertMatch()
         juce::MemoryBlock oldState;
         juce::AudioProcessor::copyXmlToBinary (*tree.createXml(), oldState);
         proc->setStateInformation (oldState.getData(), (int)oldState.getSize());
-        failures += proc->captureParamMap()["alm"] != 0;
+        failures += proc->captureCompareSlot()["alm"] != 0;
     }
     // Factory LeadVox keeps its authored -3.6 dB OUTPUT and 100% wet balance.
     auto voice = makeProcessor (96000, 64);

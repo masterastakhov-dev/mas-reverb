@@ -298,4 +298,7 @@ if(MAS_BUILD_TESTS)
     target_link_libraries(MasterSpaceMatchTests PRIVATE
         MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    if(APPLE AND MAS_NATIVE_TEST_ARCH)
+        set_target_properties(MasterSpace18Tests MasterSpaceMatchTests PROPERTIES OSX_ARCHITECTURES "${MAS_NATIVE_TEST_ARCH}")
+    endif()
 endif()
