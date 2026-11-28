@@ -10,6 +10,9 @@
  #include "MSCompressor.h"
 #endif
 #include <map>
+#ifdef MAS_ACADEMY
+ #include "AcademyPlayer.h"
+#endif
 
 namespace mspreset { class PresetManager; }
 
@@ -273,7 +276,12 @@ public:
     ~MasterSpaceAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
+   #ifdef MAS_ACADEMY
+    AcademyPlayer academy;
+    void releaseResources() override { academy.resetAudio(); }
+   #else
     void releaseResources() override {}
+   #endif
     void reset() override;
 
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;

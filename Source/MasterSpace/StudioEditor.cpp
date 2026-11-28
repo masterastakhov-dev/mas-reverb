@@ -1,6 +1,9 @@
 #include "StudioEditor.h"
 #include "BinaryData.h"
 
+#ifdef MAS_ACADEMY
+#include "AcademyLesson.h"
+#endif
 namespace studio
 {
 namespace
@@ -1019,6 +1022,19 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
     addChildComponent (*classic);
     classic->setHosted ([this] (int i) { if (i != 0 && i != 12) setPro (true); setPage (i); });
 
+   #ifdef MAS_ACADEMY
+    makeKey (*this, showKey); makeKey (*this, academyKey); makeKey (*this, openAcademy);
+    showKey.setBounds (38, 70, 63, 25); academyKey.setBounds (102, 70, 92, 25);
+    openAcademy.setBounds (200, 70, 88, 25);
+    showKey.onClick = [this] { proc.academy.show(); syncAcademy(); };
+    academyKey.onClick = [this] { proc.academy.arm(); syncAcademy(); };
+    openAcademy.onClick = [this] {
+        if (!proc.academy.available()) return;
+        if (!academyWindow) academyWindow = std::make_unique<AcademyWindow> (proc.academy, *this);
+        academyWindow->setVisible (true); academyWindow->toFront (true);
+    };
+    syncAcademy();
+   #endif
     makeKey (*this, themeKey, true, false);
     themeKey.setBounds (924, 32, 140, 36);
     themeKey.onClick = [this] { showThemeMenu(); };
@@ -1081,8 +1097,23 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
     startTimerHz (30);
 }
 
+#ifdef MAS_ACADEMY
+void Panel::syncAcademy()
+{
+    const bool active = proc.academy.available();
+    showKey.setToggleState (!active, juce::dontSendNotification);
+    academyKey.setToggleState (active, juce::dontSendNotification);
+    openAcademy.setEnabled (active);
+    if (!active && academyWindow) academyWindow->setVisible (false);
+}
+#endif
+
 Panel::~Panel()
 {
+   #ifdef MAS_ACADEMY
+    proc.academy.show();
+    academyWindow.reset();
+   #endif
     stopTimer();
     anim.reset();
     proc.spaceLevelsWanted.store (false);
@@ -1216,6 +1247,9 @@ void Panel::loadIRFile (const juce::File& f)
 
 void Panel::timerCallback()
 {
+   #ifdef MAS_ACADEMY
+    syncAcademy();
+   #endif
     main->sync();
 #ifdef MAS_STUDIO_DYN
     // Valve light behind the side grilles.

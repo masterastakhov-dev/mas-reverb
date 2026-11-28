@@ -1140,6 +1140,9 @@ void MasterSpaceAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     insertGain.process (buffer.getWritePointer (0), numOut > 1 ? buffer.getWritePointer (1) : nullptr, n);
     insertGainDb.store (juce::Decibels::gainToDecibels (insertGain.gain()), std::memory_order_relaxed);
    #endif
+   #ifdef MAS_ACADEMY
+    academy.render (buffer, sampleRateHz);
+   #endif
     // SIGNAL RAILS, OUTPUT: what leaves the plugin, after everything (dry / wet, A/B level match included)
     if (ioOn && numOut > 0)
     {
@@ -2467,6 +2470,9 @@ void MasterSpaceAudioProcessor::setStateInformation (const void* data, int sizeI
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
         return;   // unreadable state: keep the current one rather than resetting the sound
 
+   #ifdef MAS_ACADEMY
+    academy.show();
+   #endif
     // states written before 1.2 carry no engine version: keep their sound with the 1.1 engine
     bool hasEngine = false, hasTail = false;
    #ifdef MAS_RI

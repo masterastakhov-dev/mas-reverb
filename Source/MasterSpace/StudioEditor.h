@@ -8,6 +8,9 @@
 #include "StudioLook.h"
 #include "PresetPanel.h"
 
+#ifdef MAS_ACADEMY
+class AcademyWindow;
+#endif
 namespace studio
 {
 class MainPage;
@@ -85,6 +88,11 @@ private:
 
     juce::TextButton themeKey { "THEME" }, mixKey { "MIX" }, proKey { "PRO" }, navMain { "MAIN" }, navEq { "REVERB EQ" };
     juce::OwnedArray<juce::TextButton> tabs;
+   #ifdef MAS_ACADEMY
+    juce::TextButton showKey { "SHOW" }, academyKey { "ACADEMY" }, openAcademy { "OPEN" };
+    std::unique_ptr<AcademyWindow> academyWindow;
+    void syncAcademy();
+   #endif
     Cache topCache;
     int themeIndex = 0;
 #ifdef MAS_STUDIO_DYN

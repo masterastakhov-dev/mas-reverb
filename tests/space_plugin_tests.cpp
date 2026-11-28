@@ -745,10 +745,51 @@ static int levelSurvey()
 #include "alm_integration_tests.inc"
 #endif
 
+#ifdef MAS_ACADEMY
+#include "../Source/MasterSpace/AcademyLesson.h"
+#endif
+
 int main (int argc, char** argv)
 {
     const bool quick = argc > 1 && juce::String (argv[1]) == "--quick";
     juce::ScopedJuceInitialiser_GUI juceInit;
+   #ifdef MAS_ACADEMY
+    if (argc >= 2 && juce::String (argv[1]) == "--academy")
+    {
+        int failures = 0;
+        for (double rate : { 44100., 48000., 96000. })
+            for (int block : { 32, 64, 128, 512 })
+            {
+                AcademyPlayer player;
+                juce::AudioBuffer<float> audio (2, block);
+                auto peak = [&] {
+                    audio.clear(); player.render (audio, rate);
+                    return audio.getMagnitude (0, audio.getNumSamples());
+                };
+                player.play();
+                if (peak() != 0 || player.available()) ++failures;
+                player.arm();
+                if (peak() != 0) ++failures;
+                player.play();
+                float heard = 0;
+                for (int n = 0; n < 100; ++n) heard = std::max (heard, peak());
+                if (!(heard > 0.01f && heard < 1.f)) ++failures;
+                player.show(); player.play();
+                for (int n = 0; n < 40; ++n) peak();
+                if (peak() != 0 || player.available()) ++failures;
+            }
+        if (argc == 3)
+        {
+            AcademyPlayer player;
+            AcademyLesson lesson (player);
+            auto image = lesson.createComponentSnapshot (lesson.getLocalBounds());
+            juce::FileOutputStream out { juce::File (juce::String (argv[2])) };
+            if (!out.openedOk() || !juce::PNGImageFormat().writeImageToStream (image, out)) ++failures;
+        }
+        std::cout << "Academy transport: " << failures << " failed" << std::endl;
+        return failures != 0;
+    }
+   #endif
    #ifdef MAS_LEVEL_MATCH
     if (argc == 3 && juce::String (argv[1]) == "--recordings") return testRecordedMaterial (juce::File (argv[2]));
     if (argc == 3 && juce::String (argv[1]) == "--factory-insert") return surveyFactoryInsert (juce::String (argv[2]).getDoubleValue());
