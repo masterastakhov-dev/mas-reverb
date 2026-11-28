@@ -71,7 +71,9 @@ juce::File PresetManager::getRootFolder() const
     const auto env = juce::SystemStats::getEnvironmentVariable ("MASTER_SPACE_PRESET_ROOT", {});
     if (env.isNotEmpty())
         return juce::File (env);
-   #if defined (MAS_LEVEL_MATCH)
+   #if defined (MAS_ACADEMY)
+    const char* product = "MASTER SPACE 2.0 ACADEMY";
+   #elif defined (MAS_LEVEL_MATCH)
     const char* product = "MASTER SPACE 1.8.1 STUDIO";
    #elif defined (MAS_STUDIO_18)
     const char* product = "MASTER SPACE 1.8 STUDIO";        // 1.8: its own library, 1.6 / 1.7d untouched

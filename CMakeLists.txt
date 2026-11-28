@@ -148,6 +148,12 @@ target_sources(MasterSpace18Match PRIVATE Source/MasterSpace/PresetManager.cpp S
                Source/MasterSpace/StudioLook.cpp Source/MasterSpace/StudioEditor.cpp)
 target_compile_definitions(MasterSpace18Match PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1 MAS_STUDIO_18=1 MAS_LEVEL_MATCH=1)
 target_link_libraries(MasterSpace18Match PRIVATE MasterSpaceStudioPresets MasStudioFonts)
+mas_add_plugin(MasterSpace20Academy "MASTER SPACE 2.0 ACADEMY" MA20 com.masterastakhovsound.masterspace20academy 2.0.0
+               Source/MasterSpace "MASTER SPACE 2.0 ACADEMY: spatial reverb with M/S output compressor and M/S harmonic color" AU)
+target_sources(MasterSpace20Academy PRIVATE Source/MasterSpace/PresetManager.cpp Source/MasterSpace/PresetPanel.cpp
+               Source/MasterSpace/StudioLook.cpp Source/MasterSpace/StudioEditor.cpp)
+target_compile_definitions(MasterSpace20Academy PRIVATE MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1 MAS_STUDIO_18=1 MAS_LEVEL_MATCH=1 MAS_ACADEMY=1)
+target_link_libraries(MasterSpace20Academy PRIVATE MasterSpaceStudioPresets MasStudioFonts)
 endif()
 
 
@@ -298,7 +304,23 @@ if(MAS_BUILD_TESTS)
     target_link_libraries(MasterSpaceMatchTests PRIVATE
         MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    juce_add_console_app(MasterSpaceAcademyTests PRODUCT_NAME "MasterSpaceAcademyTests")
+    target_sources(MasterSpaceAcademyTests PRIVATE
+        tests/space_plugin_tests.cpp
+        Source/MasterSpace/PluginProcessor.cpp
+        Source/MasterSpace/PluginEditor.cpp
+        Source/MasterSpace/PresetManager.cpp
+        Source/MasterSpace/PresetPanel.cpp
+        Source/MasterSpace/StudioLook.cpp
+        Source/MasterSpace/StudioEditor.cpp)
+    target_compile_definitions(MasterSpaceAcademyTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        MAS_ATMOS=1 MAS_RI=1 MAS_EQ=1 MAS_STUDIO=1 MAS_STUDIO_DYN=1 MAS_STUDIO_18=1 MAS_LEVEL_MATCH=1 MAS_ACADEMY=1
+        JucePlugin_Name="MASTER SPACE 2.0 ACADEMY" JucePlugin_VersionString="2.0.0")
+    target_link_libraries(MasterSpaceAcademyTests PRIVATE
+        MasterSpaceStudioPresets MasStudioFonts MasBrandData juce::juce_audio_utils juce::juce_dsp
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
     if(APPLE AND MAS_NATIVE_TEST_ARCH)
-        set_target_properties(MasterSpace18Tests MasterSpaceMatchTests PROPERTIES OSX_ARCHITECTURES "${MAS_NATIVE_TEST_ARCH}")
+        set_target_properties(MasterSpace18Tests MasterSpaceMatchTests MasterSpaceAcademyTests PROPERTIES OSX_ARCHITECTURES "${MAS_NATIVE_TEST_ARCH}")
     endif()
 endif()
