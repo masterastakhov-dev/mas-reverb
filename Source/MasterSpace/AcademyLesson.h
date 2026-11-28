@@ -97,12 +97,14 @@ private:
 class AcademyWindow final : public juce::DocumentWindow
 {
 public:
-    explicit AcademyWindow (AcademyPlayer& t)
+    AcademyWindow (AcademyPlayer& t, juce::Component& launcher)
         : DocumentWindow ("SPACE ACADEMY", juce::Colour (0xff1a2029), closeButton), player (t)
     {
         setUsingNativeTitleBar (true);
         setContentOwned (new AcademyLesson (player), true);
-        centreWithSize (getWidth(), getHeight());
+        const auto anchor = launcher.getScreenBounds();
+        if (const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (anchor))
+            setBounds (getLocalBounds().withCentre (anchor.getCentre()).constrainedWithin (display->userArea));
     }
     void closeButtonPressed() override { player.stop(); setVisible (false); }
 private:

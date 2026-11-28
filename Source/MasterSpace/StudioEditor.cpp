@@ -1030,7 +1030,7 @@ Panel::Panel (MasterSpaceAudioProcessor& p, LookAndFeel& l) : proc (p), lnf (l)
     academyKey.onClick = [this] { proc.academy.arm(); syncAcademy(); };
     openAcademy.onClick = [this] {
         if (!proc.academy.available()) return;
-        if (!academyWindow) academyWindow = std::make_unique<AcademyWindow> (proc.academy);
+        if (!academyWindow) academyWindow = std::make_unique<AcademyWindow> (proc.academy, *this);
         academyWindow->setVisible (true); academyWindow->toFront (true);
     };
     syncAcademy();
